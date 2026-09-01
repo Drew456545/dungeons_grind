@@ -1,12 +1,12 @@
 # YCBotChallenge (Fabric client mod, MC 1.21.11)
 
-You play on your own client, press **G**, and the bot runs: walk to the nearest mob, tap it once (the server's auto-attack does the rest), wait for the kill, move to the next. Press **G** again to stop. While a mob is cooking it no longer stares a hole in the next hitbox — the camera wanders, taps hesitate after you arrive, and WASD/sprint lag a tick like a person. A HUD shows live pacing; everything is logged to JSONL for the analyze/sim tools.
+You play on your own client, press **G**, and the bot runs: walk to a mob, tap it once, wait for the boss health bar to expire (that's the cook — the server auto-attacks), then pick the next one. Press **G** again to stop. During the cook the camera wanders instead of locking onto the next hitbox. A HUD shows live pacing and the bar %; everything is logged to JSONL for the analyze/sim tools.
 
 Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API 0.141.6.
 
 ## Install
 
-Drop `ycbotchallenge-0.6.0.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.6.1.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -20,7 +20,8 @@ Drop `ycbotchallenge-0.6.0.jar` into your `mods/` folder alongside Fabric Loader
 
 - `reach`, `targetRange` — tap distance and how far it will walk for a mob.
 - `tapCooldownMs`, `reactionDelayMinMs/MaxMs`, `idleChancePerMinute` — pacing.
-- `humanize` (default true) — gaze wander while a mob cooks, never-still mouse, notice/tap hesitation, delayed WASD, sprint warmup. Set `false` for the old metronomic loop. Related: `cameraNoiseScale`, `noticeDelayMinMs/MaxMs`, `tapHesitationMinMs/MaxMs`, `microPauseChancePerMinute`, `cookEfficientChance` / `cookWatchChance` (remainder = fidget: look around + sidesteps), `keyTransitionMaxTicks`.
+- `cookDoneOnBossBar` (default true) — a fight is over when the boss HP bar disappears, not when the entity despawns. Next selection starts only after that. `cookBarAppearMs` is how long we wait for the bar before falling back to entity despawn; `cookBarIgnorePatterns` skips boost/event bars.
+- `humanize` (default true) — gaze wander while the bar is up, never-still mouse, notice/tap hesitation, delayed WASD, sprint warmup. Set `false` for the old metronomic loop.
 - `movement: false` — stand still and only tag what wanders into reach.
 - `zoneMin`/`zoneMax` — `[x, y, z]` arrays bounding the farming zone (null = anywhere).
 - `runLabel` — tag for the log file (`"baseline"`, `"asc6-geared"`, `"2x-souls"`, ...). Change it between experiment runs.

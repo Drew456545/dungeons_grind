@@ -134,14 +134,22 @@ public class YCBotChallengeConfig {
     public Map<String, Double> rarityBonusBlocks = Map.of(
         "UNCOMMON", 1.5, "RARE", 4.0, "EPIC", 8.0, "LEGENDARY", 12.0);
     /**
-     * While a tagged mob cooks we can't tag another, but we don't need to watch
-     * it: pick the next mob, pre-aim at it, and walk toward it as far as the
-     * leash allows (the server keeps auto-attacking while we're near the tagged
-     * mob). The leash is re-rolled between min and max on every tag so how far
-     * we drift varies kill to kill. The pick is re-evaluated every
-     * nextTargetRescanMs so a rarer mob spawning nearby gets noticed.
+     * A tap starts a fight: the server puts up a boss health bar and
+     * auto-attacks. The cook is over when THAT BAR expires — not when the
+     * client entity despawns (corpses linger as ghosts). Next selection
+     * starts only after the bar is gone. If no bar appears within
+     * cookBarAppearMs we fall back to entity despawn.
      */
-    public boolean preAimNext = true;
+    public boolean cookDoneOnBossBar = true;
+    public int cookBarAppearMs = 1500;
+    /** Substrings that mean "this bar is a boost/event, not the fight HP". */
+    public List<String> cookBarIgnorePatterns = List.of();
+    /**
+     * Stay this close to the tagged mob while the bar is up so the server
+     * keeps auto-attacking. Rolled per tag. We do not walk off to the next
+     * mob until the bar expires.
+     */
+    public boolean preAimNext = false;
     public int nextTargetRescanMs = 750;
     public double cookLeashMinBlocks = 2.0;
     public double cookLeashMaxBlocks = 4.0;
@@ -263,7 +271,7 @@ public class YCBotChallengeConfig {
     public boolean targetDominant = true;
     /** Dominant filtering only kicks in when the top mob type has at least this many alive in range. */
     public int minDominantPack = 3;
-    /** Abandon a tagged mob that still hasn't died after this long (client-side ghost / unkillable). Set ~2x your average time-to-kill. */
+    /** Abandon a tagged fight if the boss bar hasn't expired after this long. Set ~2x your average time-to-kill. */
     public int maxCookMs = 90000;
     public boolean hud = true;
     public int hudX = 4;
