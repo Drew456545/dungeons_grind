@@ -2,6 +2,8 @@ package dev.drew.ycbotchallenge;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,11 +15,43 @@ public class YCBotChallengeConfig {
     public double reach = 3.0;
     public double targetRange = 50.0;
     public int tapCooldownMs = 300;
-    public int reactionDelayMinMs = 120;
-    public int reactionDelayMaxMs = 350;
-    public double idleChancePerMinute = 0.5;
+    public int reactionDelayMinMs = 160;
+    public int reactionDelayMaxMs = 480;
+    public double idleChancePerMinute = 1.1;
     public int idleMinMs = 800;
     public int idleMaxMs = 3000;
+
+    /**
+     * Body language. When true the grind loop still tags one stationary mob
+     * at a time, but the camera, keys, and timing stop looking like a state
+     * machine: gaze wanders during cook, the mouse never parks, taps wait a
+     * beat after arriving, WASD changes lag a tick, sprint doesn't start the
+     * instant W is held. Disable to get the old metronomic loop back.
+     */
+    public boolean humanize = true;
+    /** Scales the always-on camera drift/tremor (1.0 = default; 0 = off). */
+    public double cameraNoiseScale = 1.0;
+    /** Look-at-the-mob pause before the legs start, on a freshly spotted target. */
+    public int noticeDelayMinMs = 90;
+    public int noticeDelayMaxMs = 280;
+    /** Extra wait after arriving in reach, before the tap. */
+    public int tapHesitationMinMs = 70;
+    public int tapHesitationMaxMs = 220;
+    /** Chance of a longer "is this the one?" beat on top of tap hesitation. */
+    public double tapHesitationLongChance = 0.08;
+    /** Short hitches mid-walk (per minute). Keep modest or KPM tanks. */
+    public double microPauseChancePerMinute = 2.2;
+    public int microPauseMinMs = 120;
+    public int microPauseMaxMs = 380;
+    /**
+     * How a cook wait is spent (remainder after efficient+watch = fidget).
+     * Efficient = old pre-walk-to-next. Watch = stare at the tagged mob with
+     * glances away. Fidget = look around the pad and occasional sidesteps.
+     */
+    public double cookEfficientChance = 0.42;
+    public double cookWatchChance = 0.38;
+    /** Max extra ticks before a WASD octant change is applied (0–this, rolled). */
+    public int keyTransitionMaxTicks = 3;
     public boolean movement = true;
     /**
      * Sprint whenever we're running forward at the target and still more than
@@ -69,9 +103,9 @@ public class YCBotChallengeConfig {
      */
     public double aimAgility = 0.4;
     /** Stop micro-adjusting once within this many degrees of the target (humans don't pixel-track). */
-    public double aimDeadzoneDeg = 2.5;
+    public double aimDeadzoneDeg = 3.2;
     /** Only tap the mob when actually looking at it — aim error must be under this. */
-    public double aimTapMaxErrorDeg = 25.0;
+    public double aimTapMaxErrorDeg = 22.0;
     /**
      * Target choice = lowest estimated travel cost, in blocks:
      *   cost = distance + turnCostBlocks * (angle off camera / 180).
@@ -261,7 +295,20 @@ public class YCBotChallengeConfig {
     public static YCBotChallengeConfig load(Path file) {
         try {
             if (Files.exists(file)) {
-                return GSON.fromJson(Files.readString(file), YCBotChallengeConfig.class);
+                JsonObject raw = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+                // Gson may skip field initializers; fill any keys added in a newer
+                // build so humanize (etc.) doesn't silently come through as false/0.
+                JsonObject def = GSON.toJsonTree(new YCBotChallengeConfig()).getAsJsonObject();
+                boolean missing = false;
+                for (var e : def.entrySet()) {
+                    if (!raw.has(e.getKey())) {
+                        raw.add(e.getKey(), e.getValue());
+                        missing = true;
+                    }
+                }
+                YCBotChallengeConfig cfg = GSON.fromJson(raw, YCBotChallengeConfig.class);
+                if (missing) cfg.save(file);
+                return cfg;
             }
         } catch (Exception e) {
             YCBotChallengeClient.LOGGER.warn("Failed to read config, using defaults: {}", e.toString());
