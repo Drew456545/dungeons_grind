@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "ycbotchallenge",
+  "version": "${version}",
+  "name": "YCBotChallenge",
+  "description": "YCBotChallenge client mod.",
+  "authors": ["Drew"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.drew.ycbotchallenge.YCBotChallengeClient"]
+  },
+  "mixins": [
+    {
+      "config": "ycbotchallenge.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.11",
+    "java": ">=21"
+  }
+}
