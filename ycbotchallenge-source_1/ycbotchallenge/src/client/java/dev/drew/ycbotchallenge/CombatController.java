@@ -59,6 +59,10 @@ public class CombatController {
     private float cookBarPercent = -1f;
     private String cookBarTitle = null;
     private int cookBarZeroTicks = 0;
+    private float cookBarPercentAtLatch = 1f;
+    private long cookBarLatchedAt = 0;
+    /** Event bars we already logged this cook so we don't spam. */
+    private final Set<UUID> ignoredEventBars = new HashSet<>();
     private long nextActionAt = 0;   // humanized reaction / idle gate
     private long lastTapAt = 0;
     public int kills = 0;
@@ -288,6 +292,9 @@ public class CombatController {
             cookBarPercent = -1f;
             cookBarTitle = null;
             cookBarZeroTicks = 0;
+            cookBarPercentAtLatch = 1f;
+            cookBarLatchedAt = 0;
+            ignoredEventBars.clear();
             cookLeash = rng.nextDouble(cfg.cookLeashMinBlocks, Math.max(cfg.cookLeashMinBlocks + 0.01, cfg.cookLeashMaxBlocks));
             human.onTagged(now);
             if (logger != null) {
@@ -333,22 +340,46 @@ public class CombatController {
     private void updateCookBar(MinecraftClient client) {
         if (!cfg.cookDoneOnBossBar) return;
         Map<UUID, ClientBossBar> bars = BossBars.current(client);
-        if (cookBarId == null) {
-            for (var e : bars.entrySet()) {
-                if (barsAtTag.contains(e.getKey())) continue;
-                String title = e.getValue().getName().getString();
-                if (BossBars.ignoredForCook(title, cfg.cookBarIgnorePatterns)) continue;
-                cookBarId = e.getKey();
-                cookBarSeen = true;
-                cookBarTitle = title;
-                cookBarPercent = e.getValue().getPercent();
+        long now = System.currentTimeMillis();
+
+        // An event popup during the fight must never be treated as the cook
+        // finishing — and if we latched one by mistake, drop it and keep looking.
+        if (cookBarId != null) {
+            ClientBossBar held = bars.get(cookBarId);
+            if (held != null && BossBars.ignoredForCook(held.getName().getString(), cfg.cookBarIgnorePatterns)) {
                 if (logger != null) {
-                    logger.log("cook_bar", "title", title, "percent", cookBarPercent);
+                    logger.log("cook_bar_unlatched", "reason", "event",
+                        "title", held.getName().getString());
                 }
-                break;
+                rememberIgnored(cookBarId, held.getName().getString(), held.getPercent());
+                clearLatchOnly();
+            } else if (held != null && stalledEventDisguise(held, now)) {
+                if (logger != null) {
+                    logger.log("cook_bar_unlatched", "reason", "stalled-event",
+                        "title", held.getName().getString(), "percent", held.getPercent());
+                }
+                rememberIgnored(cookBarId, held.getName().getString(), held.getPercent());
+                clearLatchOnly();
             }
+        }
+
+        if (cookBarId == null) {
+            latchBestCookBar(bars, now);
             return;
         }
+
+        // Prefer a bar that actually names this mob if we latched a generic one
+        // and the real HP bar showed up a tick later.
+        if (!BossBars.looksLikeCookBar(cookBarTitle, targetMob, targetRarity)) {
+            UUID better = bestCookCandidate(bars);
+            if (better != null && !better.equals(cookBarId)) {
+                ClientBossBar b = bars.get(better);
+                if (b != null && BossBars.looksLikeCookBar(b.getName().getString(), targetMob, targetRarity)) {
+                    latch(better, b, now);
+                }
+            }
+        }
+
         ClientBossBar bar = bars.get(cookBarId);
         if (bar == null) {
             cookBarGone = true;
@@ -362,6 +393,70 @@ public class CombatController {
         } else {
             cookBarZeroTicks = 0;
         }
+    }
+
+    private void latchBestCookBar(Map<UUID, ClientBossBar> bars, long now) {
+        UUID id = bestCookCandidate(bars);
+        if (id == null) return;
+        ClientBossBar bar = bars.get(id);
+        if (bar == null) return;
+        latch(id, bar, now);
+    }
+
+    private UUID bestCookCandidate(Map<UUID, ClientBossBar> bars) {
+        UUID bestId = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (var e : bars.entrySet()) {
+            if (barsAtTag.contains(e.getKey()) || ignoredEventBars.contains(e.getKey())) continue;
+            String title = e.getValue().getName().getString();
+            if (BossBars.ignoredForCook(title, cfg.cookBarIgnorePatterns)) {
+                rememberIgnored(e.getKey(), title, e.getValue().getPercent());
+                continue;
+            }
+            int score = BossBars.cookScore(title, e.getValue().getPercent(), targetMob, targetRarity);
+            if (score > bestScore) {
+                bestScore = score;
+                bestId = e.getKey();
+            }
+        }
+        return bestId;
+    }
+
+    private void latch(UUID id, ClientBossBar bar, long now) {
+        cookBarId = id;
+        cookBarSeen = true;
+        cookBarGone = false;
+        cookBarTitle = bar.getName().getString();
+        cookBarPercent = bar.getPercent();
+        cookBarPercentAtLatch = cookBarPercent;
+        cookBarLatchedAt = now;
+        cookBarZeroTicks = 0;
+        if (logger != null) {
+            logger.log("cook_bar", "title", cookBarTitle, "percent", cookBarPercent,
+                "cookLike", BossBars.looksLikeCookBar(cookBarTitle, targetMob, targetRarity));
+        }
+    }
+
+    /** Event bars drain over minutes; cook HP drops in seconds. No nameplate match + no drain → not the fight. */
+    private boolean stalledEventDisguise(ClientBossBar bar, long now) {
+        if (now - cookBarLatchedAt < 4000) return false;
+        if (BossBars.looksLikeCookBar(bar.getName().getString(), targetMob, targetRarity)) return false;
+        return bar.getPercent() > cookBarPercentAtLatch - 0.01f;
+    }
+
+    private void rememberIgnored(UUID id, String title, float percent) {
+        if (!ignoredEventBars.add(id)) return;
+        if (logger != null) logger.log("event_bar_ignored", "title", title, "percent", percent);
+    }
+
+    private void clearLatchOnly() {
+        cookBarId = null;
+        cookBarSeen = false;
+        cookBarGone = false;
+        cookBarPercent = -1f;
+        cookBarTitle = null;
+        cookBarZeroTicks = 0;
+        cookBarLatchedAt = 0;
     }
 
     /** True when this fight is over and we may start the next selection. */
@@ -407,6 +502,9 @@ public class CombatController {
         cookBarPercent = -1f;
         cookBarTitle = null;
         cookBarZeroTicks = 0;
+        cookBarPercentAtLatch = 1f;
+        cookBarLatchedAt = 0;
+        ignoredEventBars.clear();
     }
 
     /** Idle / waiting: keep the eyes moving so the mouse never parks. */

@@ -142,7 +142,12 @@ public class YCBotChallengeConfig {
      */
     public boolean cookDoneOnBossBar = true;
     public int cookBarAppearMs = 1500;
-    /** Substrings that mean "this bar is a boost/event, not the fight HP". */
+    /**
+     * Extra title fragments that mean "event/boost bar, not cook HP".
+     * Built-in filter already skips timers ((12m, 9s)), multipliers (2x),
+     * and words like boost/harvest/event/vote/sale/party. Add server-specific
+     * names here if a new event bar still gets grabbed.
+     */
     public List<String> cookBarIgnorePatterns = List.of();
     /**
      * Stay this close to the tagged mob while the bar is up so the server

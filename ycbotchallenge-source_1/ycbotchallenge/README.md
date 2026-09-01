@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.6.1.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.6.2.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -20,7 +20,7 @@ Drop `ycbotchallenge-0.6.1.jar` into your `mods/` folder alongside Fabric Loader
 
 - `reach`, `targetRange` — tap distance and how far it will walk for a mob.
 - `tapCooldownMs`, `reactionDelayMinMs/MaxMs`, `idleChancePerMinute` — pacing.
-- `cookDoneOnBossBar` (default true) — a fight is over when the boss HP bar disappears, not when the entity despawns. Next selection starts only after that. `cookBarAppearMs` is how long we wait for the bar before falling back to entity despawn; `cookBarIgnorePatterns` skips boost/event bars.
+- `cookDoneOnBossBar` (default true) — fight ends when the **cook HP** bar disappears. Timed event/boost bars (2x souls, vote party, `(12m, 9s)`, etc.) are ignored so they cannot start or end a cook. `cookBarIgnorePatterns` adds extra title fragments if a new event still slips through.
 - `humanize` (default true) — gaze wander while the bar is up, never-still mouse, notice/tap hesitation, delayed WASD, sprint warmup. Set `false` for the old metronomic loop.
 - `movement: false` — stand still and only tag what wanders into reach.
 - `zoneMin`/`zoneMax` — `[x, y, z]` arrays bounding the farming zone (null = anywhere).
