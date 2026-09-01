@@ -2,12 +2,16 @@ package dev.drew.ycbotchallenge;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.hud.ClientBossBar;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
@@ -22,9 +26,10 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
 /**
- * The grind loop, matched to the server's mechanics: one hit TAGS a mob and
- * the server auto-attacks it until it dies — one mob at a time. So per cycle:
- * pick nearest mob -> walk into reach -> tap once -> wait for death -> next.
+ * The grind loop, matched to the server's mechanics: one hit TAGS a mob,
+ * a boss health bar appears while the server auto-attacks it, and the cook
+ * is over when that bar expires — then (and only then) we pick the next mob.
+ * One fight at a time. Entity despawn is not the signal; corpses linger.
  */
 public class CombatController {
     private static final Pattern NAMEPLATE = Pattern.compile(
@@ -33,18 +38,31 @@ public class CombatController {
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
+    private Humanizer human;
     private EventLogger logger;
 
     private LivingEntity target = null;
     private boolean tagged = false;
     private long tagAt = 0;
     private long targetPickedAt = 0;
-    /** While the current mob cooks: the mob we'll go for next (pre-aimed so the handoff is instant). */
+    /** Only filled after the cook bar expires — we do not select during a fight. */
     private LivingEntity nextTarget = null;
-    private long nextPickedAt = 0;
     /** How far we may drift from the cooking mob this kill (rolled per tag). */
     private double cookLeash = 3.0;
     public String nextTargetDesc = null;
+
+    /** Boss bars present at the moment we tapped; any new non-boost bar is the cook HP. */
+    private Set<UUID> barsAtTag = Set.of();
+    private UUID cookBarId = null;
+    private boolean cookBarSeen = false;
+    private boolean cookBarGone = false;
+    private float cookBarPercent = -1f;
+    private String cookBarTitle = null;
+    private int cookBarZeroTicks = 0;
+    private float cookBarPercentAtLatch = 1f;
+    private long cookBarLatchedAt = 0;
+    /** Event bars we already logged this cook so we don't spam. */
+    private final Set<UUID> ignoredEventBars = new HashSet<>();
     private long nextActionAt = 0;   // humanized reaction / idle gate
     private long lastTapAt = 0;
     public int kills = 0;
@@ -81,14 +99,26 @@ public class CombatController {
     public CombatController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
         this.stats = stats;
+        this.human = new Humanizer(cfg);
     }
 
     public void setLogger(EventLogger logger) { this.logger = logger; }
 
+    public Humanizer humanizer() { return human; }
+
     public String stateDescription() {
-        if (target == null) return "searching";
+        String hint = human != null ? human.hudHint : null;
+        if (target == null) {
+            return hint != null && !hint.isBlank() ? "searching — " + hint : "searching";
+        }
         String s = (tagged ? "cooking " : "approaching ") + (lastTargetDesc == null ? "?" : lastTargetDesc);
-        if (tagged && nextTargetDesc != null) s += "  §8→ next: " + nextTargetDesc;
+        if (tagged && cookBarSeen && cookBarPercent >= 0f) {
+            s += "  §c" + Math.round(cookBarPercent * 100f) + "%";
+        } else if (tagged && !cookBarSeen) {
+            s += "  §8waiting for bar";
+        } else if (hint != null && !hint.isBlank()) {
+            s += "  §8" + hint;
+        }
         return s;
     }
 
@@ -96,9 +126,12 @@ public class CombatController {
         target = null;
         nextTarget = null;
         tagged = false;
+        clearCookBar();
         yawVel = 0f;
         pitchVel = 0f;
         prevOct = 0;
+        human = new Humanizer(cfg); // new session personality each toggle
+        human.reset();
         releaseKeys(client);
     }
 
@@ -118,51 +151,69 @@ public class CombatController {
 
         updateMotion(client);
 
-        // current target started moving -> it's a ghost; drop it and rescan next tick
+        // current target started moving -> it's a ghost leftover. If a cook bar
+        // is still up the fight isn't over — drop the entity, keep waiting.
         if (target != null && cfg.stationaryOnly && ghosts.contains(target.getId())) {
             if (logger != null) {
                 logger.log("target_abandoned", "reason", "moving-ghost", "mob", targetMob, "rarity", targetRarity);
             }
             target = null;
-            tagged = false;
+            if (!tagged || !cookBarSeen || cookBarGone) {
+                tagged = false;
+                clearCookBar();
+            }
         }
 
-        // occasional human-ish idle
-        if (now < nextActionAt) { releaseKeys(client); decayAim(client); return; }
-        if (rng.nextDouble() < cfg.idleChancePerMinute / (60.0 * 20.0)) { // per tick
-            nextActionAt = now + rng.nextLong(cfg.idleMinMs, cfg.idleMaxMs + 1);
-            releaseKeys(client);
-            return;
-        }
-
-        // current target dead? -> kill credit
-        if (target != null && (target.isRemoved() || target.isDead() || !target.isAlive())) {
-            if (tagged) {
-                kills++;
-                stats.recordKill();
+        // Cook first: the boss HP bar is the done-signal, not entity death.
+        // Must run before idle so a pause never misses the bar expiring.
+        if (tagged) {
+            updateCookBar(client);
+            if (cookComplete(now)) {
+                finishCook(now, cookBarSeen && cookBarGone ? "boss-bar" : "death");
+                releaseKeys(client);
+                lookAround(client, now);
+                return;
+            }
+            if (now - tagAt > cfg.maxCookMs) {
                 if (logger != null) {
-                    logger.log("kill",
-                        "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
-                        "timeToKillMs", now - tagAt, "kills", kills, "via", "death");
+                    logger.log("target_abandoned", "reason", "cook-timeout",
+                        "mob", targetMob, "rarity", targetRarity, "afterMs", now - tagAt);
                 }
+                target = null;
+                tagged = false;
+                clearCookBar();
             }
-            target = null;
-            tagged = false;
-            nextActionAt = now + rng.nextLong(cfg.reactionDelayMinMs, cfg.reactionDelayMaxMs + 1);
+        }
+
+        // occasional human-ish idle — camera keeps wandering instead of freezing
+        if (now < nextActionAt) {
+            releaseKeys(client);
+            lookAround(client, now);
+            return;
+        }
+        if (rng.nextDouble() < cfg.idleChancePerMinute / (60.0 * 20.0)) { // per tick
+            nextActionAt = now + human.idleHold();
+            releaseKeys(client);
+            lookAround(client, now);
             return;
         }
 
-        // tagged mob that never dies = client-side ghost or unkillable — abandon it
-        if (target != null && tagged && now - tagAt > cfg.maxCookMs) {
-            if (logger != null) {
-                logger.log("target_abandoned", "reason", "cook-timeout",
-                    "mob", targetMob, "rarity", targetRarity, "afterMs", now - tagAt);
+        // Entity despawned. That is NOT a kill unless we aren't using the bar,
+        // or no bar ever showed. The corpse/ghost can vanish while the bar is
+        // still the fight.
+        if (target != null && entityGone(target)) {
+            if (!tagged) {
+                target = null;
+            } else if (!cfg.cookDoneOnBossBar || (!cookBarSeen && now - tagAt > cfg.cookBarAppearMs)) {
+                finishCook(now, "death");
+                lookAround(client, now);
+                return;
+            } else {
+                target = null; // keep tagged; wait for the bar
             }
-            target = null;
-            tagged = false;
         }
 
-        // stale un-killable target
+        // stale un-killable target (never got a tap off)
         if (target != null && !tagged && now - targetPickedAt > 12_000) {
             target = null;
         }
@@ -173,60 +224,50 @@ public class CombatController {
             target = null;
         }
 
-        if (target == null) {
-            if (nextTarget != null && validMob(client, nextTarget)) {
-                target = nextTarget;            // already lined up on it during the last cook
+        // Next selection starts only after the previous cook is fully over.
+        if (target == null && !tagged) {
+            boolean linedUp = nextTarget != null && validMob(client, nextTarget);
+            if (linedUp) {
+                target = nextTarget;
             } else {
                 target = pickTarget(client, null);
-                if (target == null) { nextTarget = null; releaseKeys(client); decayAim(client); return; }
-                // fresh target -> new random approach style (curved path variation)
+                if (target == null) { nextTarget = null; releaseKeys(client); lookAround(client, now); return; }
                 approachYawOffset = (float) ((rng.nextDouble() * 2 - 1) * cfg.approachYawOffsetMaxDeg / speedFactor(client));
             }
             nextTarget = null;
             nextTargetDesc = null;
             targetPickedAt = now;
             readNameplate(target);
+            human.onNewTarget(now, linedUp);
             if (logger != null) {
                 logger.log("tag_intent", "mob", targetMob, "rarity", targetRarity, "level", targetLevel);
             }
         }
 
         if (tagged) {
-            // Engagement started — the server is cooking it and we must stay in
-            // range, but there's no reason to stare at it. Use the wait to pick
-            // the next mob (re-scanned every nextTargetRescanMs so a better one
-            // spawning nearby gets noticed) and swing the camera onto it, so the
-            // moment this one dies we're already facing the next approach.
+            cookTick(client, now);
+            return;
+        }
+
+        // spotted a mob: look at it for a beat before the legs start (a person
+        // notices, then commits — they don't strafe the same tick they acquire)
+        if (human.noticing(now)) {
             releaseKeys(client);
-            if (nextTarget == null || !validMob(client, nextTarget) || now - nextPickedAt > cfg.nextTargetRescanMs) {
-                LivingEntity n = pickTarget(client, target);
-                if (n != nextTarget) {
-                    nextTarget = n;
-                    approachYawOffset = (float) ((rng.nextDouble() * 2 - 1) * cfg.approachYawOffsetMaxDeg / speedFactor(client));
-                    nextTargetDesc = n != null ? describe(n) : null;
-                }
-                nextPickedAt = now;
-            }
-            if (nextTarget == null || !cfg.preAimNext) { decayAim(client); return; }
-            aimTick(client, nextTarget);
-            // Pre-walk toward it while the leash allows, so the next approach is
-            // partly (often fully) done by the time this one dies. Stop a little
-            // inside the leash so lag never drags us out of range, and don't
-            // walk THROUGH the cooking mob (shoving it trips the ghost filter).
-            double leash = client.player.distanceTo(target);
-            double toNext = client.player.distanceTo(nextTarget);
-            boolean roomOnLeash = leash + coastDistance(client) < cookLeash - 0.25;
-            boolean throughTarget = leash < toNext
-                && Math.abs(MathHelper.wrapDegrees(bearingTo(client, nextTarget) - bearingTo(client, target))) < 35f;
-            if (cfg.movement && toNext > cfg.reach && roomOnLeash && !throughTarget) moveToward(client, toNext, false);
-            else releaseKeys(client);
+            aimAt(client, human.gazePoint(client, target, null, false, now), true);
             return;
         }
 
         double dist = client.player.distanceTo(target);
-        double aimErr = aimTick(client, target);
+        if (human.microPausing(dist, now)) {
+            releaseKeys(client);
+            aimAt(client, human.gazePoint(client, target, null, false, now), true);
+            return;
+        }
+
+        double aimErr = aimAt(client, human.gazePoint(client, target, null, false, now), true);
 
         if (dist > cfg.reach) {
+            human.leftReach();
             if (cfg.movement) moveToward(client, dist, true);
             return;
         }
@@ -237,17 +278,240 @@ public class CombatController {
         // our own momentum. Drop sprint and let the STOP packet go out first —
         // the tap happens next tick, 50 ms later.
         if (client.player.isSprinting()) { client.player.setSprinting(false); return; }
+        if (human.waitingToTap(now)) return;
         if (!tagged && now - lastTapAt >= cfg.tapCooldownMs && aimErr <= cfg.aimTapMaxErrorDeg) {
             client.interactionManager.attackEntity(client.player, target);
             client.player.swingHand(Hand.MAIN_HAND);
             lastTapAt = now;
             tagAt = now;
             tagged = true;
+            barsAtTag = new HashSet<>(BossBars.ids(client));
+            cookBarId = null;
+            cookBarSeen = false;
+            cookBarGone = false;
+            cookBarPercent = -1f;
+            cookBarTitle = null;
+            cookBarZeroTicks = 0;
+            cookBarPercentAtLatch = 1f;
+            cookBarLatchedAt = 0;
+            ignoredEventBars.clear();
             cookLeash = rng.nextDouble(cfg.cookLeashMinBlocks, Math.max(cfg.cookLeashMinBlocks + 0.01, cfg.cookLeashMaxBlocks));
+            human.onTagged(now);
             if (logger != null) {
-                logger.log("tag", "mob", targetMob, "rarity", targetRarity, "level", targetLevel);
+                logger.log("tag", "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
+                    "cookStyle", human.cookStyle.name());
             }
         }
+    }
+
+    /**
+     * Fight in progress: stay near the tagged mob so the server keeps
+     * auto-attacking, look around like a person. Do NOT pick the next mob
+     * until the boss bar expires.
+     */
+    private void cookTick(MinecraftClient client, long now) {
+        aimAt(client, human.gazePoint(client, target, null, true, now), false);
+
+        if (target == null) {
+            releaseKeys(client);
+            return;
+        }
+
+        double leash = client.player.distanceTo(target);
+        boolean roomOnLeash = leash + coastDistance(client) < cookLeash - 0.25;
+
+        int fidget = human.cookFidgetStrafe(now);
+        if (cfg.movement && fidget != 0 && roomOnLeash && leash > 0.9) {
+            client.options.forwardKey.setPressed(false);
+            client.options.backKey.setPressed(false);
+            client.options.jumpKey.setPressed(false);
+            client.options.leftKey.setPressed(fidget < 0);
+            client.options.rightKey.setPressed(fidget > 0);
+            client.options.sprintKey.setPressed(false);
+            return;
+        }
+        releaseKeys(client);
+    }
+
+    private static boolean entityGone(LivingEntity e) {
+        return e.isRemoved() || e.isDead() || !e.isAlive();
+    }
+
+    private void updateCookBar(MinecraftClient client) {
+        if (!cfg.cookDoneOnBossBar) return;
+        Map<UUID, ClientBossBar> bars = BossBars.current(client);
+        long now = System.currentTimeMillis();
+
+        // An event popup during the fight must never be treated as the cook
+        // finishing — and if we latched one by mistake, drop it and keep looking.
+        if (cookBarId != null) {
+            ClientBossBar held = bars.get(cookBarId);
+            if (held != null && BossBars.ignoredForCook(held.getName().getString(), cfg.cookBarIgnorePatterns)) {
+                if (logger != null) {
+                    logger.log("cook_bar_unlatched", "reason", "event",
+                        "title", held.getName().getString());
+                }
+                rememberIgnored(cookBarId, held.getName().getString(), held.getPercent());
+                clearLatchOnly();
+            } else if (held != null && stalledEventDisguise(held, now)) {
+                if (logger != null) {
+                    logger.log("cook_bar_unlatched", "reason", "stalled-event",
+                        "title", held.getName().getString(), "percent", held.getPercent());
+                }
+                rememberIgnored(cookBarId, held.getName().getString(), held.getPercent());
+                clearLatchOnly();
+            }
+        }
+
+        if (cookBarId == null) {
+            latchBestCookBar(bars, now);
+            return;
+        }
+
+        // Prefer a bar that actually names this mob if we latched a generic one
+        // and the real HP bar showed up a tick later.
+        if (!BossBars.looksLikeCookBar(cookBarTitle, targetMob, targetRarity)) {
+            UUID better = bestCookCandidate(bars);
+            if (better != null && !better.equals(cookBarId)) {
+                ClientBossBar b = bars.get(better);
+                if (b != null && BossBars.looksLikeCookBar(b.getName().getString(), targetMob, targetRarity)) {
+                    latch(better, b, now);
+                }
+            }
+        }
+
+        ClientBossBar bar = bars.get(cookBarId);
+        if (bar == null) {
+            cookBarGone = true;
+            return;
+        }
+        cookBarPercent = bar.getPercent();
+        cookBarTitle = bar.getName().getString();
+        if (cookBarPercent <= 0.005f) {
+            cookBarZeroTicks++;
+            if (cookBarZeroTicks >= 3) cookBarGone = true;
+        } else {
+            cookBarZeroTicks = 0;
+        }
+    }
+
+    private void latchBestCookBar(Map<UUID, ClientBossBar> bars, long now) {
+        UUID id = bestCookCandidate(bars);
+        if (id == null) return;
+        ClientBossBar bar = bars.get(id);
+        if (bar == null) return;
+        latch(id, bar, now);
+    }
+
+    private UUID bestCookCandidate(Map<UUID, ClientBossBar> bars) {
+        UUID bestId = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (var e : bars.entrySet()) {
+            if (barsAtTag.contains(e.getKey()) || ignoredEventBars.contains(e.getKey())) continue;
+            String title = e.getValue().getName().getString();
+            if (BossBars.ignoredForCook(title, cfg.cookBarIgnorePatterns)) {
+                rememberIgnored(e.getKey(), title, e.getValue().getPercent());
+                continue;
+            }
+            int score = BossBars.cookScore(title, e.getValue().getPercent(), targetMob, targetRarity);
+            if (score > bestScore) {
+                bestScore = score;
+                bestId = e.getKey();
+            }
+        }
+        return bestId;
+    }
+
+    private void latch(UUID id, ClientBossBar bar, long now) {
+        cookBarId = id;
+        cookBarSeen = true;
+        cookBarGone = false;
+        cookBarTitle = bar.getName().getString();
+        cookBarPercent = bar.getPercent();
+        cookBarPercentAtLatch = cookBarPercent;
+        cookBarLatchedAt = now;
+        cookBarZeroTicks = 0;
+        if (logger != null) {
+            logger.log("cook_bar", "title", cookBarTitle, "percent", cookBarPercent,
+                "cookLike", BossBars.looksLikeCookBar(cookBarTitle, targetMob, targetRarity));
+        }
+    }
+
+    /** Event bars drain over minutes; cook HP drops in seconds. No nameplate match + no drain → not the fight. */
+    private boolean stalledEventDisguise(ClientBossBar bar, long now) {
+        if (now - cookBarLatchedAt < 4000) return false;
+        if (BossBars.looksLikeCookBar(bar.getName().getString(), targetMob, targetRarity)) return false;
+        return bar.getPercent() > cookBarPercentAtLatch - 0.01f;
+    }
+
+    private void rememberIgnored(UUID id, String title, float percent) {
+        if (!ignoredEventBars.add(id)) return;
+        if (logger != null) logger.log("event_bar_ignored", "title", title, "percent", percent);
+    }
+
+    private void clearLatchOnly() {
+        cookBarId = null;
+        cookBarSeen = false;
+        cookBarGone = false;
+        cookBarPercent = -1f;
+        cookBarTitle = null;
+        cookBarZeroTicks = 0;
+        cookBarLatchedAt = 0;
+    }
+
+    /** True when this fight is over and we may start the next selection. */
+    private boolean cookComplete(long now) {
+        if (cookBarSeen && cookBarGone) return true;
+        if (!cfg.cookDoneOnBossBar) {
+            return target == null || entityGone(target);
+        }
+        // No fight bar showed up — fall back to the entity disappearing.
+        if (!cookBarSeen && now - tagAt > cfg.cookBarAppearMs) {
+            return target == null || entityGone(target);
+        }
+        return false;
+    }
+
+    private void finishCook(long now, String via) {
+        kills++;
+        stats.recordKill();
+        if (logger != null) {
+            logger.log("kill",
+                "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
+                "timeToKillMs", now - tagAt, "kills", kills, "via", via,
+                "bar", cookBarTitle, "barPct", cookBarPercent);
+        }
+        // Corpse that outlived the bar is a ghost — don't tap it again.
+        if (target != null && !entityGone(target) && cfg.stationaryOnly) {
+            ghosts.add(target.getId());
+            ghostsIgnored++;
+        }
+        target = null;
+        nextTarget = null;
+        nextTargetDesc = null;
+        tagged = false;
+        clearCookBar();
+        nextActionAt = now + human.reactionDelay();
+    }
+
+    private void clearCookBar() {
+        barsAtTag = Set.of();
+        cookBarId = null;
+        cookBarSeen = false;
+        cookBarGone = false;
+        cookBarPercent = -1f;
+        cookBarTitle = null;
+        cookBarZeroTicks = 0;
+        cookBarPercentAtLatch = 1f;
+        cookBarLatchedAt = 0;
+        ignoredEventBars.clear();
+    }
+
+    /** Idle / waiting: keep the eyes moving so the mouse never parks. */
+    private void lookAround(MinecraftClient client, long now) {
+        human.idleLook(client, now);
+        Vec3d pt = human.gazePoint(client, target, nextTarget, tagged, now);
+        aimAt(client, pt, false);
     }
 
     /**
@@ -271,11 +535,6 @@ public class CombatController {
         return Math.sqrt(v.x * v.x + v.z * v.z) * cfg.coastFactor;
     }
 
-    private static float bearingTo(MinecraftClient client, Entity e) {
-        Vec3d rel = e.getEntityPos().subtract(client.player.getEntityPos());
-        return (float) (Math.toDegrees(Math.atan2(rel.z, rel.x)) - 90.0);
-    }
-
     private void moveToward(MinecraftClient client, double dist, boolean allowSprint) {
         // Coast in: let go once we'd slide into reach anyway. If we come up a
         // little short the next tick just nudges W again — a normal-looking step.
@@ -288,6 +547,7 @@ public class CombatController {
             && Math.abs(MathHelper.wrapDegrees(err - prevOct * 45f)) < 22.5f + cfg.moveHysteresisDeg) {
             oct = prevOct;
         }
+        oct = human.delayOctant(oct, prevOct);
         prevOct = oct;
 
         int a = Math.abs(oct);
@@ -308,7 +568,7 @@ public class CombatController {
         boolean aligned = Math.abs(err) < cfg.sprintAlignMaxDeg;
         double toGo = dist - cfg.reach;
         boolean wantSprint = allowSprint && cfg.sprint && forward && aligned && toGo > cfg.sprintMinDistance;
-        if (wantSprint && !client.player.isSprinting() && canStartSprint(client)) {
+        if (human.sprintWarmedUp(wantSprint) && !client.player.isSprinting() && canStartSprint(client)) {
             client.player.setSprinting(true);
         }
         boolean hop = allowSprint && cfg.sprintJump && client.player.isSprinting() && aligned && toGo > cfg.sprintJumpMinDistance;
@@ -506,17 +766,17 @@ public class CombatController {
     }
 
     /**
-     * Momentum-based aiming. The camera has angular velocity and an
-     * acceleration cap: every turn ramps up, coasts, and eases out —
+     * Momentum-based aiming at a world point. The camera has angular velocity
+     * and an acceleration cap: every turn ramps up, coasts, and eases out —
      * nothing ever snaps. Returns the remaining aim error in degrees.
      *
-     * Feel is driven by cfg.aimAgility (0..1):
+     * Feel is driven by the session's agility (config ± a little personality):
      *   turn speed cap:  120..420 deg/s
      *   acceleration:    250..1600 deg/s²
      */
-    private double aimTick(MinecraftClient client, Entity target) {
+    private double aimAt(MinecraftClient client, Vec3d aim, boolean approachLead) {
+        human.tickAimHeight();
         Vec3d eye = client.player.getEyePos();
-        Vec3d aim = target.getEntityPos().add(0, target.getHeight() * 0.6, 0);
         double dx = aim.x - eye.x;
         double dy = aim.y - eye.y;
         double dz = aim.z - eye.z;
@@ -527,10 +787,15 @@ public class CombatController {
         // Curved-approach lead: bias the aim off-center while far away, decaying
         // to 0 within reach so the tap still lands dead-on. Different sign/size
         // per target -> a different arc every time instead of straight lines.
-        if (approachYawOffset != 0f) {
+        if (approachLead && approachYawOffset != 0f) {
             double lead = (distXZ - cfg.reach) / 8.0;      // full offset ~8 blocks out
             lead = MathHelper.clamp(lead, 0.0, 1.0);
             wantYaw += approachYawOffset * (float) lead;
+        }
+
+        if (cfg.humanize) {
+            wantYaw += human.yawNoise();
+            wantPitch += human.pitchNoise();
         }
 
         float yawErr = MathHelper.wrapDegrees(wantYaw - client.player.getYaw());
@@ -538,19 +803,24 @@ public class CombatController {
         lastYawErrSigned = yawErr;
         double err = Math.sqrt(yawErr * yawErr + pitchErr * pitchErr);
 
-        double a = MathHelper.clamp(cfg.aimAgility, 0.05, 1.0);
+        double a = MathHelper.clamp(human.agility, 0.05, 1.0);
         float maxSpeed = (float) ((120.0 + 300.0 * a) / 20.0);   // deg per tick
         float accel = (float) ((250.0 + 1350.0 * a) / 400.0);    // deg per tick per tick
 
         if (err < cfg.aimDeadzoneDeg) {
-            // close enough — bleed off momentum instead of pixel-tracking
+            // close enough — bleed off momentum instead of pixel-tracking, but
+            // keep a whisper of noise so the crosshair never parks on a pixel
             yawVel *= 0.7f;
             pitchVel *= 0.7f;
+            if (cfg.humanize) {
+                yawVel += human.yawNoise() * 0.12f;
+                pitchVel += human.pitchNoise() * 0.12f;
+            }
         } else {
             yawVel = approachVel(yawVel, yawErr, maxSpeed, accel);
             pitchVel = approachVel(pitchVel, pitchErr, maxSpeed * 0.6f, accel * 0.8f);
             // faint hand tremor, proportional to how fast we're turning
-            float tremor = Math.abs(yawVel) * 0.04f;
+            float tremor = Math.abs(yawVel) * 0.05f;
             if (tremor > 0.01f) {
                 ThreadLocalRandom r = ThreadLocalRandom.current();
                 yawVel += (r.nextFloat() - 0.5f) * tremor;
@@ -572,18 +842,5 @@ public class CombatController {
         float desired = MathHelper.clamp(error * 0.25f, -maxSpeed, maxSpeed);
         float dv = MathHelper.clamp(desired - vel, -accel, accel);
         return vel + dv;
-    }
-
-    /** No target / idle: coast the camera to a stop rather than freezing it. */
-    private void decayAim(MinecraftClient client) {
-        if (Math.abs(yawVel) < 0.02f && Math.abs(pitchVel) < 0.02f) {
-            yawVel = 0f;
-            pitchVel = 0f;
-            return;
-        }
-        yawVel *= 0.85f;
-        pitchVel *= 0.85f;
-        client.player.setYaw(client.player.getYaw() + yawVel);
-        client.player.setPitch(MathHelper.clamp(client.player.getPitch() + pitchVel, -89f, 89f));
     }
 }

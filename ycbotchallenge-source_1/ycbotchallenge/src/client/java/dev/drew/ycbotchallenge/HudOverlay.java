@@ -26,7 +26,8 @@ public class HudOverlay {
 
         List<String> lines = new ArrayList<>();
         lines.add("YCBotChallenge " + (on ? "§aON§r" : "§cOFF§r")
-            + "  §7sprint " + (cfg.sprint ? "§aon" : "§8off") + "§r");
+            + "  §7sprint " + (cfg.sprint ? "§aon" : "§8off")
+            + "  §7human " + (cfg.humanize ? "§aon" : "§8off") + "§r");
         if (!on && "captcha".equals(YCBotChallengeClient.pausedReason)) {
             lines.add("§eCAPTCHA — solve it, then press the toggle key§r");
         }

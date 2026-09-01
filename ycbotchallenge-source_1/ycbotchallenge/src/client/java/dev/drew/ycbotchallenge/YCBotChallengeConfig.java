@@ -2,6 +2,8 @@ package dev.drew.ycbotchallenge;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,11 +15,43 @@ public class YCBotChallengeConfig {
     public double reach = 3.0;
     public double targetRange = 50.0;
     public int tapCooldownMs = 300;
-    public int reactionDelayMinMs = 120;
-    public int reactionDelayMaxMs = 350;
-    public double idleChancePerMinute = 0.5;
+    public int reactionDelayMinMs = 160;
+    public int reactionDelayMaxMs = 480;
+    public double idleChancePerMinute = 1.1;
     public int idleMinMs = 800;
     public int idleMaxMs = 3000;
+
+    /**
+     * Body language. When true the grind loop still tags one stationary mob
+     * at a time, but the camera, keys, and timing stop looking like a state
+     * machine: gaze wanders during cook, the mouse never parks, taps wait a
+     * beat after arriving, WASD changes lag a tick, sprint doesn't start the
+     * instant W is held. Disable to get the old metronomic loop back.
+     */
+    public boolean humanize = true;
+    /** Scales the always-on camera drift/tremor (1.0 = default; 0 = off). */
+    public double cameraNoiseScale = 1.0;
+    /** Look-at-the-mob pause before the legs start, on a freshly spotted target. */
+    public int noticeDelayMinMs = 90;
+    public int noticeDelayMaxMs = 280;
+    /** Extra wait after arriving in reach, before the tap. */
+    public int tapHesitationMinMs = 70;
+    public int tapHesitationMaxMs = 220;
+    /** Chance of a longer "is this the one?" beat on top of tap hesitation. */
+    public double tapHesitationLongChance = 0.08;
+    /** Short hitches mid-walk (per minute). Keep modest or KPM tanks. */
+    public double microPauseChancePerMinute = 2.2;
+    public int microPauseMinMs = 120;
+    public int microPauseMaxMs = 380;
+    /**
+     * How a cook wait is spent (remainder after efficient+watch = fidget).
+     * Efficient = old pre-walk-to-next. Watch = stare at the tagged mob with
+     * glances away. Fidget = look around the pad and occasional sidesteps.
+     */
+    public double cookEfficientChance = 0.42;
+    public double cookWatchChance = 0.38;
+    /** Max extra ticks before a WASD octant change is applied (0–this, rolled). */
+    public int keyTransitionMaxTicks = 3;
     public boolean movement = true;
     /**
      * Sprint whenever we're running forward at the target and still more than
@@ -69,9 +103,9 @@ public class YCBotChallengeConfig {
      */
     public double aimAgility = 0.4;
     /** Stop micro-adjusting once within this many degrees of the target (humans don't pixel-track). */
-    public double aimDeadzoneDeg = 2.5;
+    public double aimDeadzoneDeg = 3.2;
     /** Only tap the mob when actually looking at it — aim error must be under this. */
-    public double aimTapMaxErrorDeg = 25.0;
+    public double aimTapMaxErrorDeg = 22.0;
     /**
      * Target choice = lowest estimated travel cost, in blocks:
      *   cost = distance + turnCostBlocks * (angle off camera / 180).
@@ -100,14 +134,27 @@ public class YCBotChallengeConfig {
     public Map<String, Double> rarityBonusBlocks = Map.of(
         "UNCOMMON", 1.5, "RARE", 4.0, "EPIC", 8.0, "LEGENDARY", 12.0);
     /**
-     * While a tagged mob cooks we can't tag another, but we don't need to watch
-     * it: pick the next mob, pre-aim at it, and walk toward it as far as the
-     * leash allows (the server keeps auto-attacking while we're near the tagged
-     * mob). The leash is re-rolled between min and max on every tag so how far
-     * we drift varies kill to kill. The pick is re-evaluated every
-     * nextTargetRescanMs so a rarer mob spawning nearby gets noticed.
+     * A tap starts a fight: the server puts up a boss health bar and
+     * auto-attacks. The cook is over when THAT BAR expires — not when the
+     * client entity despawns (corpses linger as ghosts). Next selection
+     * starts only after the bar is gone. If no bar appears within
+     * cookBarAppearMs we fall back to entity despawn.
      */
-    public boolean preAimNext = true;
+    public boolean cookDoneOnBossBar = true;
+    public int cookBarAppearMs = 1500;
+    /**
+     * Extra title fragments that mean "event/boost bar, not cook HP".
+     * Built-in filter already skips timers ((12m, 9s)), multipliers (2x),
+     * and words like boost/harvest/event/vote/sale/party. Add server-specific
+     * names here if a new event bar still gets grabbed.
+     */
+    public List<String> cookBarIgnorePatterns = List.of();
+    /**
+     * Stay this close to the tagged mob while the bar is up so the server
+     * keeps auto-attacking. Rolled per tag. We do not walk off to the next
+     * mob until the bar expires.
+     */
+    public boolean preAimNext = false;
     public int nextTargetRescanMs = 750;
     public double cookLeashMinBlocks = 2.0;
     public double cookLeashMaxBlocks = 4.0;
@@ -229,7 +276,7 @@ public class YCBotChallengeConfig {
     public boolean targetDominant = true;
     /** Dominant filtering only kicks in when the top mob type has at least this many alive in range. */
     public int minDominantPack = 3;
-    /** Abandon a tagged mob that still hasn't died after this long (client-side ghost / unkillable). Set ~2x your average time-to-kill. */
+    /** Abandon a tagged fight if the boss bar hasn't expired after this long. Set ~2x your average time-to-kill. */
     public int maxCookMs = 90000;
     public boolean hud = true;
     public int hudX = 4;
@@ -261,7 +308,20 @@ public class YCBotChallengeConfig {
     public static YCBotChallengeConfig load(Path file) {
         try {
             if (Files.exists(file)) {
-                return GSON.fromJson(Files.readString(file), YCBotChallengeConfig.class);
+                JsonObject raw = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+                // Gson may skip field initializers; fill any keys added in a newer
+                // build so humanize (etc.) doesn't silently come through as false/0.
+                JsonObject def = GSON.toJsonTree(new YCBotChallengeConfig()).getAsJsonObject();
+                boolean missing = false;
+                for (var e : def.entrySet()) {
+                    if (!raw.has(e.getKey())) {
+                        raw.add(e.getKey(), e.getValue());
+                        missing = true;
+                    }
+                }
+                YCBotChallengeConfig cfg = GSON.fromJson(raw, YCBotChallengeConfig.class);
+                if (missing) cfg.save(file);
+                return cfg;
             }
         } catch (Exception e) {
             YCBotChallengeClient.LOGGER.warn("Failed to read config, using defaults: {}", e.toString());

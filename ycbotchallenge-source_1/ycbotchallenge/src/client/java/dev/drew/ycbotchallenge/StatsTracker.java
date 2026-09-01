@@ -2,7 +2,6 @@ package dev.drew.ycbotchallenge;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import dev.drew.ycbotchallenge.mixin.BossBarHudAccessor;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -10,6 +9,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.minecraft.client.MinecraftClient;
@@ -155,15 +155,12 @@ public class StatsTracker {
     }
 
     private void pollBossBars(MinecraftClient client) {
-        Map<?, ClientBossBar> bars;
-        try {
-            bars = ((BossBarHudAccessor) client.inGameHud.getBossBarHud()).ycBotChallenge$getBossBars();
-        } catch (Throwable t) {
-            return;
-        }
+        Map<UUID, ClientBossBar> bars = BossBars.current(client);
         Set<String> current = new HashSet<>();
         for (ClientBossBar bar : bars.values()) {
             String title = bar.getName().getString();
+            // Fight HP bars are not boosts — only timed/2x event bars.
+            if (!BossBars.looksLikeBoost(title)) continue;
             // "Soul Harvest 2x Souls (12m, 9s)" -> key off text before the timer parens
             int paren = title.lastIndexOf('(');
             String key = (paren > 0 ? title.substring(0, paren) : title).trim();
