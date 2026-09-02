@@ -28,7 +28,9 @@ Drop `ycbotchallenge-0.5.1.jar` into your `mods/` folder alongside Fabric Loader
 
 ### Economy (upgrade loop)
 
-Buy-or-learn. On enable the bot types `/bal` then `/swordmax` once (`startupProbes`) to seed the balance and remaining cost. From then on the preferred command *is* the probe: a fail response parses to the exact remaining gap, and the next attempt is scheduled at `now + gap / incomeRate` (income rate = slope of balance samples over the trailing 5 min; the sidebar money line feeds it continuously, `/bal` is just the startup seed). No blind timers.
+Buy-or-learn, kill-driven. There is no buy timer: every kill schedules one affordability evaluation a second or two later (`postKillEvalDelayMin/MaxMs`, default 1.5–2.5 s — the couple of seconds the scoreboard balance needs to update). At eval: if `bal >= remaining` for the preferred kind, buy; if not, the next kill re-evaluates; if cost/balance is unknown, a probe fires at most once per `probeMinIntervalMs` (75 s hard cap — never more than ~2 in 2–3 min). On enable the bot types `/bal` then `/swordmax` once (`startupProbes`) to seed both numbers; the sidebar money line keeps the balance fresh from then on.
+
+Zone becomes the preferred buy when median TTK drops under `zoneReadyTtkMs` AND you've landed at least `zoneMinSwordBuysThisZone` (default 1) sword upgrades in the current zone — fresh-zone mobs are giga slow, so the sword catches up before you move up.
 
 A *successful* buy re-sends the same command a second or two later — up-arrow + enter, like a player checking the next price. Since a success maxes the tier, the re-send's fail line teaches the next gap. A `maxed` response retires that kind for the session.
 
@@ -36,7 +38,7 @@ Zone changes force a full targeting reset: new zone = new mobs, so the target/lo
 
 ### Stop protocol + TTK
 
-- **Stop protocol** (`stopProtocolEnabled`): two triggers. (1) A single-tick displacement over `teleportThresholdBlocks` (12) — being teleported mid-grind means pulled for a check — stops instantly. (2) A non-whitelisted player continuously within `playerRadarRadius` (48) for `playerRadarDwellMs` (5 s) — this gamemode is solo while grinding, so a lingering stranger is staff. NPCs standing in the grind area never qualify: whitelist them by name (`playerRadarWhitelist`, §-codes stripped) and/or set `playerRadarIgnoreStationaryMs` (>0) to ignore anyone who hasn't moved that long. First sightings are logged as `radar_seen` so you can grab an NPC's exact name. Fires a `stop_protocol` event and a red chat notice.
+- **Stop protocol** (`stopProtocolEnabled`): teleport first, radar second. A single-tick displacement over `teleportThresholdBlocks` (12) stops instantly and *arms* the player radar for the rest of the session (`playerRadarArmAfterTeleport`, default on — dormant during normal grinding, so the zone NPC can never trip it). Once armed, a non-whitelisted player continuously within `playerRadarRadius` (48) for `playerRadarDwellMs` (5 s) stops the bot — a lingering stranger is staff. `playerRadarWhitelist` (matches any line of multi-line plates, §-codes stripped) and `playerRadarIgnoreStationaryMs` remain as second-line defenses; first sightings log as `radar_seen`. Fires a `stop_protocol` event and a red chat notice.
 - **TTK** now measures connect → boss-bar-gone (server-authoritative death) instead of client-side entity removal, which ghosts were glitching. A bar that vanishes under `barVanishMinCookMs` with the entity still alive counts as a tag that didn't stick, not a kill.
 - **Rarity HP scaling**: kill durations are normalized by `rarityHpScale` (default RARE +15%, EPIC +30%, LEGENDARY +40%) before entering the TTK window, so a tanky legendary doesn't read as slow farming. Mobs with no rarity tag get 1.0 (the nameplate parser can't see a tag that isn't there).
 
