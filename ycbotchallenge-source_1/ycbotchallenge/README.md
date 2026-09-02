@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.9.3.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.9.4.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -53,7 +53,7 @@ The sidebar is reread every second: the `Your Balance` money row feeds the buy p
 
 ### Stop protocol + TTK
 
-- **Stop protocol** (`stopProtocolEnabled`): teleport first, radar second. A single-tick displacement over `teleportThresholdBlocks` (12) stops instantly and *arms* the player radar for the rest of the session (`playerRadarArmAfterTeleport`, default on — dormant during normal grinding, so the zone NPC can never trip it). Once armed, a non-whitelisted player continuously within `playerRadarRadius` (48) for `playerRadarDwellMs` (5 s) stops the bot — a lingering stranger is staff. `playerRadarWhitelist` (matches any line of multi-line plates, §-codes stripped) and `playerRadarIgnoreStationaryMs` remain as second-line defenses; first sightings log as `radar_seen`. Fires a `stop_protocol` event and a red chat notice.
+- **Stop protocol** (`stopProtocolEnabled`): teleport first, radar second. A single-tick displacement over `teleportThresholdBlocks` (12) stops instantly and *arms* the player radar for the rest of the session (`playerRadarArmAfterTeleport`, default on). Our own `/zone max` advances are exempt — they neither stop the bot nor arm the radar, so zone NPCs and AFK fixtures can never trip it mid-grind. Once armed, a non-whitelisted player continuously within `playerRadarRadius` (48) for `playerRadarDwellMs` (5 s) stops the bot — a lingering stranger is staff. `playerRadarWhitelist` (matches any line of multi-line plates, §-codes and small caps normalized) and `playerRadarIgnoreStationaryMs` remain as second-line defenses; first sightings log as `radar_seen`. Fires a `stop_protocol` event and a red chat notice.
 - **TTK** now measures connect → boss-bar-gone (server-authoritative death) instead of client-side entity removal, which ghosts were glitching. A bar that vanishes under `barVanishMinCookMs` with the entity still alive counts as a tag that didn't stick, not a kill.
 - **Rarity HP scaling**: kill durations are normalized by `rarityHpScale` (default RARE +15%, EPIC +30%, LEGENDARY +40%) before entering the TTK window, so a tanky legendary doesn't read as slow farming. Mobs with no rarity tag get 1.0 (the nameplate parser can't see a tag that isn't there).
 
