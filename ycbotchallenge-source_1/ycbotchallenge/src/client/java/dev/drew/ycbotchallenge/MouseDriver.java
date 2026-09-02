@@ -95,10 +95,11 @@ public final class MouseDriver {
         float endYaw = curYaw + dy;
         float endPitch = MathHelper.clamp(curPitch + dp, -89f, 89f);
 
-        // Cubic bezier with a slight perpendicular bump so the path isn't a straight line.
+        // Cubic bezier with a pronounced perpendicular bump — the swoop is the human part.
         float nx = dist > 1e-3 ? (float) (-dp / dist) : 0f;
         float ny = dist > 1e-3 ? (float) (dy / dist) : 0f;
-        float amp = (float) (dist * (0.03 + rng.nextDouble() * 0.08) * (rng.nextBoolean() ? 1 : -1));
+        double bumpPct = cfg.curveBumpMinPct + rng.nextDouble() * Math.max(0, cfg.curveBumpMaxPct - cfg.curveBumpMinPct);
+        float amp = (float) (dist * bumpPct * (rng.nextBoolean() ? 1 : -1));
 
         if (cfg.ninja && cfg.agilityRegimes) {
             long nowR = System.currentTimeMillis();

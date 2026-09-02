@@ -368,6 +368,9 @@ public class YCBotChallengeConfig {
     public int distractionMaxMs = 12_000;
     /** Blend a new look intent into the in-flight path (velocity-continuous). Off by default: mid-path re-targets read as servo ticking. */
     public boolean mouseChaining = false;
+    /** Perpendicular curve bump as a fraction of flick distance (random side per flick). The swoop is the human part. */
+    public double curveBumpMinPct = 0.07;
+    public double curveBumpMaxPct = 0.22;
     /** Subtle flick-tempo rotation (±~10%) so no single Fitts regression fits a session. */
     public boolean agilityRegimes = true;
     public int regimeDwellMinMs = 45_000;
