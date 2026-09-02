@@ -233,6 +233,14 @@ public class CombatController {
                 double jumped = pos.distanceTo(lastTickPos);
                 if (jumped > cfg.teleportThresholdBlocks) {
                     teleportSeen = true; // arms the player radar for the rest of the session
+                    if (stats.isTeleportExpected(now)) {
+                        // our own /zone max advance — not a staff pull
+                        stats.clearTeleportExpected();
+                        if (logger != null) logger.log("zone_teleport", "blocks", Math.round(jumped));
+                        lastTickPos = null;
+                        releaseKeys(client);
+                        return;
+                    }
                     stopRequest = "teleport (" + Math.round(jumped) + " blocks)";
                     lastTickPos = null;
                     releaseKeys(client);
