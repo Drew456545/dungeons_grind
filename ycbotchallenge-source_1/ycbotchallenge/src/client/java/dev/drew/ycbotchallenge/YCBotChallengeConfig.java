@@ -330,10 +330,10 @@ public class YCBotChallengeConfig {
         "/(?i)(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})[\\s\\S]{0,40}?(?:more|needed|remaining)[\\s\\S]{0,20}?zone/"
     );
     public List<String> upgradeSuccessPatterns = List.of(
-        "upgraded", "purchased", "bought", "maxed", "enchanted"
+        "upgraded", "purchased", "bought", "maxed", "enchanted", "unlocked"
     );
     public List<String> upgradeFailPatterns = List.of(
-        "not enough", "can't afford", "cannot afford", "insufficient", "need more"
+        "not enough", "can't afford", "cannot afford", "insufficient", "need more", "have enough"
     );
     /** Response lines meaning the kind is fully upgraded (no amount present). */
     public List<String> upgradeMaxedPatterns = List.of("maxed", "max level", "fully upgraded");
@@ -343,10 +343,9 @@ public class YCBotChallengeConfig {
     /** On bot enable, type balCommand then swordCommand once to seed balance + remaining cost. No recurring probes. */
     public boolean startupProbes = true;
     public String balCommand = "/bal";
-    /** Reply patterns for balCommand; named group {@code amount} or first group. Plain substrings or /regex/. */
+    /** Reply lines for balCommand (e.g. "- Money: 45.22B"); named group {@code amount} or first group. Only accepted within 8s of a /bal send. */
     public List<String> balPatterns = List.of(
-        "/(?i)(?:balance|money|bal)\\s*:?\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
-        "/(?i)\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?:balance|money)/"
+        "/(?i)-?\\s*money\\s*:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/"
     );
     /** Hard cap on unsolicited probe commands (unknown cost/balance). 75s = never more than ~2 in 2-3 min. */
     public int probeMinIntervalMs = 75_000;
@@ -427,6 +426,9 @@ public class YCBotChallengeConfig {
     /** Rarity HP scaling: TTK is divided by (1 + scale) so the zone benchmark compares across rarities. */
     public Map<String, Double> rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
 
+    /** Bump when shipping new default patterns; loaded configs below this get pattern lists replaced. */
+    public int configVersion = 2;
+
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     public static YCBotChallengeConfig load(Path file) {
@@ -434,7 +436,9 @@ public class YCBotChallengeConfig {
             if (Files.exists(file)) {
                 YCBotChallengeConfig cfg = GSON.fromJson(Files.readString(file), YCBotChallengeConfig.class);
                 if (cfg != null) {
+                    boolean migrated = cfg.migrate();
                     cfg.normalize();
+                    if (migrated) cfg.save(file);
                     return cfg;
                 }
             }
@@ -444,6 +448,22 @@ public class YCBotChallengeConfig {
         YCBotChallengeConfig cfg = new YCBotChallengeConfig();
         cfg.save(file);
         return cfg;
+    }
+
+    /** Old configs keep stale server-specific patterns forever; replace them wholesale on version bumps. */
+    private boolean migrate() {
+        if (configVersion >= 2) return false;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        balancePatterns = fresh.balancePatterns;
+        balPatterns = fresh.balPatterns;
+        swordRemainingPatterns = fresh.swordRemainingPatterns;
+        zoneRemainingPatterns = fresh.zoneRemainingPatterns;
+        upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
+        upgradeFailPatterns = fresh.upgradeFailPatterns;
+        upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
+        playerRadarWhitelist = fresh.playerRadarWhitelist;
+        configVersion = 2;
+        return true;
     }
 
     /** Fill nulls when an older config json is missing new fields. */
