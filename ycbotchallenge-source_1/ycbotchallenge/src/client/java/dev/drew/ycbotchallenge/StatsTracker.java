@@ -41,6 +41,7 @@ public class StatsTracker {
     public Double zoneRemaining = null;
     public boolean becameAffordable = false;
     public String lastUpgradeKind = null;
+    private long lastUpgradeSendAt = 0;
     public final Set<String> activeBoosts = new HashSet<>();
     private final Map<String, Long> boostSince = new HashMap<>();
 
@@ -65,9 +66,24 @@ public class StatsTracker {
     private final List<Pattern> zoneRemainingRes = new ArrayList<>();
     private final List<Pattern> upgradeSuccessRes = new ArrayList<>();
     private final List<Pattern> upgradeFailRes = new ArrayList<>();
+    private final List<Pattern> upgradeMaxedRes = new ArrayList<>();
+    private final List<Pattern> balRes = new ArrayList<>();
 
     /** Set when a captcha chat line is seen; consumed (and cleared) by the main tick. */
     public volatile String captchaMessage = null;
+
+    /** Rolling per-kill durations (tag -> death), ms. */
+    public final ArrayDeque<Long> killDurations = new ArrayDeque<>();
+    public volatile boolean swordMaxed = false;
+    public volatile boolean zoneMaxed = false;
+    /** Median TTK snapshot taken a few kills into a new zone; TTK declines as the sword improves. */
+    private Double zoneBaselineTtkMs = null;
+    private int zoneKills = 0;
+    private Double lastBenchmarkLogged = null;
+    private long lastBenchmarkLogAt = 0;
+    private long lastIncomeLogAt = 0;
+    /** (timeMs, balance) samples from /bal replies and sidebar changes, for the income rate. */
+    private final ArrayDeque<double[]> incomeSamples = new ArrayDeque<>();
 
     public StatsTracker(YCBotChallengeConfig cfg) {
         this.cfg = cfg;
@@ -91,6 +107,10 @@ public class StatsTracker {
             for (String p : cfg.upgradeSuccessPatterns) upgradeSuccessRes.add(compileLoose(p));
         if (cfg.upgradeFailPatterns != null)
             for (String p : cfg.upgradeFailPatterns) upgradeFailRes.add(compileLoose(p));
+        if (cfg.upgradeMaxedPatterns != null)
+            for (String p : cfg.upgradeMaxedPatterns) upgradeMaxedRes.add(compileLoose(p));
+        if (cfg.balPatterns != null)
+            for (String p : cfg.balPatterns) balRes.add(compileLoose(p));
     }
 
     public Double money() {
@@ -105,6 +125,7 @@ public class StatsTracker {
 
     public void noteUpgradeSend(boolean sword) {
         lastUpgradeKind = sword ? "sword" : "zone";
+        lastUpgradeSendAt = System.currentTimeMillis();
     }
 
     private static Pattern compileLoose(String p) {
@@ -141,6 +162,26 @@ public class StatsTracker {
         if (client.world == null || client.player == null) return;
         pollSidebar(client);
         pollBossBars(client);
+        Double ttk = medianTtkMs();
+        if (zone != null && ttk != null) {
+            long now = System.currentTimeMillis();
+            boolean moved = lastBenchmarkLogged == null
+                || Math.abs(ttk - lastBenchmarkLogged) / lastBenchmarkLogged > 0.05;
+            if ((moved && now - lastBenchmarkLogAt > 5_000) || now - lastBenchmarkLogAt > 30_000) {
+                lastBenchmarkLogAt = now;
+                lastBenchmarkLogged = ttk;
+                log("zone_benchmark", "zone", zone, "medianTtkMs", Math.round(ttk),
+                    "baselineTtkMs", zoneBaselineTtkMs != null ? Math.round(zoneBaselineTtkMs) : null,
+                    "zoneKills", zoneKills);
+            }
+        }
+        Double rate = moneyPerMinute();
+        long nowMs = System.currentTimeMillis();
+        if (rate != null && nowMs - lastIncomeLogAt > 15_000) {
+            lastIncomeLogAt = nowMs;
+            Double bal = money();
+            log("income", "moneyPerMin", Math.round(rate), "balance", bal != null ? Math.round(bal) : null);
+        }
     }
 
     private void pollSidebar(MinecraftClient client) {
@@ -158,7 +199,16 @@ public class StatsTracker {
 
     private void handleSidebarLine(String line) {
         Matcher m;
-        if ((m = zoneRe.matcher(line)).find()) zone = m.group(1).trim();
+        if ((m = zoneRe.matcher(line)).find()) {
+            String z = m.group(1).trim();
+            if (!z.equals(zone)) {
+                zone = z;
+                zoneBaselineTtkMs = null;
+                zoneKills = 0;
+                lastBenchmarkLogged = null;
+                log("zone_change", "zone", z);
+            }
+        }
         if ((m = multiplierRe.matcher(line)).find()) multiplier = m.group(1).trim();
         if ((m = rebirthsRe.matcher(line)).find()) {
             try {
@@ -180,6 +230,10 @@ public class StatsTracker {
                 if (prev != null && !prev.equals(raw)) {
                     log("balance", "currency", name, "raw", raw);
                     checkBecameAffordable();
+                    if (name.equalsIgnoreCase(cfg.moneyCurrency)) {
+                        Double v = Amounts.parse(raw);
+                        if (v != null) noteBalance(v);
+                    }
                 }
             }
         }
@@ -326,6 +380,7 @@ public class StatsTracker {
                 break;
             }
         }
+        if (!overlay) parseBalReply(text);
         parseUpgradeChat(text);
         if (overlay) {
             Matcher m = actionBarRe.matcher(text);
@@ -350,35 +405,73 @@ public class StatsTracker {
         }
     }
 
+    /** A balCommand reply: authoritative current balance + income-rate sample. */
+    private void parseBalReply(String text) {
+        for (Pattern p : balRes) {
+            Matcher m = p.matcher(text);
+            if (!m.find()) continue;
+            Double v = amountFrom(m);
+            if (v == null) return;
+            String key = cfg.moneyCurrency == null ? "chicken" : cfg.moneyCurrency.toLowerCase();
+            balances.put(key, Amounts.format(v));
+            noteBalance(v);
+            log("balance_probe", "balance", v, "raw", text);
+            checkBecameAffordable();
+            return;
+        }
+    }
+
     private void parseUpgradeChat(String text) {
         boolean fail = anyMatch(upgradeFailRes, text);
         boolean success = anyMatch(upgradeSuccessRes, text);
-        Double swordAmt = firstAmount(swordRemainingRes, text);
-        Double zoneAmt = firstAmount(zoneRemainingRes, text);
-        if (swordAmt == null && zoneAmt == null && lastUpgradeKind != null) {
-            // generic "need 1.2M more" after we just sent a command
-            Double any = Amounts.parse(text);
-            if (any != null && (fail || text.toLowerCase().contains("need") || text.toLowerCase().contains("remain"))) {
-                if ("zone".equals(lastUpgradeKind)) zoneAmt = any;
-                else swordAmt = any;
+        boolean maxed = anyMatch(upgradeMaxedRes, text);
+        long sinceSend = lastUpgradeSendAt == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - lastUpgradeSendAt;
+        if (!fail && !success && !maxed && lastUpgradeKind != null && sinceSend <= 15_000) {
+            // generic shortfall phrasing the fail patterns missed ("You need 1.2M more")
+            String l = text.toLowerCase(java.util.Locale.ROOT);
+            if (l.contains("need") || l.contains("remain") || l.contains("left")
+                || l.contains("afford") || l.contains("cost")) {
+                if (!Amounts.parseAll(text).isEmpty()) fail = true;
             }
         }
-        if (swordAmt != null) {
-            swordRemaining = swordAmt;
-            log("upgrade_chat", "kind", "sword", "remaining", swordAmt, "raw", text);
+        if (!fail && !success && !maxed) return;
+        // success/maxed lines from OTHER players' broadcasts don't describe us
+        if ((success || maxed) && !fail && sinceSend > 15_000 && !text.toLowerCase(java.util.Locale.ROOT).contains("you")) {
+            return;
         }
-        if (zoneAmt != null) {
-            zoneRemaining = zoneAmt;
-            log("upgrade_chat", "kind", "zone", "remaining", zoneAmt, "raw", text);
+
+        // Classify the kind by keyword anywhere in the line; fall back to what we last sent.
+        String lower = text.toLowerCase(java.util.Locale.ROOT);
+        String kind = lower.contains("sword") ? "sword"
+            : lower.contains("zone") ? "zone"
+            : lastUpgradeKind;
+        if (kind == null) return;
+
+        // Amount: legacy named-group patterns first, else first parseable token in the line.
+        Double amt = firstAmount("zone".equals(kind) ? zoneRemainingRes : swordRemainingRes, text);
+        if (amt == null) {
+            java.util.List<Double> all = Amounts.parseAll(text);
+            if (!all.isEmpty()) amt = all.get(0);
         }
-        if (success || fail) {
-            log("upgrade_result",
-                "kind", lastUpgradeKind,
-                "success", success && !fail,
-                "fail", fail,
-                "message", text);
+
+        if (maxed) {
+            if ("zone".equals(kind)) { zoneMaxed = true; zoneRemaining = null; }
+            else { swordMaxed = true; swordRemaining = null; }
+            log("upgrade_maxed", "kind", kind, "raw", text);
+            return;
         }
-        if (swordAmt != null || zoneAmt != null || success || fail) {
+        if (success && !fail) {
+            // purchased: next cost unknown until the next response teaches it
+            if ("zone".equals(kind)) zoneRemaining = null; else swordRemaining = null;
+            log("upgrade_result", "kind", kind, "success", true, "fail", false, "message", text);
+            return;
+        }
+        if (fail) {
+            if (amt != null) {
+                if ("zone".equals(kind)) zoneRemaining = amt; else swordRemaining = amt;
+                log("upgrade_chat", "kind", kind, "remaining", amt, "raw", text);
+            }
+            log("upgrade_result", "kind", kind, "success", false, "fail", true, "message", text);
             checkBecameAffordable();
         }
     }
@@ -420,6 +513,60 @@ public class StatsTracker {
     public void recordKill() {
         killTimes.addLast(System.currentTimeMillis());
         while (killTimes.size() > 1000) killTimes.removeFirst();
+    }
+
+    /** Tag-to-death duration for one kill; feeds the median TTK and the per-zone baseline. */
+    public void recordKillDuration(long ms) {
+        killDurations.addLast(ms);
+        while (killDurations.size() > 200) killDurations.removeFirst();
+        zoneKills++;
+        if (zoneBaselineTtkMs == null && zoneKills >= 3) zoneBaselineTtkMs = medianTtkMs();
+    }
+
+    /** Median of the last {@code ttkWindowKills} kill durations, or null with < 3 samples. */
+    public Double medianTtkMs() {
+        int n = Math.min(Math.max(3, cfg.ttkWindowKills), killDurations.size());
+        if (n < 3) return null;
+        java.util.List<Long> tail = new ArrayList<>();
+        int skip = killDurations.size() - n;
+        int i = 0;
+        for (Long d : killDurations) {
+            if (i++ >= skip) tail.add(d);
+        }
+        tail.sort(null);
+        return (double) tail.get(tail.size() / 2);
+    }
+
+    public Double zoneBaselineTtkMs() { return zoneBaselineTtkMs; }
+
+    public double killsPerSecond(long windowMs) {
+        return killsPerMinute(windowMs) / 60.0;
+    }
+
+    /** Earning slope (money/min) over the trailing ~5 min of balance samples; null when unknown. */
+    public Double moneyPerMinute() {
+        long now = System.currentTimeMillis();
+        while (incomeSamples.size() > 2 && now - incomeSamples.peekFirst()[0] > 300_000) {
+            incomeSamples.removeFirst();
+        }
+        if (incomeSamples.size() < 2) return null;
+        double[] f = incomeSamples.peekFirst();
+        double[] l = incomeSamples.peekLast();
+        double dtMin = (l[0] - f[0]) / 60_000.0;
+        if (dtMin < 0.5) return null;
+        double slope = (l[1] - f[1]) / dtMin;
+        // purchases create negative steps; report only the positive earning rate
+        return slope > 0 ? slope : null;
+    }
+
+    private void noteBalance(double bal) {
+        long now = System.currentTimeMillis();
+        if (!incomeSamples.isEmpty()) {
+            double[] last = incomeSamples.peekLast();
+            if (Math.abs(last[1] - bal) < 1e-9 && now - last[0] < 5_000) return;
+        }
+        incomeSamples.addLast(new double[]{now, bal});
+        while (incomeSamples.size() > 100) incomeSamples.removeFirst();
     }
 
     public double killsPerMinute(long windowMs) {
