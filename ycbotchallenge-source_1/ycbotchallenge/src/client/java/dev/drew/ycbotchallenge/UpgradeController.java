@@ -1,32 +1,45 @@
 package dev.drew.ycbotchallenge;
 
 import dev.drew.ycbotchallenge.mixin.ChatScreenAccessor;
+import java.util.ArrayDeque;
+import java.util.Locale;
+import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.util.math.Vec3d;
 
 /**
- * Stationary, typed {@code /swordmax} / {@code /zone max}. Sword first; a zone
- * buy every 5–6 successful swords. Never fires while walking.
+ * Stationary, typed {@code /swordmax} / {@code /zone max} (+ a startup {@code /bal} seed).
+ *
+ * Economy-driven, buy-or-learn: on enable we type /bal then /swordmax once, which seeds
+ * balance and remaining cost. From then on the preferred command IS the probe — a fail
+ * response parses to the exact remaining gap, and with a measured income rate the next
+ * attempt is scheduled at now + gap/rate. Zone max becomes the priority buy once median
+ * time-to-kill drops under {@code zoneReadyTtkMs} (fast kills = ready to move up).
  */
 public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, OPEN, TYPE, SEND, READ }
+    private enum Kind { SWORD, ZONE, PROBE }
+
+    private record PendingCmd(String text, Kind kind) {}
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
     private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
-    private long nextDueAt;
     private long phaseUntil;
     private String pending;
     private String typed = "";
     private int typedChars;
-    private boolean pendingIsSword;
+    private int typoAt = -1;
+    private Kind pendingKind = Kind.SWORD;
+    private final ArrayDeque<PendingCmd> queue = new ArrayDeque<>();
     private int swordsSinceZone;
     private int zoneEvery;
     private long lastSendAt;
+    private boolean startupProbed = false;
     /** Kill count when we first observed we could afford the next upgrade; -1 = not yet affordable. */
     private int affordableSinceKills = -1;
     public String lastKind = null;
@@ -34,7 +47,6 @@ public class UpgradeController {
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
         this.stats = stats;
-        rollNextDue(System.currentTimeMillis(), true);
         rollZoneEvery();
     }
 
@@ -44,18 +56,29 @@ public class UpgradeController {
 
     public String hudLine() {
         if (!cfg.upgradesEnabled) return null;
-        String next = nextKind();
-        String rem = "sword";
-        Double sr = stats.swordRemaining;
-        Double zr = stats.zoneRemaining;
+        long now = System.currentTimeMillis();
+        String kind = chooseKind();
         Double bal = stats.money();
-        StringBuilder sb = new StringBuilder("next ");
-        sb.append(next);
+        Double rate = stats.moneyPerMinute();
+        Double ttk = stats.medianTtkMs();
+        StringBuilder sb = new StringBuilder("next ").append(kind == null ? "none (maxed)" : kind);
         if (bal != null) sb.append("  bal ").append(Amounts.format(bal));
-        if ("zone".equals(next) && zr != null) sb.append("  need ").append(Amounts.format(zr));
-        else if (sr != null) sb.append("  need ").append(Amounts.format(sr));
-        sb.append("  swords ").append(swordsSinceZone).append("/").append(zoneEvery);
-        if (phase != Phase.IDLE) sb.append("  §e").append(phase.name().toLowerCase());
+        if (rate != null) sb.append("  +").append(Amounts.format(rate)).append("/min");
+        if (ttk != null) {
+            sb.append("  ttk ").append(String.format(Locale.ROOT, "%.1fs", ttk / 1000.0));
+            Double base = stats.zoneBaselineTtkMs();
+            if (base != null && base > 0) {
+                sb.append(" §8(").append(String.format(Locale.ROOT, "%+.0f%%", 100.0 * (ttk - base) / base)).append(")§7");
+            }
+        }
+        if (phase != Phase.IDLE) {
+            sb.append("  §e").append(phase.name().toLowerCase());
+        } else if (kind != null) {
+            long dueIn = planNext(kind, now) - now;
+            if (dueIn > 1_000) {
+                sb.append("  buy in ").append(dueIn < 60_000 ? (dueIn / 1000) + "s" : (dueIn / 60_000) + "m");
+            }
+        }
         return sb.toString();
     }
 
@@ -65,6 +88,9 @@ public class UpgradeController {
         pending = null;
         typed = "";
         typedChars = 0;
+        typoAt = -1;
+        queue.clear();
+        startupProbed = false;
         affordableSinceKills = -1;
     }
 
@@ -76,25 +102,43 @@ public class UpgradeController {
         long now = System.currentTimeMillis();
 
         if (phase == Phase.IDLE) {
-            if (!due(now)) return false;
-            boolean known = knownAffordable();
-            if (!canAffordPreferred()) {
-                // Not affordable (or still unknown): reset the affordable-since marker and
-                // retry on a shorter jitter once money might have moved.
-                affordableSinceKills = -1;
-                if (now - lastSendAt > 20_000) rollNextDue(now, false);
-                return false;
+            if (combat.isOnBreak()) return false;
+            if (!startupProbed) {
+                startupProbed = true;
+                if (cfg.startupProbes) {
+                    queue.add(new PendingCmd(cfg.balCommand, Kind.PROBE));
+                    queue.add(new PendingCmd(cfg.swordCommand, Kind.SWORD));
+                }
             }
-            // Affordable. Once we KNOW we can afford (cost + balance both parsed),
-            // wait for at least one more kill before interrupting combat to upgrade —
-            // feels like a player finishing a mob, then doing the buy in the lull.
-            if (known) {
+            PendingCmd head = queue.peek();
+            if (head != null) {
+                if (now - lastSendAt < cfg.probeMinIntervalMs) return false;
+                if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
+                begin(client, combat, now, queue.poll());
+                return true;
+            }
+            String kind = chooseKind();
+            if (kind == null) return false;
+            if (now < planNext(kind, now)) return false;
+            if (!knownAffordable(kind) && now - lastSendAt < cfg.probeMinIntervalMs) return false;
+            // Known-affordable: finish the current mob first, buy in the lull.
+            if (knownAffordable(kind)) {
                 if (affordableSinceKills < 0) affordableSinceKills = combat.kills;
-                int killsSince = combat.kills - affordableSinceKills;
-                if (killsSince < cfg.minKillsAfterAffordable) return false;
+                if (combat.kills - affordableSinceKills < cfg.minKillsAfterAffordable) return false;
             }
             if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
-            begin(client, combat, now);
+            if (logger != null) {
+                Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+                logger.log("upgrade_plan", "kind", kind,
+                    "remaining", remaining,
+                    "bal", stats.money(),
+                    "incomePerMin", stats.moneyPerMinute(),
+                    "ttkMs", stats.medianTtkMs(),
+                    "knownAffordable", knownAffordable(kind));
+            }
+            begin(client, combat, now, new PendingCmd(
+                "zone".equals(kind) ? cfg.zoneCommand : cfg.swordCommand,
+                "zone".equals(kind) ? Kind.ZONE : Kind.SWORD));
             return true;
         }
 
@@ -124,6 +168,7 @@ public class UpgradeController {
                 phase = Phase.TYPE;
                 typed = "";
                 typedChars = 0;
+                typoAt = -1;
                 phaseUntil = now + HumanTiming.logNormalMs(cfg.typeKeyMinMs, cfg.typeKeyMaxMs);
             }
             case TYPE -> {
@@ -133,12 +178,29 @@ public class UpgradeController {
                     return false;
                 }
                 if (now < phaseUntil) return true;
-                if (typedChars < pending.length()) {
-                    typed += pending.charAt(typedChars);
-                    typedChars++;
-                    TextFieldWidget field = ((ChatScreenAccessor) cs).ycBotChallenge$getChatField();
+                TextFieldWidget field = ((ChatScreenAccessor) cs).ycBotChallenge$getChatField();
+                if (typoAt >= 0) {
+                    // noticed the wrong char: backspace it, then retype on the next step
+                    typed = typed.substring(0, typed.length() - 1);
                     if (field != null) field.setText(typed);
-                    else cs.insertText(String.valueOf(pending.charAt(typedChars - 1)), false);
+                    typoAt = -1;
+                    phaseUntil = now + HumanTiming.logNormalMs(cfg.typeKeyMinMs, cfg.typeKeyMaxMs + 120);
+                    return true;
+                }
+                if (typedChars < pending.length()) {
+                    ThreadLocalRandom rng = ThreadLocalRandom.current();
+                    char c = pending.charAt(typedChars);
+                    boolean typo = cfg.ninja && typedChars > 1 && Character.isLetterOrDigit(c)
+                        && rng.nextDouble() < cfg.typoChancePerChar;
+                    if (typo) {
+                        typed += (char) ('a' + rng.nextInt(26));
+                        typoAt = typedChars;
+                    } else {
+                        typed += c;
+                    }
+                    typedChars++;
+                    if (field != null) field.setText(typed);
+                    else cs.insertText(String.valueOf(typed.charAt(typed.length() - 1)), false);
                     phaseUntil = now + HumanTiming.logNormalMs(cfg.typeKeyMinMs, cfg.typeKeyMaxMs);
                 } else {
                     phase = Phase.SEND;
@@ -153,13 +215,16 @@ public class UpgradeController {
                     return false;
                 }
                 if (logger != null) {
-                    logger.log("upgrade_send", "command", pending, "kind", pendingIsSword ? "sword" : "zone",
+                    logger.log("upgrade_send", "command", pending,
+                        "kind", pendingKind.name().toLowerCase(Locale.ROOT),
                         "swordsSinceZone", swordsSinceZone);
                 }
                 cs.sendMessage(pending, true);
                 lastSendAt = now;
-                lastKind = pendingIsSword ? "sword" : "zone";
-                stats.noteUpgradeSend(pendingIsSword);
+                if (pendingKind != Kind.PROBE) {
+                    lastKind = pendingKind == Kind.SWORD ? "sword" : "zone";
+                    stats.noteUpgradeSend(pendingKind == Kind.SWORD);
+                }
                 client.setScreen(null);
                 phase = Phase.READ;
                 phaseUntil = now + HumanTiming.logNormalMs(cfg.upgradeReadPauseMinMs, cfg.upgradeReadPauseMaxMs);
@@ -175,9 +240,50 @@ public class UpgradeController {
         return true;
     }
 
-    private void begin(MinecraftClient client, CombatController combat, long now) {
-        pendingIsSword = !"zone".equals(nextKind());
-        pending = pendingIsSword ? cfg.swordCommand : cfg.zoneCommand;
+    /** The next kind to buy, or null when everything is maxed. */
+    private String chooseKind() {
+        boolean swordOpen = !stats.swordMaxed;
+        boolean zoneOpen = !stats.zoneMaxed;
+        if (!swordOpen && !zoneOpen) return null;
+        Double ttk = stats.medianTtkMs();
+        boolean zoneHot = zoneOpen && ttk != null && ttk <= cfg.zoneReadyTtkMs;
+        boolean ratioDue = swordsSinceZone >= zoneEvery;
+        if (zoneOpen && (zoneHot || ratioDue)) {
+            // zone is the prize; if it's known-unaffordable but the sword is known-affordable, sword first
+            if (stats.zoneRemaining != null) {
+                Double bal = stats.money();
+                if (bal != null && stats.zoneRemaining > bal && swordOpen && knownAffordable("sword")) {
+                    return "sword";
+                }
+            }
+            return "zone";
+        }
+        return swordOpen ? "sword" : "zone";
+    }
+
+    /** When the next attempt for {@code kind} should fire: now + remaining/income-rate, politeness-clamped. */
+    private long planNext(String kind, long now) {
+        long earliest = Math.max(now, lastSendAt + cfg.probeMinIntervalMs);
+        Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+        Double bal = stats.money();
+        if (remaining == null) return earliest;              // unknown: probe-by-buying
+        double gap = bal != null ? Math.max(0, remaining - bal) : remaining;
+        if (gap <= 0) return earliest;                       // affordable: buy as soon as polite
+        Double rate = stats.moneyPerMinute();
+        if (rate == null || rate <= 0) return now + cfg.upgradePeriodMaxMs; // no income signal: slow poll
+        long etaMs = (long) (gap / (rate / 60_000.0));
+        return earliest + Math.max(0, Math.min((long) cfg.upgradePeriodMaxMs, etaMs));
+    }
+
+    private boolean knownAffordable(String kind) {
+        Double need = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+        Double bal = stats.money();
+        return need != null && bal != null && bal + 1e-6 >= need;
+    }
+
+    private void begin(MinecraftClient client, CombatController combat, long now, PendingCmd cmd) {
+        pendingKind = cmd.kind();
+        pending = cmd.text();
         combat.releaseKeys(client);
         combat.wantsUpgradeWindow = false;
         MouseDriver.INSTANCE.cancel();
@@ -190,19 +296,17 @@ public class UpgradeController {
     }
 
     private void finish() {
-        if (pendingIsSword) {
+        if (pendingKind == Kind.SWORD) {
             swordsSinceZone++;
-            if (swordsSinceZone >= zoneEvery) {
-                // next window prefers zone
-            }
-        } else {
+        } else if (pendingKind == Kind.ZONE) {
             swordsSinceZone = 0;
             rollZoneEvery();
         }
+        stats.becameAffordable = false;
         phase = Phase.IDLE;
         pending = null;
+        typoAt = -1;
         affordableSinceKills = -1;
-        rollNextDue(System.currentTimeMillis(), true);
     }
 
     private void abort(MinecraftClient client, String why) {
@@ -210,54 +314,14 @@ public class UpgradeController {
         closeOurChat(client);
         phase = Phase.IDLE;
         pending = null;
+        typoAt = -1;
         affordableSinceKills = -1;
-        rollNextDue(System.currentTimeMillis(), false);
     }
 
     private static void closeOurChat(MinecraftClient client) {
         if (client != null && client.currentScreen instanceof ChatScreen) {
             client.setScreen(null);
         }
-    }
-
-    private boolean due(long now) {
-        if (now >= nextDueAt) return true;
-        // Newly affordable after we learned a remaining cost.
-        return stats.becameAffordable && now - lastSendAt > 8_000;
-    }
-
-    private boolean canAffordPreferred() {
-        String kind = nextKind();
-        Double need = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
-        Double bal = stats.money();
-        if (need == null || bal == null) return true; // unknown: try and learn
-        return bal + 1e-6 >= need;
-    }
-
-    /** True only when we have actually parsed both the cost and the balance and can afford it. */
-    private boolean knownAffordable() {
-        String kind = nextKind();
-        Double need = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
-        Double bal = stats.money();
-        return need != null && bal != null && bal + 1e-6 >= need;
-    }
-
-    public String nextKind() {
-        if (swordsSinceZone >= zoneEvery) {
-            Double bal = stats.money();
-            if (bal != null && stats.zoneRemaining != null && bal + 1e-6 < stats.zoneRemaining) {
-                return "sword";
-            }
-            return "zone";
-        }
-        return "sword";
-    }
-
-    private void rollNextDue(long now, boolean fullPeriod) {
-        int min = fullPeriod ? cfg.upgradePeriodMinMs : Math.min(45_000, cfg.upgradePeriodMinMs);
-        int max = fullPeriod ? cfg.upgradePeriodMaxMs : Math.max(min + 1, 75_000);
-        nextDueAt = now + HumanTiming.logNormalMs(min, max);
-        stats.becameAffordable = false;
     }
 
     private void rollZoneEvery() {
