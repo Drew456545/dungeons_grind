@@ -57,6 +57,8 @@ public class CombatController {
     public String stopRequest = null;
     private Vec3d lastTickPos = null;
     private long lastRadarAt = 0;
+    /** Once a teleport happens, the player radar arms for the rest of the session. */
+    private boolean teleportSeen = false;
     /** Radar memory: entity id -> {x, z, lastMoveMs, firstSeenMs, lastSeenMs}. */
     private final Map<Integer, double[]> radarMotion = new HashMap<>();
     private int clicksThisTarget = 0;
@@ -230,6 +232,7 @@ public class CombatController {
             if (lastTickPos != null) {
                 double jumped = pos.distanceTo(lastTickPos);
                 if (jumped > cfg.teleportThresholdBlocks) {
+                    teleportSeen = true; // arms the player radar for the rest of the session
                     stopRequest = "teleport (" + Math.round(jumped) + " blocks)";
                     lastTickPos = null;
                     releaseKeys(client);
@@ -237,7 +240,7 @@ public class CombatController {
                 }
             }
             lastTickPos = pos;
-            if (now - lastRadarAt >= 200) {
+            if ((!cfg.playerRadarArmAfterTeleport || teleportSeen) && now - lastRadarAt >= 200) {
                 lastRadarAt = now;
                 java.util.Set<Integer> seenNow = new java.util.HashSet<>();
                 for (var p : client.world.getPlayers()) {

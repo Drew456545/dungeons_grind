@@ -297,6 +297,7 @@ public class YCBotChallengeConfig {
     public boolean upgradesEnabled = true;
     public String swordCommand = "/swordmax";
     public String zoneCommand = "/zone max";
+    /** Legacy: inert since the kill-driven scheduler replaced the fixed buy timer. */
     public int upgradePeriodMinMs = 132_000;
     public int upgradePeriodMaxMs = 240_000;
     public int zoneEverySwordsMin = 5;
@@ -347,8 +348,13 @@ public class YCBotChallengeConfig {
         "/(?i)(?:balance|money|bal)\\s*:?\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
         "/(?i)\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?:balance|money)/"
     );
-    /** Min gap between typed command sends (server spam/cooldown politeness). */
-    public int probeMinIntervalMs = 25_000;
+    /** Hard cap on unsolicited probe commands (unknown cost/balance). 75s = never more than ~2 in 2-3 min. */
+    public int probeMinIntervalMs = 75_000;
+    /** After a kill, wait this long for the sidebar balance to update before evaluating affordability. */
+    public int postKillEvalDelayMinMs = 1500;
+    public int postKillEvalDelayMaxMs = 2500;
+    /** Zone becomes the preferred buy only after this many successful sword buys in the current zone. */
+    public int zoneMinSwordBuysThisZone = 1;
     /** Median time-to-kill at or under this => zone max becomes the priority buy. */
     public int zoneReadyTtkMs = 2000;
     /** Rolling window (kills) for the median time-to-kill. */
@@ -401,6 +407,8 @@ public class YCBotChallengeConfig {
     // --- Stop protocol: teleport = pulled for a check; another player = staff spectating (solo gamemode) ---
 
     public boolean stopProtocolEnabled = true;
+    /** Player radar stays dormant until a teleport has been seen this session (NPCs never matter mid-grind). */
+    public boolean playerRadarArmAfterTeleport = true;
     /** Single-tick displacement past this many blocks counts as a teleport. */
     public double teleportThresholdBlocks = 12.0;
     /** Another player within this radius trips the stop protocol... */
