@@ -42,6 +42,8 @@ public class StatsTracker {
     public boolean becameAffordable = false;
     public String lastUpgradeKind = null;
     private long lastUpgradeSendAt = 0;
+    private long lastBalSendAt = 0;
+    private long lastClassifiedAt = 0;
     private int zoneChangeSeq = 0;
     private String reprobeKind = null;
     private int swordBuysThisZone = 0;
@@ -131,6 +133,15 @@ public class StatsTracker {
         lastUpgradeSendAt = System.currentTimeMillis();
     }
 
+    public void noteProbeSend() {
+        lastBalSendAt = System.currentTimeMillis();
+    }
+
+    /** False when the most recent upgrade command never produced a classified response (patterns blind). */
+    public boolean lastSendClassified() {
+        return lastUpgradeSendAt != 0 && lastClassifiedAt >= lastUpgradeSendAt;
+    }
+
     private static Pattern compileLoose(String p) {
         if (p.startsWith("/") && p.endsWith("/") && p.length() > 2) {
             return Pattern.compile(p.substring(1, p.length() - 1), Pattern.CASE_INSENSITIVE);
@@ -201,6 +212,9 @@ public class StatsTracker {
     }
 
     private void handleSidebarLine(String line) {
+        // Sidebar lines arrive decorated with literal § formatting codes from team prefix/suffix
+        // (that's how servers order the rows) — strip them before any regex touches the text.
+        line = line.replaceAll("§.", "");
         Matcher m;
         if ((m = zoneRe.matcher(line)).find()) {
             String z = m.group(1).trim();
@@ -419,8 +433,9 @@ public class StatsTracker {
         }
     }
 
-    /** A balCommand reply: authoritative current balance + income-rate sample. */
+    /** A balCommand reply: authoritative current balance + income-rate sample. Only plausible right after we asked. */
     private boolean parseBalReply(String text) {
+        if (lastBalSendAt == 0 || System.currentTimeMillis() - lastBalSendAt > 8_000) return false;
         for (Pattern p : balRes) {
             Matcher m = p.matcher(text);
             if (!m.find()) continue;
@@ -455,10 +470,11 @@ public class StatsTracker {
             return false;
         }
 
-        // Classify the kind by keyword anywhere in the line; fall back to what we last sent.
+        // Classify the kind by keyword anywhere in the line ("stage" = zone on this server);
+        // keyword-less lines ("You need X Money.") inherit the last command sent.
         String lower = text.toLowerCase(java.util.Locale.ROOT);
         String kind = lower.contains("sword") ? "sword"
-            : lower.contains("zone") ? "zone"
+            : (lower.contains("zone") || lower.contains("stage")) ? "zone"
             : lastUpgradeKind;
         if (kind == null) return false;
 
@@ -472,6 +488,7 @@ public class StatsTracker {
         if (maxed) {
             if ("zone".equals(kind)) { zoneMaxed = true; zoneRemaining = null; }
             else { swordMaxed = true; swordRemaining = null; }
+            lastClassifiedAt = System.currentTimeMillis();
             log("upgrade_maxed", "kind", kind, "raw", text);
             return true;
         }
@@ -479,10 +496,19 @@ public class StatsTracker {
             // purchased: next cost unknown until we re-send the command and read the fail line
             if ("zone".equals(kind)) zoneRemaining = null; else { swordRemaining = null; swordBuysThisZone++; }
             reprobeKind = kind;
-            log("upgrade_result", "kind", kind, "success", true, "fail", false, "message", text);
+            lastClassifiedAt = System.currentTimeMillis();
+            if (amt != null) {
+                // the success line carries the price paid — debit it locally so the balance
+                // doesn't sit stale-high and invite a repeat buy before the next /bal
+                debitMoney(amt);
+                log("upgrade_result", "kind", kind, "success", true, "fail", false, "paid", amt, "message", text);
+            } else {
+                log("upgrade_result", "kind", kind, "success", true, "fail", false, "message", text);
+            }
             return true;
         }
         if (fail) {
+            lastClassifiedAt = System.currentTimeMillis();
             if (amt != null) {
                 if ("zone".equals(kind)) zoneRemaining = amt; else swordRemaining = amt;
                 log("upgrade_chat", "kind", kind, "remaining", amt, "raw", text);
@@ -491,6 +517,16 @@ public class StatsTracker {
             checkBecameAffordable();
         }
         return true;
+    }
+
+    /** Subtract a known purchase cost from the local money balance. */
+    private void debitMoney(double paid) {
+        Double bal = money();
+        if (bal == null) return;
+        double nowBal = Math.max(0, bal - paid);
+        String key = cfg.moneyCurrency == null ? "chicken" : cfg.moneyCurrency.toLowerCase();
+        balances.put(key, Amounts.format(nowBal));
+        noteBalance(nowBal);
     }
 
     private void checkBecameAffordable() {
