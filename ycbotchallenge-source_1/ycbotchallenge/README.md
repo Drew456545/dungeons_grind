@@ -25,6 +25,28 @@ Drop `ycbotchallenge-0.5.1.jar` into your `mods/` folder alongside Fabric Loader
 - `runLabel` — tag for the log file (`"baseline"`, `"asc6-geared"`, `"2x-souls"`, ...). Change it between experiment runs.
 - `rebirthsPattern`, `balancePatterns`, `ascensionChatPatterns`, etc. — the sidebar/chat regexes, in case your display format changes.
 
+### Economy (upgrade loop)
+
+Buy-or-learn. On enable the bot types `/bal` then `/swordmax` once (`startupProbes`) to seed the balance and remaining cost. From then on the preferred command *is* the probe: a fail response parses to the exact remaining gap, and the next attempt is scheduled at `now + gap / incomeRate` (income rate = slope of balance samples over the trailing 5 min). No blind timers.
+
+- `zoneReadyTtkMs` (default 2000) — median time-to-kill at/under this flips priority to `/zone max`: fast kills mean the zone is farmed out.
+- `ttkWindowKills` (8) — rolling window for the median TTK. A per-zone baseline is snapshotted a few kills after each zone change and logged via `zone_benchmark` events.
+- `probeMinIntervalMs` (25s) — min gap between typed commands (server spam/cooldown politeness).
+- `balCommand` / `balPatterns` — the balance probe command and its reply patterns.
+- `suffixScales` — extra amount suffixes merged over the built-in `K…Dc` table, e.g. `{"UTG": 1e36}`. Unknown suffixes warn once in the log.
+- `upgradeMaxedPatterns` — response lines meaning a kind is fully upgraded (it is then never sent again).
+- `upgradePeriodMinMs/MaxMs` — legacy; now only clamp bounds for the computed schedule.
+
+### Ninja humanization
+
+`ninja: true` (default) enables the realism layer; `false` restores the old mechanical behavior. All rates are tunable:
+
+- Timing: soft bounds instead of hard clamps (`softClampMarginPct`), rare heavy-tail pauses (`tailChancePerDelay`), per-session bounds jitter (`sessionJitterPct`), fatigue drift (`fatiguePerHour`), and long distractions (`distractionChancePerMinute`, 2–30 s by default).
+- Mouse: continuous OU tremor (`tremorAmplitudeDeg` etc.), flick chaining with velocity-continuous retargets (`mouseChaining`), and agility regimes (`agilityRegimes`) that rotate flick speed so no single Fitts regression fits.
+- Mistakes: `misclickChance`, `wrongTargetChance`, `sprintHitChance`, `typoChancePerChar` (typo + backspace while typing commands).
+- Session theater: `breaksEnabled` with `focusMinutesMin/Max` and `breakMinutesMin/Max`.
+- `movingTargetPolicy`: `ignore` (default, ghost filter untouched) or `sometimes` (`movingTargetAttackChance`).
+
 ## Captcha auto-solve (local Qwen3-VL)
 
 When a captcha is detected (chat line matching `captchaChatPatterns`, or a server-opened container GUI), the bot pauses combat and — with `captchaAutoSolve: true` (default) — solves it with the local model instead of waiting for you:
@@ -42,7 +64,7 @@ Defaults are tuned to Sonar (what the hackathon runs): detection matches its "en
 
 ## How it detects progression
 
-Rebirths: sidebar counter going up = rebirth; counter dropping = reset = ascension (plus chat-message patterns as a second signal, same for prestige). Boosts: boss bar titles, tracked as start/end and stamped into every event's context. Balances: raw sidebar strings (`37.16UTG` etc.) logged on change — the Node tooling owns suffix parsing.
+Rebirths: sidebar counter going up = rebirth; counter dropping = reset = ascension (plus chat-message patterns as a second signal, same for prestige). Boosts: boss bar titles, tracked as start/end and stamped into every event's context. Balances: raw sidebar strings (`37.16UTG` etc.) logged on change — multi-letter suffixes parse in-mod via the `suffixScales` table, so `/bal` replies and income rates work endogenously. New log events: `balance_probe`, `income`, `upgrade_plan`, `upgrade_maxed`, `zone_benchmark` (plus ninja noise: `misclick`, `target_mispick`, `sprint_hit_slip`, `distracted`, `break_start`, `aim_regime`).
 
 ## Building from source
 

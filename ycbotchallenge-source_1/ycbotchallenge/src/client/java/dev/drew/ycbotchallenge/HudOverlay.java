@@ -35,6 +35,7 @@ public class HudOverlay {
         if (on) {
             String solving = captcha != null ? captcha.hudLine() : null;
             if (solving != null) lines.add(solving);
+            else if (combat.isOnBreak()) lines.add("§8on break§r");
             else lines.add("§7" + combat.stateDescription() + "§r");
             if (combat.dominantDesc != null) lines.add("§7pack: " + combat.dominantDesc + "§r");
             if (combat.ghostsIgnored > 0) lines.add("§8ghosts ignored: " + combat.ghostsIgnored + "§r");
@@ -48,7 +49,8 @@ public class HudOverlay {
             String up = upgrades != null ? upgrades.hudLine() : null;
             if (up != null) lines.add("§7" + up + "§r");
         }
-        lines.add("kills " + combat.kills + "  §7(" + String.format("%.1f", stats.killsPerMinute(60_000)) + "/min)§r");
+        lines.add("kills " + combat.kills + "  §7(" + String.format("%.1f", stats.killsPerMinute(60_000)) + "/min · "
+            + String.format("%.2f", stats.killsPerSecond(30_000)) + "/s)§r");
 
         int y = cfg.hudY;
         int width = 0;
