@@ -169,7 +169,13 @@ public class StatsTracker {
             Matcher bm = balanceRes.get(i).matcher(line);
             if (bm.find()) {
                 String name = balanceNames.get(i);
-                String raw = bm.group(1).trim();
+                // Patterns may put the value in group 1 (value-first, e.g. "708.6K MONEY")
+                // or group 2 (label-first, e.g. "MONEY: 708.6K").
+                String g1 = bm.group(1);
+                String g2 = bm.groupCount() >= 2 ? bm.group(2) : null;
+                String raw = g1 != null ? g1 : g2;
+                if (raw == null) continue;
+                raw = raw.trim();
                 String prev = balances.put(name, raw);
                 if (prev != null && !prev.equals(raw)) {
                     log("balance", "currency", name, "raw", raw);

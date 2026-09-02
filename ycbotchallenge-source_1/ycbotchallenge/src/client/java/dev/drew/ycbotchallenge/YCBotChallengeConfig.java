@@ -278,12 +278,12 @@ public class YCBotChallengeConfig {
     public String multiplierPattern = "Multiplier:\\s*(\\S+)";
     public String actionBarPattern = "Rebirth Progress:.*?\\(([\\d.]+)%\\)";
     public List<String> balancePatterns = List.of(
-        "money|Money:\\s*\\$?(\\S+)",
+        "money|(?i)([\\d,.]+[KMBTQkmbtq]?)\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+[KMBTQkmbtq]?)",
         "chicken|([\\d,.]+[KMBTQkmbtq]?)\\s*Chicken",
-        "souls|Souls:\\s*.?\\s*(\\S+)",
-        "essence|Essence:\\s*.?\\s*(\\S+)",
-        "shards|Shards:\\s*.?\\s*(\\S+)",
-        "credits|Credits:\\s*.?\\s*(\\S+)"
+        "souls|(?i)([\\d,.]+[KMBTQkmbtq]?)\\s*SOULS\\b|SOULS\\s*:?\\s*.?\\s*([\\d,.]+[KMBTQkmbtq]?)",
+        "essence|(?i)([\\d,.]+[KMBTQkmbtq]?)\\s*ESSENCE\\b|ESSENCE\\s*:?\\s*.?\\s*([\\d,.]+[KMBTQkmbtq]?)",
+        "shards|(?i)([\\d,.]+[KMBTQkmbtq]?)\\s*SHARDS\\b|SHARDS\\s*:?\\s*.?\\s*([\\d,.]+[KMBTQkmbtq]?)",
+        "credits|(?i)([\\d,.]+[KMBTQkmbtq]?)\\s*CREDITS\\b|CREDITS\\s*:?\\s*([\\d,.]+[KMBTQkmbtq]?)"
     );
     public List<String> ascensionChatPatterns = List.of("ascend", "ascension");
     public List<String> prestigeChatPatterns = List.of("prestige");
@@ -303,18 +303,18 @@ public class YCBotChallengeConfig {
     public int upgradeReadPauseMinMs = 400;
     public int upgradeReadPauseMaxMs = 900;
     /** Sidebar key used for afford checks (chicken / money / souls...). */
-    public String moneyCurrency = "chicken";
+    public String moneyCurrency = "money";
     /**
      * Chat/action-bar remaining-cost. Named groups {@code amount} and optional
      * {@code kind} (sword/zone). Plain substrings or /regex/.
      */
     public List<String> swordRemainingPatterns = List.of(
-        "/(?i)sword[^\\n]{0,80}?(?:need|remaining|left|more|cost)[^\\n]{0,40}?(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)/",
-        "/(?i)(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)[^\\n]{0,40}?(?:more|needed|remaining)[^\\n]{0,20}?sword/"
+        "/(?i)sword[\\s\\S]{0,140}?(?:need|remaining|left|more|cost)[\\s\\S]{0,40}?(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)/",
+        "/(?i)(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)[\\s\\S]{0,40}?(?:more|needed|remaining)[\\s\\S]{0,20}?sword/"
     );
     public List<String> zoneRemainingPatterns = List.of(
-        "/(?i)zone[^\\n]{0,80}?(?:need|remaining|left|more|cost)[^\\n]{0,40}?(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)/",
-        "/(?i)(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)[^\\n]{0,40}?(?:more|needed|remaining)[^\\n]{0,20}?zone/"
+        "/(?i)zone[\\s\\S]{0,140}?(?:need|remaining|left|more|cost)[\\s\\S]{0,40}?(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)/",
+        "/(?i)(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)[\\s\\S]{0,40}?(?:more|needed|remaining)[\\s\\S]{0,20}?zone/"
     );
     public List<String> upgradeSuccessPatterns = List.of(
         "upgraded", "purchased", "bought", "maxed", "enchanted"
