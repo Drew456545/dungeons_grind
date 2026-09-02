@@ -74,7 +74,7 @@ public class UpgradeController {
         if (phase != Phase.IDLE) {
             sb.append("  §e").append(phase.name().toLowerCase());
         } else if (kind != null) {
-            Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+            Double remaining = "zone".equals(kind) ? stats.zoneTarget : stats.swordTarget;
             Double bal2 = stats.money();
             if (remaining != null && remaining > 0 && bal2 != null) {
                 sb.append("  ").append(Math.min(999, Math.round(100.0 * bal2 / remaining))).append("%");
@@ -143,7 +143,7 @@ public class UpgradeController {
                 return false;
             }
             Double bal = stats.money();
-            Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+            Double remaining = "zone".equals(kind) ? stats.zoneTarget : stats.swordTarget;
             boolean probe;
             if (remaining != null && bal != null) {
                 if (bal + 1e-6 < remaining) return false; // not yet — the next kill re-evaluates
@@ -156,7 +156,7 @@ public class UpgradeController {
             if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
             if (logger != null) {
                 logger.log("upgrade_plan", "kind", kind,
-                    "remaining", remaining,
+                    "target", remaining,
                     "bal", bal,
                     "pct", remaining != null && remaining > 0 && bal != null
                         ? Math.round(1000.0 * bal / remaining) / 10.0 : null,
@@ -281,9 +281,9 @@ public class UpgradeController {
         boolean ratioDue = swordsSinceZone >= zoneEvery;
         if (zoneOpen && (zoneHot || ratioDue)) {
             // zone is the prize; if it's known-unaffordable but the sword is known-affordable, sword first
-            if (stats.zoneRemaining != null) {
+            if (stats.zoneTarget != null) {
                 Double bal = stats.money();
-                if (bal != null && stats.zoneRemaining > bal && swordOpen && knownAffordable("sword")) {
+                if (bal != null && stats.zoneTarget > bal && swordOpen && knownAffordable("sword")) {
                     return "sword";
                 }
             }
@@ -293,7 +293,7 @@ public class UpgradeController {
     }
 
     private boolean knownAffordable(String kind) {
-        Double need = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+        Double need = "zone".equals(kind) ? stats.zoneTarget : stats.swordTarget;
         Double bal = stats.money();
         return need != null && bal != null && bal + 1e-6 >= need;
     }
@@ -319,7 +319,6 @@ public class UpgradeController {
             swordsSinceZone = 0;
             rollZoneEvery();
         }
-        stats.becameAffordable = false;
         phase = Phase.IDLE;
         pending = null;
         typoAt = -1;
