@@ -1,7 +1,5 @@
 package dev.drew.ycbotchallenge;
 
-import java.util.Locale;
-
 /**
  * Pure economy rules: fail-chat targets, log-scaled zone readiness, pick among
  * affordable upgrades. No Minecraft types — unit-tested against captured strings.
@@ -10,26 +8,30 @@ public final class Economy {
     private Economy() {}
 
     /**
-     * {@code You need 96.56B more} is a remaining gap. {@code You need 277.81B
-     * Money to purchase the next sword upgrade} is the absolute next-tier price.
+     * Fail lines on this server report the REMAINING GAP, not the price:
+     * "You need 781.04B Money to purchase the next sword upgrade" shrinks as you
+     * earn (verified against session logs: 781.04B → 732.08B → 683.12B). The
+     * absolute next-tier price is balance-at-fail + gap; null while the balance
+     * is unknown (never guess).
      */
-    public static boolean isGapNeed(String text) {
-        if (text == null) return false;
-        String l = text.toLowerCase(Locale.ROOT);
-        return l.contains(" more") || l.contains("need more")
-            || l.contains("remaining") || l.contains("left")
-            || l.contains("short of");
+    public static Double priceFromFail(double gap, Double balAtFail) {
+        return balAtFail != null ? balAtFail + gap : null;
     }
 
     /**
-     * Next-tier price from a fail amount. Gap phrases add current balance;
-     * purchase/buy/unlock phrasing is the total cost as written.
+     * Unknown-price retry policy: after a successful buy the new tier's price is
+     * unknown, and a human retries once their balance passes the OLD price again
+     * ("it cost ~780B last time"). Never a poll, never an immediate reprobe.
      */
-    public static Double targetFromFail(double amount, Double balAtFail, String text) {
-        if (isGapNeed(text)) {
-            return balAtFail != null ? balAtFail + amount : null;
-        }
-        return amount;
+    public static boolean retryUnknownAllowed(Double lastPrice, Double bal, double growthPct) {
+        return lastPrice != null && bal != null
+            && bal >= lastPrice * (1.0 + Math.max(0.0, growthPct));
+    }
+
+    /** Milliseconds until the gap closes at the given earning rate, or null. */
+    public static Double etaMs(Double need, Double ratePerMin) {
+        if (need == null || need <= 0 || ratePerMin == null || ratePerMin <= 0) return null;
+        return need / ratePerMin * 60_000.0;
     }
 
     /**
@@ -94,14 +96,6 @@ public final class Economy {
         if (lastSendAt <= 0) return true;
         int min = Math.max(0, minIntervalMs);
         return nowMs - lastSendAt >= min;
-    }
-
-    /**
-     * One-shot discovery send: allowed only while we have never learned a price
-     * and have not already seeded this kind. Not a timer, not a per-minute poll.
-     */
-    public static boolean allowUnknownSeed(Double target, boolean alreadySeeded, boolean maxed) {
-        return !maxed && target == null && !alreadySeeded;
     }
 
     /**

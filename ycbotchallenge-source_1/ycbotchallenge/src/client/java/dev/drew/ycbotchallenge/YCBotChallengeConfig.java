@@ -278,15 +278,15 @@ public class YCBotChallengeConfig {
     public double[] zoneMax = null;
 
     // Parsing knobs (match the Node analyzer's expectations)
-    public String rebirthsPattern = "Rebirths:\\s*([\\d,]+)";
-    public String zonePattern = "Zone:\\s*(.+)";
+    public String rebirthsPattern = "rebirths?\\s*:?\\s*([\\d,]+)";
+    public String zonePattern = "Zone\\s*:?\\s*(.+)";
     public String multiplierPattern = "Multiplier:\\s*(\\S+)";
     public String actionBarPattern = "Rebirth Progress:.*?\\(([\\d.]+)%\\)";
     /**
      * Sidebar currency names (case-insensitive) parsed from rows like
      * {@code | 131.56B MONEY} / {@code | 235 SHARDS}.
      */
-    public List<String> sidebarCurrencies = List.of("money", "souls", "essence", "shards", "credits");
+    public List<String> sidebarCurrencies = List.of("money", "souls", "essence", "shards", "credits", "swings");
     /** How often the canonical balance snapshot (HUD / logs / buy eval) is published. */
     public int scoreboardSnapshotMs = 5000;
     public List<String> balancePatterns = List.of(
@@ -324,44 +324,63 @@ public class YCBotChallengeConfig {
     /** Sidebar key used for afford checks (chicken / money / souls...). */
     public String moneyCurrency = "money";
     /**
-     * Chat/action-bar remaining-cost. Named groups {@code amount} and optional
-     * {@code kind} (sword/zone). Plain substrings or /regex/.
+     * Strict, anchored upgrade fail lines (verified against live EnchantedMC logs).
+     * The amount in "You need X Money" is the REMAINING GAP — it shrinks as you earn.
+     * Classification is additionally gated: only within {@link #upgradeResponseWindowMs}
+     * of our own send, and never on lines with a player/broadcast prefix (» or [rank]).
      */
-    public List<String> swordRemainingPatterns = List.of(
-        "/(?i)sword[\\s\\S]{0,140}?(?:need|remaining|left|more|cost)[\\s\\S]{0,40}?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
-        "/(?i)(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})[\\s\\S]{0,40}?(?:more|needed|remaining)[\\s\\S]{0,20}?sword/",
-        "/(?i)need\\s+(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money[\\s\\S]{0,80}?sword/"
-    );
-    public List<String> zoneRemainingPatterns = List.of(
-        "/(?i)zone[\\s\\S]{0,140}?(?:need|remaining|left|more|cost)[\\s\\S]{0,40}?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
-        "/(?i)(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})[\\s\\S]{0,40}?(?:more|needed|remaining)[\\s\\S]{0,20}?zone/",
-        "/(?i)need\\s+(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money[\\s\\S]{0,80}?zone/"
-    );
-    public List<String> upgradeSuccessPatterns = List.of(
-        "upgraded", "purchased", "bought", "maxed", "enchanted", "unlocked"
-    );
     public List<String> upgradeFailPatterns = List.of(
-        "don't have enough", "do not have enough", "not enough",
-        "can't afford", "cannot afford", "insufficient", "need more", "have enough"
+        "/^you (?:don'?t|do not) have enough money\\b/"
     );
-    /** Response lines meaning the kind is fully upgraded (no amount present). */
-    public List<String> upgradeMaxedPatterns = List.of("maxed", "max level", "fully upgraded");
+    /** Extracts the gap amount from a fail line ("You need 781.04B Money ..."). */
+    public String upgradeNeedAmountPattern =
+        "/(?i)you need\\s+\\(?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\)?\\s*money\\b/";
+    /** Response lines meaning the kind is fully upgraded (window-gated, anchored). */
+    public List<String> upgradeMaxedPatterns = List.of(
+        "/^you\\b.*(?:already maxed|max level|fully upgraded)/"
+    );
+    /** Income summary header: "Reward Summary: (60s)" — exact earnings window. */
+    public String summaryHeaderPattern = "/(?i)^\\s*reward summary:\\s*\\((?<seconds>\\d+)\\s*s\\)/";
+    /** Summary money line: " + 17.19B Money" — exact earnings for that window. */
+    public String summaryMoneyPattern = "/(?i)^\\s*\\+\\s*(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money\\s*$/";
+    /** How long after our own send a reply is still attributable to it. */
+    public int upgradeResponseWindowMs = 4000;
+    /** No fail line this long after a send = the purchase succeeded (silence-success). */
+    public int successSilenceMs = 3000;
+    /**
+     * After a successful buy the new price is unknown; retry once the balance
+     * passes the old price × (1 + this). 0 = retry at the old price.
+     */
+    public double retryPriceGrowthPct = 0.0;
+    /** Humanized "notice" delay between becoming affordable and typing the buy. */
+    public int buyNoticeDelayMinMs = 2000;
+    public int buyNoticeDelayMaxMs = 8000;
+    /** Stop-protocol exemption window after our own /zone max (advancing teleports you). */
+    public int expectedTeleportAfterZoneMs = 8000;
 
     // --- Economy: /bal seed + income-driven scheduling ---
 
     /** On bot enable, type balCommand once to seed balance. Upgrade commands are kill-gated and never polled. */
     public boolean startupProbes = true;
     public String balCommand = "/bal";
-    /** Reply lines for balCommand (e.g. "- Money: 45.22B"); named group {@code amount} or first group. Only accepted within 8s of a /bal send. */
+    /**
+     * Reply lines for balCommand, anchored to the real formats (verified in logs):
+     * the "Your Balances:" block renders " - Money: (1.09T)" — parenthesized amount.
+     * Only accepted within 8s of a /bal send, and never from broadcast lines.
+     */
     public List<String> balPatterns = List.of(
-        "/(?i)-?\\s*money\\s*:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/"
+        "/(?i)^\\s*-?\\s*money\\s*:\\s*\\(\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*\\)/",
+        "/(?i)^\\s*-?\\s*money\\s*:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*$/",
+        "/(?i)^\\s*(?:your\\s+)?balance\\s*:?\\s*\\$?\\(?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\)?\\s*$/"
     );
-    /** Sidebar money line (e.g. "75.1B Money"); group 1 value-first, group 2 label-first. Live balance feed. */
-    public String sidebarMoneyPattern = "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})/";
-    /** Log every new/changed raw sidebar line (debug the scoreboard parse from the JSONL). */
-    public boolean debugSidebar = false;
-    /** Safety net for unclassified upgrade replies only — not a buy poll interval. */
-    public int probeMinIntervalMs = 75_000;
+    /**
+     * Sidebar money line: "75.1B Money" (value-first), "MONEY: 75.1B" (label-first),
+     * or the real EnchantedMC row "Your Balance 2.35T". First non-null group wins.
+     */
+    public String sidebarMoneyPattern =
+        "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})|YOUR\\s+BALANCE\\s*:?\\s*\\(?\\$?([\\d,.]+\\s*[A-Za-z]{0,4})\\)?/";
+    /** Log every new/changed raw sidebar line (debug the scoreboard parse from the JSONL). Default on while we tune parsers from live evidence. */
+    public boolean debugSidebar = true;
     /**
      * Hard cap between kill-driven /swordmax or /zone max sends of the same kind.
      * Success follow-ups (immediate re-run to learn the next tier) bypass this.
@@ -442,8 +461,8 @@ public class YCBotChallengeConfig {
     public long playerRadarDwellMs = 5000;
     /** Ignore players who haven't moved for this long — spawn NPCs / AFKers (0 = everyone trips it). */
     public long playerRadarIgnoreStationaryMs = 0;
-    /** Names that never trip the radar (case-insensitive, matches any line of multi-line NPC plates). */
-    public List<String> playerRadarWhitelist = List.of("ZONE VISIBILITY", "CLICK HERE");
+    /** Names that never trip the radar (case-insensitive, small-caps-normalized, matches any line of multi-line NPC plates). */
+    public List<String> playerRadarWhitelist = List.of("ZONE VISIBILITY", "CLICK HERE", "Barn");
 
     // --- TTK measurement ---
 
@@ -452,8 +471,14 @@ public class YCBotChallengeConfig {
     /** Rarity HP scaling: TTK is divided by (1 + scale) so the zone benchmark compares across rarities. */
     public Map<String, Double> rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
 
-    /** Bump when shipping new default patterns; loaded configs below this get pattern lists replaced. */
-    public int configVersion = 5;
+    /**
+     * Bump when shipping new default patterns; loaded configs below this get pattern
+     * lists replaced. The field default is 0 ON PURPOSE: Gson runs field initializers
+     * before overlaying JSON, so a config file that lacks this key would otherwise
+     * "look" current and skip every migration. save() always writes the current version.
+     */
+    public static final int CURRENT_CONFIG_VERSION = 9;
+    public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -478,20 +503,14 @@ public class YCBotChallengeConfig {
 
     /** Old configs keep stale server-specific patterns forever; replace them wholesale on version bumps. */
     private boolean migrate() {
-        if (configVersion >= 5) return false;
+        if (configVersion >= CURRENT_CONFIG_VERSION) return false;
         boolean changed = false;
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
         if (configVersion < 4) {
             balancePatterns = fresh.balancePatterns;
             sidebarCurrencies = fresh.sidebarCurrencies;
             scoreboardSnapshotMs = fresh.scoreboardSnapshotMs;
-            balPatterns = fresh.balPatterns;
             sidebarMoneyPattern = fresh.sidebarMoneyPattern;
-            swordRemainingPatterns = fresh.swordRemainingPatterns;
-            zoneRemainingPatterns = fresh.zoneRemainingPatterns;
-            upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
-            upgradeFailPatterns = fresh.upgradeFailPatterns;
-            upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
             playerRadarWhitelist = fresh.playerRadarWhitelist;
             zoneMinSwordBuysThisZone = 0;
             zoneMinReadiness = fresh.zoneMinReadiness;
@@ -502,11 +521,48 @@ public class YCBotChallengeConfig {
             upgradeMinIntervalMs = fresh.upgradeMinIntervalMs;
             upgradeSpendSettleMs = fresh.upgradeSpendSettleMs;
             if (postKillEvalDelayMaxMs < 3000) postKillEvalDelayMaxMs = 3000;
-            swordRemainingPatterns = fresh.swordRemainingPatterns;
-            zoneRemainingPatterns = fresh.zoneRemainingPatterns;
             changed = true;
         }
-        configVersion = 5;
+        if (configVersion < 6) {
+            // v6: evidence-based strict patterns replace the loose guessed ones
+            // (the old ones matched "EnchantedMC »" broadcasts and ate fail lines
+            // as /bal replies — see the 0.9.0 README economy section).
+            balPatterns = fresh.balPatterns;
+            upgradeFailPatterns = fresh.upgradeFailPatterns;
+            upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
+            zonePattern = fresh.zonePattern;
+            changed = true;
+        }
+        if (configVersion < 7) {
+            // v7: parse the real "Your Balance 2.35T" sidebar row; sidebar raw
+            // logging on by default while parsers are tuned from live evidence.
+            sidebarMoneyPattern = fresh.sidebarMoneyPattern;
+            debugSidebar = true;
+            changed = true;
+        }
+        if (configVersion < 8) {
+            // v8: force every evidence-based economy pattern — covers configs whose
+            // configVersion was missing from the JSON (Gson field initializers made
+            // it look current, silently skipping the v6/v7 migrations).
+            balPatterns = fresh.balPatterns;
+            sidebarMoneyPattern = fresh.sidebarMoneyPattern;
+            upgradeFailPatterns = fresh.upgradeFailPatterns;
+            upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
+            upgradeNeedAmountPattern = fresh.upgradeNeedAmountPattern;
+            summaryHeaderPattern = fresh.summaryHeaderPattern;
+            summaryMoneyPattern = fresh.summaryMoneyPattern;
+            zonePattern = fresh.zonePattern;
+            sidebarCurrencies = fresh.sidebarCurrencies;
+            rebirthsPattern = fresh.rebirthsPattern;
+            debugSidebar = true;
+            changed = true;
+        }
+        if (configVersion < 9) {
+            // v9: whitelist the "Barn" zone NPC fixture (radar false-stop evidence).
+            playerRadarWhitelist = fresh.playerRadarWhitelist;
+            changed = true;
+        }
+        configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
 
@@ -516,14 +572,23 @@ public class YCBotChallengeConfig {
         if (ascensionChatPatterns == null) ascensionChatPatterns = List.of();
         if (prestigeChatPatterns == null) prestigeChatPatterns = List.of();
         if (captchaChatPatterns == null) captchaChatPatterns = List.of();
-        if (swordRemainingPatterns == null) swordRemainingPatterns = List.of();
-        if (zoneRemainingPatterns == null) zoneRemainingPatterns = List.of();
-        if (upgradeSuccessPatterns == null) upgradeSuccessPatterns = List.of();
-        if (upgradeFailPatterns == null) upgradeFailPatterns = List.of();
-        if (upgradeMaxedPatterns == null) upgradeMaxedPatterns = List.of("maxed", "max level", "fully upgraded");
-        if (balPatterns == null) balPatterns = List.of(
-            "/(?i)(?:balance|money|bal)\\s*:?\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
-            "/(?i)\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?:balance|money)/");
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        if (upgradeFailPatterns == null) upgradeFailPatterns = fresh.upgradeFailPatterns;
+        if (upgradeMaxedPatterns == null) upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
+        if (balPatterns == null) balPatterns = fresh.balPatterns;
+        if (upgradeNeedAmountPattern == null || upgradeNeedAmountPattern.isBlank()) {
+            upgradeNeedAmountPattern = fresh.upgradeNeedAmountPattern;
+        }
+        if (summaryHeaderPattern == null || summaryHeaderPattern.isBlank()) {
+            summaryHeaderPattern = fresh.summaryHeaderPattern;
+        }
+        if (summaryMoneyPattern == null || summaryMoneyPattern.isBlank()) {
+            summaryMoneyPattern = fresh.summaryMoneyPattern;
+        }
+        if (upgradeResponseWindowMs < 500) upgradeResponseWindowMs = 4000;
+        if (successSilenceMs < 500) successSilenceMs = 3000;
+        if (buyNoticeDelayMaxMs < buyNoticeDelayMinMs) buyNoticeDelayMaxMs = buyNoticeDelayMinMs;
+        if (expectedTeleportAfterZoneMs < 0) expectedTeleportAfterZoneMs = 8000;
         if (suffixScales == null) suffixScales = Map.of();
         if (rarityHpScale == null) rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
         // migrate: 0.7.5 shipped an empty whitelist; fill it with the zone NPC's plate lines
@@ -556,6 +621,7 @@ public class YCBotChallengeConfig {
     }
 
     public void save(Path file) {
+        configVersion = CURRENT_CONFIG_VERSION;
         try {
             Files.createDirectories(file.getParent());
             Files.writeString(file, GSON.toJson(this));

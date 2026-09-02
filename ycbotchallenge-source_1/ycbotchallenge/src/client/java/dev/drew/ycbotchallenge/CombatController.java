@@ -137,7 +137,9 @@ public class CombatController {
 
     /** Match any whitelist entry against the full name or any single line of it (NPCs use multi-line plates). */
     private boolean radarWhitelisted(String name) {
-        String clean = name.replaceAll("§.", "").trim();
+        // SidebarParser.strip normalizes unicode small caps (NPC plates on this
+        // server render as small caps) in addition to § codes.
+        String clean = SidebarParser.strip(name);
         for (String w : cfg.playerRadarWhitelist) {
             if (w == null) continue;
             if (w.equalsIgnoreCase(clean)) return true;
@@ -232,7 +234,16 @@ public class CombatController {
             if (lastTickPos != null) {
                 double jumped = pos.distanceTo(lastTickPos);
                 if (jumped > cfg.teleportThresholdBlocks) {
-                    teleportSeen = true; // arms the player radar for the rest of the session
+                    if (stats.isTeleportExpected(now)) {
+                        // Our own /zone max advance — not a staff pull, and it must NOT
+                        // arm the radar (zones legitimately contain stationary NPCs).
+                        stats.clearTeleportExpected();
+                        if (logger != null) logger.log("zone_teleport", "blocks", Math.round(jumped));
+                        lastTickPos = null;
+                        releaseKeys(client);
+                        return;
+                    }
+                    teleportSeen = true; // unexpected teleport: arms the player radar for the rest of the session
                     stopRequest = "teleport (" + Math.round(jumped) + " blocks)";
                     lastTickPos = null;
                     releaseKeys(client);

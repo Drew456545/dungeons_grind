@@ -2,6 +2,7 @@ package dev.drew.ycbotchallenge;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -21,18 +22,48 @@ import java.util.regex.Pattern;
 public final class SidebarParser {
     public record Hit(String currency, String rawAmount, double value, String line) {}
 
+    /**
+     * Unicode small-capitals → ASCII. EnchantedMC renders sidebar labels and many
+     * chat lines in small caps ("5.62T ᴍᴏɴᴇʏ", "ꜱᴏᴜʟ ᴍᴀɢɴᴇᴛ ᴇɴᴄʜᴀɴᴛ"), which ASCII
+     * patterns can never match until normalized.
+     */
+    private static final Map<Character, Character> SMALL_CAPS = new HashMap<>();
+    static {
+        String[][] pairs = {
+            {"ᴀ","a"},{"ʙ","b"},{"ᴄ","c"},{"ᴅ","d"},{"ᴇ","e"},{"ꜰ","f"},{"ɢ","g"},
+            {"ʜ","h"},{"ɪ","i"},{"ᴊ","j"},{"ᴋ","k"},{"ʟ","l"},{"ᴍ","m"},{"ɴ","n"},
+            {"ᴏ","o"},{"ᴘ","p"},{"ǫ","q"},{"ʀ","r"},{"ꜱ","s"},{"ᴛ","t"},{"ᴜ","u"},
+            {"ᴠ","v"},{"ᴡ","w"},{"ʏ","y"},{"ᴢ","z"}
+        };
+        for (String[] p : pairs) SMALL_CAPS.put(p[0].charAt(0), p[1].charAt(0));
+    }
+
+    public static String normalizeSmallCaps(String s) {
+        StringBuilder sb = null;
+        for (int i = 0; i < s.length(); i++) {
+            Character r = SMALL_CAPS.get(s.charAt(i));
+            if (r != null) {
+                if (sb == null) { sb = new StringBuilder(s.length()); sb.append(s, 0, i); }
+                sb.append(r.charValue());
+            } else if (sb != null) {
+                sb.append(s.charAt(i));
+            }
+        }
+        return sb != null ? sb.toString() : s;
+    }
+
     private SidebarParser() {}
 
     /** Strip §/& formatting (including §x hex), collapse whitespace, drop leading bullets. */
     public static String strip(String raw) {
         if (raw == null || raw.isBlank()) return "";
-        String s = raw;
+        String s = normalizeSmallCaps(raw);
         s = s.replaceAll("(?i)§x(§[0-9a-f]){6}", "");
         s = s.replaceAll("§.", "");
         s = s.replaceAll("(?i)&[0-9a-fk-or]", "");
         s = s.replace('\u00A0', ' ').replace("\u200B", "").replace("\uFEFF", "");
         s = s.replaceAll("\\s+", " ").trim();
-        s = s.replaceAll("^[|•>·➤·\\-]+\\s*", "");
+        s = s.replaceAll("^[|•>·➤·\\-│┃]+\\s*", "");
         return s.trim();
     }
 
