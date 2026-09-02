@@ -31,6 +31,9 @@ public final class EconomyChecks {
         "§f\ue0cd§r You have successflly purchased 50x Soul Magnet Enchant for 277.88M Souls.";
     private static final String PLAYER_SHOP =
         "[✧R178✧] [⚒iʙᴀɴʜᴀᴍᴍᴇʀi⚒] Cammyprof » selling perks 1k=100c, currency 2Q/200T/10m=100c";
+    private static final String REBIRTH_NEED = "You need $29.99T Money to Rebirth.";
+    private static final String REBIRTH_NEED_ICON = "\ue04e You need $29.99T Money to Rebirth.";
+    private static final String SWORD_UNLOCK = "You have unlocked a new sword level for 6.43M!";
 
     private static final YCBotChallengeConfig CFG = new YCBotChallengeConfig();
 
@@ -46,6 +49,7 @@ public final class EconomyChecks {
         n += readiness();
         n += choose();
         n += gates();
+        n += rebirth();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -70,6 +74,7 @@ public final class EconomyChecks {
         n += eq("781.04B", Amounts.parse("781.04B"), 781.04e9, 1e3);
         n += eq("1.25Q", Amounts.parse("1.25Q"), 1.25e15, 1e9);
         n += eq("6.78T", Amounts.parse("6.78T"), 6.78e12, 1e6);
+        n += eq("$29.99T", Amounts.parse("$29.99T"), 29.99e12, 1e6);
         n += eq("17.19B", Amounts.parse("17.19B"), 17.19e9, 1e3);
         n += eq("parens (1.09T)", Amounts.parse("(1.09T)"), 1.09e12, 1e6);
         n += eq("235 SHARDS not suffix", Amounts.parse("235 SHARDS"), 235.0, 1e-6);
@@ -172,6 +177,17 @@ public final class EconomyChecks {
         n += eq("zone fail shape", failRes.stream().anyMatch(p -> p.matcher(ZONE_FAIL).find()), true);
         n += eq("zone fail gap", ChatClassifier.needAmount(ZONE_FAIL, need), 1.25e15, 1e9);
         n += eq("zone fail kind via 'stage'", ChatClassifier.kindOf(ZONE_FAIL, null), "zone");
+
+        n += eq("rebirth fail shape", failRes.stream().anyMatch(p -> p.matcher(REBIRTH_NEED).find()), true);
+        n += eq("rebirth fail gap", ChatClassifier.needAmount(REBIRTH_NEED, need), 29.99e12, 1e6);
+        n += eq("rebirth fail with icon", ChatClassifier.needAmount(REBIRTH_NEED_ICON, need), 29.99e12, 1e6);
+        n += eq("rebirth kind", ChatClassifier.kindOf(REBIRTH_NEED, null), "rebirth");
+        n += eq("rebirth target = bal + gap",
+            Economy.priceFromFail(29.99e12, 8.04e9), 8.04e9 + 29.99e12, 1e6);
+
+        n += eq("sword unlock kind", ChatClassifier.kindOf(SWORD_UNLOCK, null), "sword");
+        n += eq("sword unlock is not a fail",
+            failRes.stream().anyMatch(p -> p.matcher(SWORD_UNLOCK).find()), false);
 
         // Gap semantics: price = balance at fail + gap (the amount shrinks as you earn).
         n += eq("price = bal + gap", Economy.priceFromFail(781.04e9, 1.09e12), 1.87104e12, 1e6);
@@ -284,16 +300,39 @@ public final class EconomyChecks {
 
     private static int choose() {
         int n = 0;
-        n += eq("fresh both affordable → sword",
-            Economy.chooseBuyKind(true, true, true, true, 0.1, 0.5), "sword");
-        n += eq("late both affordable → zone",
-            Economy.chooseBuyKind(true, true, true, true, 0.8, 0.5), "zone");
-        n += eq("late zone unaffordable → sword",
-            Economy.chooseBuyKind(true, true, true, false, 0.8, 0.5), "sword");
-        n += eq("early only-zone affordable → wait",
-            Economy.chooseBuyKind(true, true, false, true, 0.2, 0.5), null);
+        n += eq("both affordable sword cheaper → sword",
+            Economy.chooseBuyKind(true, true, true, true, 10e9, 10e9, 1.25), "sword");
+        n += eq("both affordable sword 2x zone → zone",
+            Economy.chooseBuyKind(true, true, true, true, 20e9, 10e9, 1.25), "zone");
+        n += eq("sword just over 1.25x → zone",
+            Economy.chooseBuyKind(true, true, true, true, 12.6e9, 10e9, 1.25), "zone");
+        n += eq("sword exactly 1.25x → sword",
+            Economy.chooseBuyKind(true, true, true, true, 12.5e9, 10e9, 1.25), "sword");
+        n += eq("zone unaffordable → sword",
+            Economy.chooseBuyKind(true, true, true, false, 20e9, 10e9, 1.25), "sword");
+        n += eq("only zone affordable → zone",
+            Economy.chooseBuyKind(true, true, false, true, 20e9, 10e9, 1.25), "zone");
         n += eq("neither → wait",
-            Economy.chooseBuyKind(true, true, false, false, 0.9, 0.5), null);
+            Economy.chooseBuyKind(true, true, false, false, 20e9, 10e9, 1.25), null);
+        n += eq("preferZone true", Economy.preferZone(20e9, 10e9, 1.25), true);
+        n += eq("preferZone false", Economy.preferZone(10e9, 10e9, 1.25), false);
+        n += eq("preferZone nulls", Economy.preferZone(null, 10e9, 1.25), false);
+        return n;
+    }
+
+    private static int rebirth() {
+        int n = 0;
+        n += eq("gui title", ChatClassifier.isRebirthGui("Rebirth GUI"), true);
+        n += eq("gui title case", ChatClassifier.isRebirthGui("REBIRTH gui"), true);
+        n += eq("not gui", ChatClassifier.isRebirthGui("Captcha"), false);
+        n += eq("null title", ChatClassifier.isRebirthGui(null), false);
+        n += eq("rebirth covers", Economy.knownAffordable(8.04e9 + 29.99e12, 30.1e12), true);
+        n += eq("rebirth short", Economy.knownAffordable(8.04e9 + 29.99e12, 8.04e9), false);
+        n += eq("rebirth interval 0 is immediate",
+            Economy.cooldownElapsed(100, 99, 0, false), true);
+        // Sword/zone choice is unused while rebirth is covered (controller short-circuits).
+        n += eq("chooser still sword when asked",
+            Economy.chooseBuyKind(true, true, true, true, 10e9, 10e9, 1.25), "sword");
         return n;
     }
 

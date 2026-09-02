@@ -113,6 +113,12 @@ public class YCBotChallengeClient implements ClientModInitializer {
             upgrades.tick(client, combat);
             return;
         }
+        String screenTitle = client.currentScreen != null && client.currentScreen.getTitle() != null
+            ? client.currentScreen.getTitle().getString() : "";
+        if (RebirthScreens.isRebirthGui(screenTitle)) {
+            combat.releaseKeys(client);
+            return;
+        }
         if (client.currentScreen != null
             && (config.pauseOnAnyScreen
                 || (config.pauseOnContainerScreen && client.currentScreen instanceof HandledScreen))) {

@@ -302,6 +302,17 @@ public class YCBotChallengeConfig {
     public boolean upgradesEnabled = true;
     public String swordCommand = "/swordmax";
     public String zoneCommand = "/zone max";
+    public String rebirthCommand = "/rebirth";
+    /**
+     * Zone when the next sword costs more than this × the next zone.
+     * TTK is HUD-only; this ratio is the buy switch.
+     */
+    public double zoneOverSwordRatio = 1.25;
+    /** Minimum gap between any two typed commands (server: "again in less than 1 second"). */
+    public int commandCooldownMs = 1100;
+    /** Look-at-menu pause after Rebirth GUI opens, before Esc or diamond click. */
+    public int rebirthLookMinMs = 800;
+    public int rebirthLookMaxMs = 2000;
     /** Legacy: inert since the kill-driven scheduler replaced the fixed buy timer. */
     public int upgradePeriodMinMs = 132_000;
     public int upgradePeriodMaxMs = 240_000;
@@ -330,11 +341,19 @@ public class YCBotChallengeConfig {
      * of our own send, and never on lines with a player/broadcast prefix (» or [rank]).
      */
     public List<String> upgradeFailPatterns = List.of(
-        "/^you (?:don'?t|do not) have enough money\\b/"
+        "/^you (?:don'?t|do not) have enough money\\b/",
+        "/(?i)you need\\s+\\$?.+\\s+money\\s+to\\s+rebirth/"
     );
-    /** Extracts the gap amount from a fail line ("You need 781.04B Money ..."). */
+    /** Extracts the gap amount from a fail line ("You need 781.04B Money ..." / "$29.99T"). */
     public String upgradeNeedAmountPattern =
-        "/(?i)you need\\s+\\(?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\)?\\s*money\\b/";
+        "/(?i)you need\\s+\\$?\\(?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\)?\\s*money\\b/";
+    /**
+     * Sword success chat (verified): "You have unlocked a new sword level for 6.43M!".
+     * Zone has no success wording — silence / teleport is the signal.
+     */
+    public List<String> upgradeSuccessPatterns = List.of(
+        "/(?i)you have unlocked a new sword level for\\s+(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/"
+    );
     /** Response lines meaning the kind is fully upgraded (window-gated, anchored). */
     public List<String> upgradeMaxedPatterns = List.of(
         "/^you\\b.*(?:already maxed|max level|fully upgraded)/"
@@ -357,11 +376,13 @@ public class YCBotChallengeConfig {
     public int buyNoticeDelayMaxMs = 8000;
     /** Stop-protocol exemption window after our own /zone max (advancing teleports you). */
     public int expectedTeleportAfterZoneMs = 8000;
+    /** Same exemption after a successful rebirth diamond click (GUI closes and teleports). */
+    public int expectedTeleportAfterRebirthMs = 8000;
 
     // --- Economy: /bal seed + income-driven scheduling ---
 
-    /** On bot enable, type balCommand once to seed balance. Upgrade commands are kill-gated and never polled. */
-    public boolean startupProbes = true;
+    /** On bot enable, type rebirthCommand once to seed the rebirth gap. Never /bal. */
+    public boolean startupProbes = false;
     public String balCommand = "/bal";
     /**
      * Reply lines for balCommand, anchored to the real formats (verified in logs):
@@ -477,7 +498,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 9;
+    public static final int CURRENT_CONFIG_VERSION = 10;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -562,6 +583,17 @@ public class YCBotChallengeConfig {
             playerRadarWhitelist = fresh.playerRadarWhitelist;
             changed = true;
         }
+        if (configVersion < 10) {
+            // v10: rebirth gap seed, $ amounts, 1.25× sword/zone, no /bal.
+            upgradeNeedAmountPattern = fresh.upgradeNeedAmountPattern;
+            upgradeFailPatterns = fresh.upgradeFailPatterns;
+            upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
+            startupProbes = false;
+            zoneOverSwordRatio = fresh.zoneOverSwordRatio;
+            rebirthCommand = fresh.rebirthCommand;
+            commandCooldownMs = fresh.commandCooldownMs;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -574,6 +606,7 @@ public class YCBotChallengeConfig {
         if (captchaChatPatterns == null) captchaChatPatterns = List.of();
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
         if (upgradeFailPatterns == null) upgradeFailPatterns = fresh.upgradeFailPatterns;
+        if (upgradeSuccessPatterns == null) upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
         if (upgradeMaxedPatterns == null) upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
         if (balPatterns == null) balPatterns = fresh.balPatterns;
         if (upgradeNeedAmountPattern == null || upgradeNeedAmountPattern.isBlank()) {
@@ -605,6 +638,11 @@ public class YCBotChallengeConfig {
         if (aimAgility == 0.4) aimAgility = 1.0;
         if (swordCommand == null || swordCommand.isBlank()) swordCommand = "/swordmax";
         if (zoneCommand == null || zoneCommand.isBlank()) zoneCommand = "/zone max";
+        if (rebirthCommand == null || rebirthCommand.isBlank()) rebirthCommand = "/rebirth";
+        if (zoneOverSwordRatio <= 0) zoneOverSwordRatio = 1.25;
+        if (commandCooldownMs < 0) commandCooldownMs = 1100;
+        if (rebirthLookMaxMs < rebirthLookMinMs) rebirthLookMaxMs = rebirthLookMinMs;
+        if (expectedTeleportAfterRebirthMs < 0) expectedTeleportAfterRebirthMs = 8000;
         if (moneyCurrency == null || moneyCurrency.isBlank() || moneyCurrency.equalsIgnoreCase("chicken")) {
             moneyCurrency = "money";
         }

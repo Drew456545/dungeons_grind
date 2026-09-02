@@ -42,12 +42,15 @@ public class StatsTracker {
     /** Absolute next-tier price (bal at fail + gap), null while unknown. */
     public Double swordTarget = null;
     public Double zoneTarget = null;
+    public Double rebirthTarget = null;
     /** Last seen remaining gap ("You need X Money") per kind — HUD/logging. */
     private Double swordGap = null;
     private Double zoneGap = null;
+    private Double rebirthGap = null;
     /** Price of the most recent known tier per kind — unknown-price retries fire past this. */
     private Double swordLastPrice = null;
     private Double zoneLastPrice = null;
+    private Double rebirthLastPrice = null;
     /** Chat-driven money book: /bal seed + reward-summary accrual + fail-implied anchors. */
     private final MoneyBook book = new MoneyBook();
     /** Live parsed sidebar amounts (updated every poll). Canonical snapshot is published on an interval. */
@@ -67,12 +70,15 @@ public class StatsTracker {
     /** Last fail-line timestamps per kind — silence after a send is the success signal. */
     private volatile long lastSwordFailAt = 0;
     private volatile long lastZoneFailAt = 0;
+    private volatile long lastRebirthFailAt = 0;
     /** One-shot unknown-price seed per kind; not reset on bot toggle (avoids re-spam). */
     public boolean swordSeeded = false;
     public boolean zoneSeeded = false;
+    public boolean rebirthSeeded = false;
     /** An unknown-price exploratory send is in flight / unresolved per kind. */
     private boolean swordExploratorySent = false;
     private boolean zoneExploratorySent = false;
+    private boolean rebirthExploratorySent = false;
     /** Our own /zone max teleports us — the stop protocol ignores displacements until then. */
     private long expectTeleportUntil = 0;
     /** Set when a fail arrives with an unknown balance; the controller re-seeds /bal once. */
@@ -104,6 +110,7 @@ public class StatsTracker {
     private final List<Pattern> captchaRes = new ArrayList<>();
     private final List<Pattern> upgradeFailRes = new ArrayList<>();
     private final List<Pattern> upgradeMaxedRes = new ArrayList<>();
+    private final List<Pattern> upgradeSuccessRes = new ArrayList<>();
     private final List<Pattern> balRes = new ArrayList<>();
     private final Pattern needAmountRe;
     private final Pattern summaryHeaderRe;
@@ -144,6 +151,8 @@ public class StatsTracker {
             for (String p : cfg.upgradeFailPatterns) upgradeFailRes.add(compileLoose(p));
         if (cfg.upgradeMaxedPatterns != null)
             for (String p : cfg.upgradeMaxedPatterns) upgradeMaxedRes.add(compileLoose(p));
+        if (cfg.upgradeSuccessPatterns != null)
+            for (String p : cfg.upgradeSuccessPatterns) upgradeSuccessRes.add(compileLoose(p));
         if (cfg.balPatterns != null)
             for (String p : cfg.balPatterns) balRes.add(compileLoose(p));
         needAmountRe = compileLoose(cfg.upgradeNeedAmountPattern);
@@ -256,14 +265,24 @@ public class StatsTracker {
         return (k == null || k.isBlank()) ? "money" : k.toLowerCase(Locale.ROOT);
     }
 
-    public void noteUpgradeSend(boolean sword) {
-        lastUpgradeKind = sword ? "sword" : "zone";
+    public void noteUpgradeSend(String kind) {
+        lastUpgradeKind = kind;
         long now = System.currentTimeMillis();
         lastUpgradeSendAt = now;
         lastSendBal = money();
-        // Advancing a zone teleports the player — exempt our own send from the stop protocol.
-        if (!sword) expectTeleportUntil = now + Math.max(0, cfg.expectedTeleportAfterZoneMs);
+        lastSendSucceeded = false;
+        // Advancing a zone teleports the player. Rebirth teleport is armed on the diamond click,
+        // not on the /rebirth seed (Esc after the gap line does not move you).
+        if ("zone".equals(kind)) {
+            expectTeleportUntil = now + Math.max(0, cfg.expectedTeleportAfterZoneMs);
+        }
     }
+
+    public void armTeleport(int ms) {
+        expectTeleportUntil = System.currentTimeMillis() + Math.max(0, ms);
+    }
+
+    public boolean lastSendSucceeded = false;
 
     public boolean isTeleportExpected(long now) {
         return now < expectTeleportUntil;
@@ -274,36 +293,54 @@ public class StatsTracker {
     }
 
     public boolean seeded(String kind) {
-        return "zone".equals(kind) ? zoneSeeded : swordSeeded;
+        if ("zone".equals(kind)) return zoneSeeded;
+        if ("rebirth".equals(kind)) return rebirthSeeded;
+        return swordSeeded;
     }
 
     public void noteSeeded(String kind) {
         if ("zone".equals(kind)) zoneSeeded = true;
+        else if ("rebirth".equals(kind)) rebirthSeeded = true;
         else swordSeeded = true;
     }
 
     public boolean exploratorySent(String kind) {
-        return "zone".equals(kind) ? zoneExploratorySent : swordExploratorySent;
+        if ("zone".equals(kind)) return zoneExploratorySent;
+        if ("rebirth".equals(kind)) return rebirthExploratorySent;
+        return swordExploratorySent;
     }
 
     public void noteExploratorySent(String kind) {
         if ("zone".equals(kind)) zoneExploratorySent = true;
+        else if ("rebirth".equals(kind)) rebirthExploratorySent = true;
         else swordExploratorySent = true;
+    }
+
+    public void unseed(String kind) {
+        if ("zone".equals(kind)) { zoneSeeded = false; zoneExploratorySent = false; }
+        else if ("rebirth".equals(kind)) { rebirthSeeded = false; rebirthExploratorySent = false; }
+        else { swordSeeded = false; swordExploratorySent = false; }
     }
 
     /** Price of the most recent known tier (retry threshold while the price is unknown). */
     public Double lastPrice(String kind) {
-        return "zone".equals(kind) ? zoneLastPrice : swordLastPrice;
+        if ("zone".equals(kind)) return zoneLastPrice;
+        if ("rebirth".equals(kind)) return rebirthLastPrice;
+        return swordLastPrice;
     }
 
     /** Last remaining gap seen in a fail line (HUD/logging). */
     public Double lastGap(String kind) {
-        return "zone".equals(kind) ? zoneGap : swordGap;
+        if ("zone".equals(kind)) return zoneGap;
+        if ("rebirth".equals(kind)) return rebirthGap;
+        return swordGap;
     }
 
     /** No fail line within the response window after our send = the purchase succeeded. */
     public boolean failSince(String kind, long sendAt) {
-        long at = "zone".equals(kind) ? lastZoneFailAt : lastSwordFailAt;
+        long at = "zone".equals(kind) ? lastZoneFailAt
+            : "rebirth".equals(kind) ? lastRebirthFailAt
+            : lastSwordFailAt;
         return sendAt > 0 && at >= sendAt;
     }
 
@@ -350,6 +387,7 @@ public class StatsTracker {
         }
         if (swordTarget != null) ctx.addProperty("swordTarget", Amounts.format(swordTarget));
         if (zoneTarget != null) ctx.addProperty("zoneTarget", Amounts.format(zoneTarget));
+        if (rebirthTarget != null) ctx.addProperty("rebirthTarget", Amounts.format(rebirthTarget));
         return ctx;
     }
 
@@ -510,16 +548,21 @@ public class StatsTracker {
     private void rebirthReset(String via) {
         swordTarget = null;
         zoneTarget = null;
+        rebirthTarget = null;
         swordGap = null;
         zoneGap = null;
+        rebirthGap = null;
         swordLastPrice = null;
         zoneLastPrice = null;
+        rebirthLastPrice = null;
         swordMaxed = false;
         zoneMaxed = false;
         swordSeeded = false;
         zoneSeeded = false;
+        rebirthSeeded = false;
         swordExploratorySent = false;
         zoneExploratorySent = false;
+        rebirthExploratorySent = false;
         swordBuysThisZone = 0;
         upgradeChatFrag = null;
         log("economy_reset", "via", via);
@@ -781,6 +824,14 @@ public class StatsTracker {
             return true;
         }
 
+        if (anyMatch(upgradeSuccessRes, text)) {
+            String kind = ChatClassifier.kindOf(text, lastUpgradeKind);
+            if (kind == null) return false;
+            upgradeChatFrag = null;
+            onUpgradeSuccess(kind, now, "chat");
+            return true;
+        }
+
         boolean failShape = anyMatch(upgradeFailRes, text);
         Double gap = ChatClassifier.needAmount(text, needAmountRe);
         if (failShape && gap == null) {
@@ -797,26 +848,25 @@ public class StatsTracker {
     }
 
     private void onFail(String kind, double gap, String raw, long now) {
-        boolean zone = "zone".equals(kind);
-        Double knownPrice = zone ? zoneTarget : swordTarget;
+        Double knownPrice = "zone".equals(kind) ? zoneTarget
+            : "rebirth".equals(kind) ? rebirthTarget
+            : swordTarget;
         Double price;
         if (knownPrice != null) {
-            // Server truth: we are `gap` short of a known price → exact balance anchor.
             book.anchor(Math.max(0, knownPrice - gap), now);
             writeBookThrough();
             price = knownPrice;
         } else {
             price = Economy.priceFromFail(gap, money());
-            if (price == null && lastBalReseedAt < now - 60_000) {
-                // Can't solve price without a balance — one human-plausible /bal re-seed.
-                lastBalReseedAt = now;
-                balReseedWanted = true;
-            }
         }
-        if (zone) {
+        if ("zone".equals(kind)) {
             zoneGap = gap;
             if (price != null) { zoneTarget = price; zoneExploratorySent = false; }
             lastZoneFailAt = now;
+        } else if ("rebirth".equals(kind)) {
+            rebirthGap = gap;
+            if (price != null) { rebirthTarget = price; rebirthExploratorySent = false; }
+            lastRebirthFailAt = now;
         } else {
             swordGap = gap;
             if (price != null) { swordTarget = price; swordExploratorySent = false; }
@@ -825,7 +875,7 @@ public class StatsTracker {
         log("upgrade_chat", "kind", kind,
             "gap", Amounts.format(gap),
             "target", price != null ? Amounts.format(price) : null,
-            "balance", book.exact() != null ? Amounts.format(book.exact()) : null,
+            "balance", money() != null ? Amounts.format(money()) : null,
             "raw", raw);
         log("upgrade_result", "kind", kind, "success", false, "fail", true, "message", raw);
     }
@@ -838,6 +888,20 @@ public class StatsTracker {
      * send time (a successful seed buy must not stall the kind forever).
      */
     public void onUpgradeSuccess(String kind, long now) {
+        onUpgradeSuccess(kind, now, "silence");
+    }
+
+    public void onUpgradeSuccess(String kind, long now, String via) {
+        if (lastSendSucceeded) return;
+        lastSendSucceeded = true;
+        lastSpendAt = now;
+        if ("rebirth".equals(kind)) {
+            Double paid = rebirthTarget != null ? rebirthTarget : lastSendBal;
+            log("upgrade_result", "kind", kind, "success", true, "fail", false,
+                "paid", paid != null ? Amounts.format(paid) : null, "via", via);
+            rebirthReset("upgrade-success");
+            return;
+        }
         boolean zone = "zone".equals(kind);
         Double price = zone ? zoneTarget : swordTarget;
         if (price != null) {
@@ -857,9 +921,8 @@ public class StatsTracker {
             swordExploratorySent = false;
             swordBuysThisZone++;
         }
-        lastSpendAt = now;
         log("upgrade_result", "kind", kind, "success", true, "fail", false,
-            "paid", price != null ? Amounts.format(price) : null, "via", "silence");
+            "paid", price != null ? Amounts.format(price) : null, "via", via);
     }
 
     private static boolean anyMatch(List<Pattern> res, String text) {
