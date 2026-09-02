@@ -17,7 +17,6 @@ import net.minecraft.entity.decoration.DisplayEntity;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.text.Text;
-import net.minecraft.util.Hand;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
@@ -53,15 +52,28 @@ public class CombatController {
     private EntityType<?> dominantType = null;
     private int dominantCount = 0;
 
-    // rotation momentum state (degrees per tick)
-    private float yawVel = 0f;
-    private float pitchVel = 0f;
-    /** Per-target random camera lead (deg) — varies the approach path. */
+    /** Upgrade controller may claim the post-kill stillness window. */
+    public boolean wantsUpgradeWindow = false;
+
     private float approachYawOffset = 0f;
-    /** Signed yaw error to the target from the last aim tick (deg, + = target to the right). */
+    /** Signed yaw error to the movement target (deg, + = target to the right). */
     private float lastYawErrSigned = 0f;
-    /** Last 8-way movement octant (see moveToward); held across ticks for hysteresis. */
     private int prevOct = 0;
+    private int octStaggerTicks = 0;
+    private int pendingOct = 0;
+    private int attackHoldTicks = 0;
+    private int sprintTapTicks = 0;
+
+    private enum TrackStyle { FLICK_NEXT, WATCH, SCAN, HESITATE }
+    private TrackStyle trackStyle = TrackStyle.WATCH;
+    private float aimHeightFrac = 0.58f;
+    private int lookEntityId = Integer.MIN_VALUE;
+    private boolean lookIssued = false;
+    private int scanStep = 0;
+    private int scanCount = 0;
+    private float[] scanYaw;
+    private float[] scanPitch;
+    private long hesitateUntil = 0;
 
     // ghost filter: per-entity motion tracking
     private static final class Motion {
@@ -89,16 +101,24 @@ public class CombatController {
         if (target == null) return "searching";
         String s = (tagged ? "cooking " : "approaching ") + (lastTargetDesc == null ? "?" : lastTargetDesc);
         if (tagged && nextTargetDesc != null) s += "  §8→ next: " + nextTargetDesc;
+        if (tagged) s += "  §8" + trackStyle.name().toLowerCase().replace('_', '-');
         return s;
+    }
+
+    public boolean isStationary(MinecraftClient client) {
+        if (client.player == null) return false;
+        return UpgradeController.playerStill(client);
     }
 
     public void reset(MinecraftClient client) {
         target = null;
         nextTarget = null;
         tagged = false;
-        yawVel = 0f;
-        pitchVel = 0f;
         prevOct = 0;
+        octStaggerTicks = 0;
+        lookIssued = false;
+        wantsUpgradeWindow = false;
+        MouseDriver.INSTANCE.cancel();
         releaseKeys(client);
     }
 
@@ -109,12 +129,14 @@ public class CombatController {
         client.options.leftKey.setPressed(false);
         client.options.rightKey.setPressed(false);
         client.options.sprintKey.setPressed(false);
+        if (attackHoldTicks <= 0) client.options.attackKey.setPressed(false);
     }
 
     public void tick(MinecraftClient client) {
         if (client.player == null || client.world == null || client.interactionManager == null) return;
         long now = System.currentTimeMillis();
         ThreadLocalRandom rng = ThreadLocalRandom.current();
+        tickAttackHold(client);
 
         updateMotion(client);
 
@@ -125,10 +147,11 @@ public class CombatController {
             }
             target = null;
             tagged = false;
+            lookIssued = false;
         }
 
         // occasional human-ish idle
-        if (now < nextActionAt) { releaseKeys(client); decayAim(client); return; }
+        if (now < nextActionAt) { releaseKeys(client); return; }
         if (rng.nextDouble() < cfg.idleChancePerMinute / (60.0 * 20.0)) { // per tick
             nextActionAt = now + rng.nextLong(cfg.idleMinMs, cfg.idleMaxMs + 1);
             releaseKeys(client);
@@ -140,6 +163,7 @@ public class CombatController {
             if (tagged) {
                 kills++;
                 stats.recordKill();
+                wantsUpgradeWindow = true;
                 if (logger != null) {
                     logger.log("kill",
                         "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
@@ -148,7 +172,8 @@ public class CombatController {
             }
             target = null;
             tagged = false;
-            nextActionAt = now + rng.nextLong(cfg.reactionDelayMinMs, cfg.reactionDelayMaxMs + 1);
+            lookIssued = false;
+            nextActionAt = now + HumanTiming.logNormalMs(cfg.reactionDelayMinMs, cfg.reactionDelayMaxMs);
             return;
         }
 
@@ -160,94 +185,122 @@ public class CombatController {
             }
             target = null;
             tagged = false;
+            lookIssued = false;
         }
 
         // stale un-killable target
         if (target != null && !tagged && now - targetPickedAt > 12_000) {
             target = null;
+            lookIssued = false;
         }
 
         // stage changed under us: current (untagged) target is no longer the dominant mob type
         if (target != null && !tagged && cfg.targetDominant && dominantType != null
             && target.getType() != dominantType && dominantCount >= cfg.minDominantPack) {
             target = null;
+            lookIssued = false;
         }
 
         if (target == null) {
             if (nextTarget != null && validMob(client, nextTarget)) {
-                target = nextTarget;            // already lined up on it during the last cook
+                target = nextTarget;
             } else {
                 target = pickTarget(client, null);
-                if (target == null) { nextTarget = null; releaseKeys(client); decayAim(client); return; }
-                // fresh target -> new random approach style (curved path variation)
-                approachYawOffset = (float) ((rng.nextDouble() * 2 - 1) * cfg.approachYawOffsetMaxDeg / speedFactor(client));
+                if (target == null) { nextTarget = null; releaseKeys(client); return; }
             }
             nextTarget = null;
             nextTargetDesc = null;
             targetPickedAt = now;
+            rollAimPoint(client);
+            lookIssued = false;
             readNameplate(target);
+            maybeLook(client, target, "approach");
             if (logger != null) {
                 logger.log("tag_intent", "mob", targetMob, "rarity", targetRarity, "level", targetLevel);
             }
         }
 
+        lastYawErrSigned = MouseDriver.signedYawError(client, tagged && nextTarget != null ? nextTarget : target);
+
         if (tagged) {
-            // Engagement started — the server is cooking it and we must stay in
-            // range, but there's no reason to stare at it. Use the wait to pick
-            // the next mob (re-scanned every nextTargetRescanMs so a better one
-            // spawning nearby gets noticed) and swing the camera onto it, so the
-            // moment this one dies we're already facing the next approach.
-            releaseKeys(client);
-            if (nextTarget == null || !validMob(client, nextTarget) || now - nextPickedAt > cfg.nextTargetRescanMs) {
-                LivingEntity n = pickTarget(client, target);
-                if (n != nextTarget) {
-                    nextTarget = n;
-                    approachYawOffset = (float) ((rng.nextDouble() * 2 - 1) * cfg.approachYawOffsetMaxDeg / speedFactor(client));
-                    nextTargetDesc = n != null ? describe(n) : null;
-                }
-                nextPickedAt = now;
-            }
-            if (nextTarget == null || !cfg.preAimNext) { decayAim(client); return; }
-            aimTick(client, nextTarget);
-            // Pre-walk toward it while the leash allows, so the next approach is
-            // partly (often fully) done by the time this one dies. Stop a little
-            // inside the leash so lag never drags us out of range, and don't
-            // walk THROUGH the cooking mob (shoving it trips the ghost filter).
-            double leash = client.player.distanceTo(target);
-            double toNext = client.player.distanceTo(nextTarget);
-            boolean roomOnLeash = leash + coastDistance(client) < cookLeash - 0.25;
-            boolean throughTarget = leash < toNext
-                && Math.abs(MathHelper.wrapDegrees(bearingTo(client, nextTarget) - bearingTo(client, target))) < 35f;
-            if (cfg.movement && toNext > cfg.reach && roomOnLeash && !throughTarget) moveToward(client, toNext, false);
-            else releaseKeys(client);
+            tickCook(client, now);
             return;
         }
 
-        double dist = client.player.distanceTo(target);
-        double aimErr = aimTick(client, target);
+        maybeLook(client, target, "approach");
+        reacquireIfNeeded(client, target, "approach-correct");
 
+        double dist = client.player.distanceTo(target);
         if (dist > cfg.reach) {
             if (cfg.movement) moveToward(client, dist, true);
             return;
         }
 
         releaseKeys(client);
-        // Arrived while sprinting: a sprint-hit is a knockback hit (shoves the mob
-        // ~a block, which the ghost filter reads as "it moved") and it also kills
-        // our own momentum. Drop sprint and let the STOP packet go out first —
-        // the tap happens next tick, 50 ms later.
-        if (client.player.isSprinting()) { client.player.setSprinting(false); return; }
-        if (!tagged && now - lastTapAt >= cfg.tapCooldownMs && aimErr <= cfg.aimTapMaxErrorDeg) {
-            client.interactionManager.attackEntity(client.player, target);
-            client.player.swingHand(Hand.MAIN_HAND);
+        // Arrived while sprinting: drop the sprint *key* and wait a tick so the
+        // hit isn't a knockback sprint-hit (shoves the mob, trips ghost filter).
+        if (client.player.isSprinting() || sprintTapTicks > 0) {
+            tapSprint(client, false);
+            return;
+        }
+        double aimErr = MouseDriver.aimErrorDeg(client, target, aimHeightFrac);
+        if (!tagged && now - lastTapAt >= cfg.tapCooldownMs && aimErr <= cfg.aimTapMaxErrorDeg
+            && !MouseDriver.INSTANCE.isBusy()) {
+            pressAttack(client);
             lastTapAt = now;
             tagAt = now;
             tagged = true;
             cookLeash = rng.nextDouble(cfg.cookLeashMinBlocks, Math.max(cfg.cookLeashMinBlocks + 0.01, cfg.cookLeashMaxBlocks));
+            rollTrackStyle(client);
+            lookIssued = false;
             if (logger != null) {
-                logger.log("tag", "mob", targetMob, "rarity", targetRarity, "level", targetLevel);
+                logger.log("tag", "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
+                    "trackStyle", trackStyle.name());
             }
         }
+    }
+
+    private void tickCook(MinecraftClient client, long now) {
+        // Stay in range of the cooking mob; camera is a one-shot intent, not a lock.
+        if (nextTarget == null || !validMob(client, nextTarget) || now - nextPickedAt > cfg.nextTargetRescanMs) {
+            LivingEntity n = pickTarget(client, target);
+            if (n != nextTarget) {
+                nextTarget = n;
+                nextTargetDesc = n != null ? describe(n) : null;
+            }
+            nextPickedAt = now;
+        }
+
+        switch (trackStyle) {
+            case FLICK_NEXT -> {
+                if (cfg.preAimNext && nextTarget != null) maybeLook(client, nextTarget, "flick-next");
+            }
+            case WATCH -> { /* leave the camera; idle tremor only */ }
+            case HESITATE -> {
+                if (now >= hesitateUntil && nextTarget != null) maybeLook(client, nextTarget, "hesitate");
+            }
+            case SCAN -> tickScan(client);
+        }
+
+        if (nextTarget == null) { releaseKeys(client); return; }
+        double leash = client.player.distanceTo(target);
+        double toNext = client.player.distanceTo(nextTarget);
+        boolean roomOnLeash = leash + coastDistance(client) < cookLeash - 0.25;
+        boolean throughTarget = leash < toNext
+            && Math.abs(MathHelper.wrapDegrees(bearingTo(client, nextTarget) - bearingTo(client, target))) < 35f;
+        lastYawErrSigned = MouseDriver.signedYawError(client, nextTarget);
+        if (cfg.movement && toNext > cfg.reach && roomOnLeash && !throughTarget) moveToward(client, toNext, false);
+        else releaseKeys(client);
+    }
+
+    private void tickScan(MinecraftClient client) {
+        if (MouseDriver.INSTANCE.isBusy()) return;
+        if (scanStep < scanCount && scanYaw != null) {
+            MouseDriver.INSTANCE.lookTo(client, scanYaw[scanStep], scanPitch[scanStep], "scan");
+            scanStep++;
+            return;
+        }
+        if (nextTarget != null) maybeLook(client, nextTarget, "scan-settle");
     }
 
     /**
@@ -283,36 +336,132 @@ public class CombatController {
         float err = lastYawErrSigned;
         int oct = Math.round(err / 45f);
         if (oct == -4) oct = 4;
-        // hysteresis: keep the current combo until the bearing is clearly past the boundary
         if (oct != prevOct
             && Math.abs(MathHelper.wrapDegrees(err - prevOct * 45f)) < 22.5f + cfg.moveHysteresisDeg) {
             oct = prevOct;
         }
-        prevOct = oct;
+        if (oct != prevOct) {
+            pendingOct = oct;
+            if (octStaggerTicks <= 0) octStaggerTicks = HumanTiming.ticks(1, 2);
+        }
+        if (octStaggerTicks > 0) {
+            octStaggerTicks--;
+            oct = prevOct;
+            if (octStaggerTicks == 0) prevOct = pendingOct;
+        } else {
+            prevOct = oct;
+        }
 
         int a = Math.abs(oct);
         boolean forward = a <= 1;
         boolean back = a >= 3;
-        boolean right = oct > 0 && a < 4;   // + = target to our right -> D
-        boolean left = oct < 0 && a < 4;    // - = target to our left  -> A
+        boolean right = oct > 0 && a < 4;
+        boolean left = oct < 0 && a < 4;
         client.options.forwardKey.setPressed(forward);
         client.options.backKey.setPressed(back);
         client.options.leftKey.setPressed(left);
         client.options.rightKey.setPressed(right);
 
-        // Sprint: assert it on the player directly rather than through the sprint
-        // keybind (a StickyKeyBinding under "Sprint: Toggle", where setPressed(true)
-        // every tick flips it on/off). Vanilla keeps it going while W is held and
-        // clears it on its own rules; we only re-assert when those rules allow it,
-        // so there's no start/stop packet flicker.
         boolean aligned = Math.abs(err) < cfg.sprintAlignMaxDeg;
         double toGo = dist - cfg.reach;
         boolean wantSprint = allowSprint && cfg.sprint && forward && aligned && toGo > cfg.sprintMinDistance;
-        if (wantSprint && !client.player.isSprinting() && canStartSprint(client)) {
-            client.player.setSprinting(true);
+        tapSprint(client, wantSprint);
+        boolean hopping = allowSprint && cfg.sprintJump && client.player.isSprinting() && aligned && toGo > cfg.sprintJumpMinDistance;
+        client.options.jumpKey.setPressed(client.player.horizontalCollision || hopping);
+    }
+
+    private void tapSprint(MinecraftClient client, boolean wantSprint) {
+        boolean toggled = false;
+        try {
+            toggled = client.options.getSprintToggled().getValue();
+        } catch (Throwable ignored) {}
+        if (!toggled) {
+            client.options.sprintKey.setPressed(wantSprint && canStartSprint(client));
+            return;
         }
-        boolean hop = allowSprint && cfg.sprintJump && client.player.isSprinting() && aligned && toGo > cfg.sprintJumpMinDistance;
-        client.options.jumpKey.setPressed(client.player.horizontalCollision || hop);
+        // Sprint: Toggle — tap the key once to change state, don't hold it.
+        if (sprintTapTicks > 0) {
+            sprintTapTicks--;
+            client.options.sprintKey.setPressed(true);
+            return;
+        }
+        boolean running = client.player.isSprinting();
+        if (wantSprint && !running && canStartSprint(client)) sprintTapTicks = 1;
+        else if (!wantSprint && running) sprintTapTicks = 1;
+        client.options.sprintKey.setPressed(sprintTapTicks > 0);
+    }
+
+    private void pressAttack(MinecraftClient client) {
+        client.options.attackKey.setPressed(true);
+        attackHoldTicks = HumanTiming.ticks(1, 2);
+    }
+
+    private void tickAttackHold(MinecraftClient client) {
+        if (attackHoldTicks <= 0) return;
+        attackHoldTicks--;
+        if (attackHoldTicks <= 0) client.options.attackKey.setPressed(false);
+        else client.options.attackKey.setPressed(true);
+    }
+
+    private void rollAimPoint(MinecraftClient client) {
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        aimHeightFrac = (float) (0.42 + rng.nextDouble() * 0.32);
+        approachYawOffset = (float) ((rng.nextDouble() * 2 - 1) * cfg.approachYawOffsetMaxDeg / speedFactor(client));
+        lookEntityId = Integer.MIN_VALUE;
+        lookIssued = false;
+    }
+
+    private void rollTrackStyle(MinecraftClient client) {
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        double a = Math.max(0, cfg.trackStyleFlickNext);
+        double b = Math.max(0, cfg.trackStyleWatchThenFind);
+        double c = Math.max(0, cfg.trackStyleScan);
+        double d = Math.max(0, cfg.trackStyleHesitate);
+        double sum = a + b + c + d;
+        if (sum <= 0) sum = 1;
+        double r = rng.nextDouble() * sum;
+        if (r < a) trackStyle = TrackStyle.FLICK_NEXT;
+        else if (r < a + b) trackStyle = TrackStyle.WATCH;
+        else if (r < a + b + c) trackStyle = TrackStyle.SCAN;
+        else trackStyle = TrackStyle.HESITATE;
+
+        hesitateUntil = System.currentTimeMillis() + HumanTiming.logNormalMs(180, 700);
+        scanStep = 0;
+        scanCount = 0;
+        if (trackStyle == TrackStyle.SCAN) {
+            scanCount = HumanTiming.ticks(2, 4);
+            scanYaw = new float[scanCount];
+            scanPitch = new float[scanCount];
+            float yaw = client.player.getYaw();
+            float pitch = client.player.getPitch();
+            for (int i = 0; i < scanCount; i++) {
+                scanYaw[i] = yaw + (float) ((rng.nextDouble() * 2 - 1) * 40.0);
+                scanPitch[i] = MathHelper.clamp(pitch + (float) ((rng.nextDouble() * 2 - 1) * 8.0), -30f, 40f);
+            }
+        }
+    }
+
+    private void maybeLook(MinecraftClient client, Entity e, String reason) {
+        if (e == null || MouseDriver.INSTANCE.isBusy()) return;
+        if (lookIssued && lookEntityId == e.getId()) return;
+        float lead = 0f;
+        if ("approach".equals(reason) && approachYawOffset != 0f) {
+            double distXZ = client.player.distanceTo(e);
+            double t = MathHelper.clamp((distXZ - cfg.reach) / 8.0, 0.0, 1.0);
+            lead = approachYawOffset * (float) t;
+        }
+        MouseDriver.INSTANCE.lookAtEntity(client, e, aimHeightFrac, lead, reason);
+        lookIssued = true;
+        lookEntityId = e.getId();
+    }
+
+    private void reacquireIfNeeded(MinecraftClient client, Entity e, String reason) {
+        if (e == null || MouseDriver.INSTANCE.isBusy() || !lookIssued) return;
+        double err = MouseDriver.aimErrorDeg(client, e, aimHeightFrac);
+        if (err > cfg.lookReacquireDeg) {
+            lookIssued = false;
+            maybeLook(client, e, reason);
+        }
     }
 
     /** Mirrors ClientPlayerEntity's own sprint-start gates so a forced sprint sticks. */
@@ -503,87 +652,5 @@ public class CombatController {
             }
         }
         lastTargetDesc = (targetRarity != null ? "[" + targetRarity + "] " : "") + targetMob;
-    }
-
-    /**
-     * Momentum-based aiming. The camera has angular velocity and an
-     * acceleration cap: every turn ramps up, coasts, and eases out —
-     * nothing ever snaps. Returns the remaining aim error in degrees.
-     *
-     * Feel is driven by cfg.aimAgility (0..1):
-     *   turn speed cap:  120..420 deg/s
-     *   acceleration:    250..1600 deg/s²
-     */
-    private double aimTick(MinecraftClient client, Entity target) {
-        Vec3d eye = client.player.getEyePos();
-        Vec3d aim = target.getEntityPos().add(0, target.getHeight() * 0.6, 0);
-        double dx = aim.x - eye.x;
-        double dy = aim.y - eye.y;
-        double dz = aim.z - eye.z;
-        double distXZ = Math.sqrt(dx * dx + dz * dz);
-        float wantYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
-        float wantPitch = (float) -Math.toDegrees(Math.atan2(dy, distXZ));
-
-        // Curved-approach lead: bias the aim off-center while far away, decaying
-        // to 0 within reach so the tap still lands dead-on. Different sign/size
-        // per target -> a different arc every time instead of straight lines.
-        if (approachYawOffset != 0f) {
-            double lead = (distXZ - cfg.reach) / 8.0;      // full offset ~8 blocks out
-            lead = MathHelper.clamp(lead, 0.0, 1.0);
-            wantYaw += approachYawOffset * (float) lead;
-        }
-
-        float yawErr = MathHelper.wrapDegrees(wantYaw - client.player.getYaw());
-        float pitchErr = wantPitch - client.player.getPitch();
-        lastYawErrSigned = yawErr;
-        double err = Math.sqrt(yawErr * yawErr + pitchErr * pitchErr);
-
-        double a = MathHelper.clamp(cfg.aimAgility, 0.05, 1.0);
-        float maxSpeed = (float) ((120.0 + 300.0 * a) / 20.0);   // deg per tick
-        float accel = (float) ((250.0 + 1350.0 * a) / 400.0);    // deg per tick per tick
-
-        if (err < cfg.aimDeadzoneDeg) {
-            // close enough — bleed off momentum instead of pixel-tracking
-            yawVel *= 0.7f;
-            pitchVel *= 0.7f;
-        } else {
-            yawVel = approachVel(yawVel, yawErr, maxSpeed, accel);
-            pitchVel = approachVel(pitchVel, pitchErr, maxSpeed * 0.6f, accel * 0.8f);
-            // faint hand tremor, proportional to how fast we're turning
-            float tremor = Math.abs(yawVel) * 0.04f;
-            if (tremor > 0.01f) {
-                ThreadLocalRandom r = ThreadLocalRandom.current();
-                yawVel += (r.nextFloat() - 0.5f) * tremor;
-                pitchVel += (r.nextFloat() - 0.5f) * tremor * 0.6f;
-            }
-        }
-
-        client.player.setYaw(client.player.getYaw() + yawVel);
-        client.player.setPitch(MathHelper.clamp(client.player.getPitch() + pitchVel, -89f, 89f));
-        return err;
-    }
-
-    /**
-     * Velocity chases a proportional target speed under an acceleration cap:
-     * far away -> speeds up toward the cap; close -> desired speed shrinks,
-     * so it brakes into the target instead of overshooting or snapping.
-     */
-    private static float approachVel(float vel, float error, float maxSpeed, float accel) {
-        float desired = MathHelper.clamp(error * 0.25f, -maxSpeed, maxSpeed);
-        float dv = MathHelper.clamp(desired - vel, -accel, accel);
-        return vel + dv;
-    }
-
-    /** No target / idle: coast the camera to a stop rather than freezing it. */
-    private void decayAim(MinecraftClient client) {
-        if (Math.abs(yawVel) < 0.02f && Math.abs(pitchVel) < 0.02f) {
-            yawVel = 0f;
-            pitchVel = 0f;
-            return;
-        }
-        yawVel *= 0.85f;
-        pitchVel *= 0.85f;
-        client.player.setYaw(client.player.getYaw() + yawVel);
-        client.player.setPitch(MathHelper.clamp(client.player.getPitch() + pitchVel, -89f, 89f));
     }
 }

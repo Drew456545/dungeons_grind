@@ -37,6 +37,10 @@ public class StatsTracker {
     public String multiplier = null;
     public Double rebirthProgressPct = null;
     public final Map<String, String> balances = new HashMap<>();
+    public Double swordRemaining = null;
+    public Double zoneRemaining = null;
+    public boolean becameAffordable = false;
+    public String lastUpgradeKind = null;
     public final Set<String> activeBoosts = new HashSet<>();
     private final Map<String, Long> boostSince = new HashMap<>();
 
@@ -52,6 +56,10 @@ public class StatsTracker {
     private final List<Pattern> ascensionRes = new ArrayList<>();
     private final List<Pattern> prestigeRes = new ArrayList<>();
     private final List<Pattern> captchaRes = new ArrayList<>();
+    private final List<Pattern> swordRemainingRes = new ArrayList<>();
+    private final List<Pattern> zoneRemainingRes = new ArrayList<>();
+    private final List<Pattern> upgradeSuccessRes = new ArrayList<>();
+    private final List<Pattern> upgradeFailRes = new ArrayList<>();
 
     /** Set when a captcha chat line is seen; consumed (and cleared) by the main tick. */
     public volatile String captchaMessage = null;
@@ -70,6 +78,28 @@ public class StatsTracker {
         for (String p : cfg.ascensionChatPatterns) ascensionRes.add(compileLoose(p));
         for (String p : cfg.prestigeChatPatterns) prestigeRes.add(compileLoose(p));
         for (String p : cfg.captchaChatPatterns) captchaRes.add(compileLoose(p));
+        if (cfg.swordRemainingPatterns != null)
+            for (String p : cfg.swordRemainingPatterns) swordRemainingRes.add(compileLoose(p));
+        if (cfg.zoneRemainingPatterns != null)
+            for (String p : cfg.zoneRemainingPatterns) zoneRemainingRes.add(compileLoose(p));
+        if (cfg.upgradeSuccessPatterns != null)
+            for (String p : cfg.upgradeSuccessPatterns) upgradeSuccessRes.add(compileLoose(p));
+        if (cfg.upgradeFailPatterns != null)
+            for (String p : cfg.upgradeFailPatterns) upgradeFailRes.add(compileLoose(p));
+    }
+
+    public Double money() {
+        String key = cfg.moneyCurrency == null ? "chicken" : cfg.moneyCurrency.toLowerCase();
+        String raw = balances.get(key);
+        if (raw == null) raw = balances.get("money");
+        if (raw == null && !balances.isEmpty()) {
+            raw = balances.values().iterator().next();
+        }
+        return Amounts.parse(raw);
+    }
+
+    public void noteUpgradeSend(boolean sword) {
+        lastUpgradeKind = sword ? "sword" : "zone";
     }
 
     private static Pattern compileLoose(String p) {
@@ -90,6 +120,10 @@ public class StatsTracker {
         ctx.addProperty("ascensions", ascensions);
         if (zone != null) ctx.addProperty("zone", zone);
         if (multiplier != null) ctx.addProperty("multiplier", multiplier);
+        Double bal = money();
+        if (bal != null) ctx.addProperty("money", bal);
+        if (swordRemaining != null) ctx.addProperty("swordRemaining", swordRemaining);
+        if (zoneRemaining != null) ctx.addProperty("zoneRemaining", zoneRemaining);
         return ctx;
     }
 
@@ -134,6 +168,7 @@ public class StatsTracker {
                 String prev = balances.put(name, raw);
                 if (prev != null && !prev.equals(raw)) {
                     log("balance", "currency", name, "raw", raw);
+                    checkBecameAffordable();
                 }
             }
         }
@@ -196,6 +231,7 @@ public class StatsTracker {
                 break;
             }
         }
+        parseUpgradeChat(text);
         if (overlay) {
             Matcher m = actionBarRe.matcher(text);
             if (m.find()) {
@@ -217,6 +253,73 @@ public class StatsTracker {
                 return;
             }
         }
+    }
+
+    private void parseUpgradeChat(String text) {
+        boolean fail = anyMatch(upgradeFailRes, text);
+        boolean success = anyMatch(upgradeSuccessRes, text);
+        Double swordAmt = firstAmount(swordRemainingRes, text);
+        Double zoneAmt = firstAmount(zoneRemainingRes, text);
+        if (swordAmt == null && zoneAmt == null && lastUpgradeKind != null) {
+            // generic "need 1.2M more" after we just sent a command
+            Double any = Amounts.parse(text);
+            if (any != null && (fail || text.toLowerCase().contains("need") || text.toLowerCase().contains("remain"))) {
+                if ("zone".equals(lastUpgradeKind)) zoneAmt = any;
+                else swordAmt = any;
+            }
+        }
+        if (swordAmt != null) {
+            swordRemaining = swordAmt;
+            log("upgrade_chat", "kind", "sword", "remaining", swordAmt, "raw", text);
+        }
+        if (zoneAmt != null) {
+            zoneRemaining = zoneAmt;
+            log("upgrade_chat", "kind", "zone", "remaining", zoneAmt, "raw", text);
+        }
+        if (success || fail) {
+            log("upgrade_result",
+                "kind", lastUpgradeKind,
+                "success", success && !fail,
+                "fail", fail,
+                "message", text);
+        }
+        if (swordAmt != null || zoneAmt != null || success || fail) {
+            checkBecameAffordable();
+        }
+    }
+
+    private void checkBecameAffordable() {
+        Double bal = money();
+        if (bal == null) return;
+        if (swordRemaining != null && bal >= swordRemaining) becameAffordable = true;
+        if (zoneRemaining != null && bal >= zoneRemaining) becameAffordable = true;
+    }
+
+    private static boolean anyMatch(List<Pattern> res, String text) {
+        for (Pattern p : res) if (p.matcher(text).find()) return true;
+        return false;
+    }
+
+    private static Double firstAmount(List<Pattern> res, String text) {
+        for (Pattern p : res) {
+            Matcher m = p.matcher(text);
+            if (m.find()) {
+                Double v = amountFrom(m);
+                if (v != null) return v;
+            }
+        }
+        return null;
+    }
+
+    private static Double amountFrom(Matcher m) {
+        try {
+            String named = m.group("amount");
+            if (named != null) return Amounts.parse(named);
+        } catch (IllegalArgumentException ignored) {}
+        if (m.groupCount() >= 1) {
+            try { return Amounts.parse(m.group(1)); } catch (Exception ignored) {}
+        }
+        return Amounts.parse(m.group());
     }
 
     public void recordKill() {

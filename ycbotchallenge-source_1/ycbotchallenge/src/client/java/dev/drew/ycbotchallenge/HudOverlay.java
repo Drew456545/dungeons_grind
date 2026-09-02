@@ -11,12 +11,14 @@ public class HudOverlay {
     private final StatsTracker stats;
     private final CombatController combat;
     private final CaptchaSolver captcha;
+    private final UpgradeController upgrades;
 
-    public HudOverlay(YCBotChallengeConfig cfg, StatsTracker stats, CombatController combat, CaptchaSolver captcha) {
+    public HudOverlay(YCBotChallengeConfig cfg, StatsTracker stats, CombatController combat, CaptchaSolver captcha, UpgradeController upgrades) {
         this.cfg = cfg;
         this.stats = stats;
         this.combat = combat;
         this.captcha = captcha;
+        this.upgrades = upgrades;
     }
 
     public void render(DrawContext context) {
@@ -36,6 +38,8 @@ public class HudOverlay {
             else lines.add("§7" + combat.stateDescription() + "§r");
             if (combat.dominantDesc != null) lines.add("§7pack: " + combat.dominantDesc + "§r");
             if (combat.ghostsIgnored > 0) lines.add("§8ghosts ignored: " + combat.ghostsIgnored + "§r");
+            String up = upgrades != null ? upgrades.hudLine() : null;
+            if (up != null) lines.add("§7" + up + "§r");
         }
         lines.add("kills " + combat.kills + "  §7(" + String.format("%.1f", stats.killsPerMinute(60_000)) + "/min)§r");
 
