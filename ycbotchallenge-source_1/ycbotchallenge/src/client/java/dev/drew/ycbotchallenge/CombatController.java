@@ -51,6 +51,7 @@ public class CombatController {
     private long nextActionAt = 0;   // humanized reaction / idle gate
     private long breakUntil = 0;     // break scheduler: inert while now < breakUntil
     private long nextFocusEndAt = 0;
+    private int lastZoneSeq = 0;
     private long lastClickAt = 0;
     private int clicksThisTarget = 0;
     public int kills = 0;
@@ -149,8 +150,19 @@ public class CombatController {
         currentHp = null;
         currentDps = null;
         currentEtaMs = null;
+        ghosts.clear();
+        motion.clear();
         MouseDriver.INSTANCE.cancel();
         releaseKeys(client);
+    }
+
+    /** Zone switched: full targeting reset plus the dominant-type cache. */
+    private void retargetForZone(MinecraftClient client) {
+        reset(client);
+        dominantType = null;
+        dominantCount = 0;
+        dominantDesc = null;
+        if (logger != null) logger.log("zone_retarget", "zone", stats.zone);
     }
 
     public void releaseKeys(MinecraftClient client) {
@@ -168,6 +180,14 @@ public class CombatController {
         if (client.player == null || client.world == null || client.interactionManager == null) return;
         long now = System.currentTimeMillis();
         ThreadLocalRandom rng = ThreadLocalRandom.current();
+
+        // Zone switched (e.g. /zone max succeeded): new mobs spawn, so all targeting
+        // state and the ghost blacklist from the old zone are meaningless.
+        int zseq = stats.zoneChangeSeq();
+        if (zseq != lastZoneSeq) {
+            lastZoneSeq = zseq;
+            retargetForZone(client);
+        }
 
         updateMotion(client);
 

@@ -42,6 +42,8 @@ public class StatsTracker {
     public boolean becameAffordable = false;
     public String lastUpgradeKind = null;
     private long lastUpgradeSendAt = 0;
+    private int zoneChangeSeq = 0;
+    private String reprobeKind = null;
     public final Set<String> activeBoosts = new HashSet<>();
     private final Map<String, Long> boostSince = new HashMap<>();
 
@@ -203,6 +205,7 @@ public class StatsTracker {
             String z = m.group(1).trim();
             if (!z.equals(zone)) {
                 zone = z;
+                zoneChangeSeq++;
                 zoneBaselineTtkMs = null;
                 zoneKills = 0;
                 lastBenchmarkLogged = null;
@@ -461,8 +464,9 @@ public class StatsTracker {
             return;
         }
         if (success && !fail) {
-            // purchased: next cost unknown until the next response teaches it
+            // purchased: next cost unknown until we re-send the command and read the fail line
             if ("zone".equals(kind)) zoneRemaining = null; else swordRemaining = null;
+            reprobeKind = kind;
             log("upgrade_result", "kind", kind, "success", true, "fail", false, "message", text);
             return;
         }
@@ -538,6 +542,16 @@ public class StatsTracker {
     }
 
     public Double zoneBaselineTtkMs() { return zoneBaselineTtkMs; }
+
+    /** Increments on every sidebar zone change; CombatController diffs it to trigger a retarget. */
+    public int zoneChangeSeq() { return zoneChangeSeq; }
+
+    /** Kind whose successful purchase should be re-sent once (up-arrow style) to learn the next tier's gap. */
+    public String consumeReprobe() {
+        String k = reprobeKind;
+        reprobeKind = null;
+        return k;
+    }
 
     public double killsPerSecond(long windowMs) {
         return killsPerMinute(windowMs) / 60.0;
