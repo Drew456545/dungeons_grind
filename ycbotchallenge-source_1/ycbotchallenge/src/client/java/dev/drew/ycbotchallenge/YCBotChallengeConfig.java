@@ -403,8 +403,10 @@ public class YCBotChallengeConfig {
     public boolean stopProtocolEnabled = true;
     /** Single-tick displacement past this many blocks counts as a teleport. */
     public double teleportThresholdBlocks = 12.0;
-    /** Another player within this radius trips the stop protocol. */
+    /** Another player within this radius trips the stop protocol... */
     public double playerRadarRadius = 48.0;
+    /** ...but only after being continuously in range this long (NPCs standing in the grind area never qualify if excluded below). */
+    public long playerRadarDwellMs = 5000;
     /** Ignore players who haven't moved for this long — spawn NPCs / AFKers (0 = everyone trips it). */
     public long playerRadarIgnoreStationaryMs = 0;
     /** Names that never trip the radar (case-insensitive). */

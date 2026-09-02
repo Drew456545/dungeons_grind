@@ -57,7 +57,7 @@ public class CombatController {
     public String stopRequest = null;
     private Vec3d lastTickPos = null;
     private long lastRadarAt = 0;
-    /** Radar motion memory: entity id -> {x, z, lastMoveMs}. */
+    /** Radar memory: entity id -> {x, z, lastMoveMs, firstSeenMs, lastSeenMs}. */
     private final Map<Integer, double[]> radarMotion = new HashMap<>();
     private int clicksThisTarget = 0;
     public int kills = 0;
@@ -134,16 +134,16 @@ public class CombatController {
     }
 
     private boolean radarWhitelisted(String name) {
+        String clean = name.replaceAll("§.", "");
         for (String w : cfg.playerRadarWhitelist) {
-            if (w != null && w.equalsIgnoreCase(name)) return true;
+            if (w != null && (w.equalsIgnoreCase(name) || w.equalsIgnoreCase(clean))) return true;
         }
         return false;
     }
 
     /** Spawn NPCs / AFKers: ignore players who haven't moved within the configured window. */
-    private boolean radarIgnoredAsStationary(net.minecraft.entity.player.PlayerEntity p, long now) {
+    private boolean radarIgnoredAsStationary(net.minecraft.entity.player.PlayerEntity p, long now, double[] rec) {
         if (cfg.playerRadarIgnoreStationaryMs <= 0) return false;
-        double[] rec = radarMotion.computeIfAbsent(p.getId(), k -> new double[]{Double.NaN, Double.NaN, 0});
         Vec3d pos = p.getEntityPos();
         if (Double.isNaN(rec[0]) || Math.hypot(pos.x - rec[0], pos.z - rec[1]) > 0.5) {
             rec[0] = pos.x;
@@ -234,16 +234,30 @@ public class CombatController {
             lastTickPos = pos;
             if (now - lastRadarAt >= 200) {
                 lastRadarAt = now;
+                java.util.Set<Integer> seenNow = new java.util.HashSet<>();
                 for (var p : client.world.getPlayers()) {
                     if (p == client.player) continue;
                     if (client.player.distanceTo(p) > cfg.playerRadarRadius) continue;
                     String name = p.getName().getString();
                     if (radarWhitelisted(name)) continue;
-                    if (radarIgnoredAsStationary(p, now)) continue;
-                    stopRequest = "player nearby: " + name;
-                    releaseKeys(client);
-                    return;
+                    seenNow.add(p.getId());
+                    double[] rec = radarMotion.get(p.getId());
+                    if (rec == null) {
+                        rec = new double[]{Double.NaN, Double.NaN, 0, now, now};
+                        radarMotion.put(p.getId(), rec);
+                        if (logger != null) logger.log("radar_seen", "name", name);
+                    }
+                    rec[4] = now;
+                    if (radarIgnoredAsStationary(p, now, rec)) continue;
+                    long present = now - (long) rec[3];
+                    if (present >= cfg.playerRadarDwellMs) {
+                        stopRequest = "player nearby for " + (present / 1000) + "s: " + name;
+                        releaseKeys(client);
+                        return;
+                    }
                 }
+                // left range or despawned = dwell resets
+                radarMotion.keySet().removeIf(id -> !seenNow.contains(id));
             }
         }
 
