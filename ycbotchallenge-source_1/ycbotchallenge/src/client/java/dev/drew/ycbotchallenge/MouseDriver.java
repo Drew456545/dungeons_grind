@@ -9,12 +9,10 @@ import net.minecraft.util.math.Vec3d;
 /**
  * One-shot human mouse paths. Combat publishes a look intent; this class turns
  * that into cursor deltas that vanilla {@code Mouse.updateMouse} consumes.
- * Never writes yaw/pitch.
+ * Never writes yaw/pitch. Never servos onto a target after the path ends.
  *
- * Ninja humanization: new intents arriving mid-path blend in with velocity
- * continuity (chaining) instead of being dropped, a continuous OU tremor rides
- * on top of every path (and idle), and flick speed rotates through agility
- * regimes so no single duration-distance law fits a session.
+ * Flicks are fast and tight (a real player snaps to a mob in a few hundred ms):
+ * subtle curve bump, small overshoot sometimes, sparse idle tremor only.
  */
 public final class MouseDriver {
     public static final MouseDriver INSTANCE = new MouseDriver();
@@ -32,11 +30,8 @@ public final class MouseDriver {
     private long lastChainAt;
 
     private long lastTremorMs;
-    // OU tremor state (absolute offsets; increments are emitted)
-    private double tremorYaw, tremorPitch;
-    private double prevTremorYaw, prevTremorPitch;
-    private long lastTremorAtMs;
-    // agility regime
+
+    // agility regime: subtle tempo variance so no single Fitts regression fits a session
     private double regimeMult = 1.0;
     private long regimeUntil;
 
@@ -53,9 +48,9 @@ public final class MouseDriver {
     }
 
     /**
-     * Start a flick from the current camera to {@code (wantYaw, wantPitch)}.
-     * With chaining on, a path already in flight is re-targeted smoothly
-     * (velocity-continuous) instead of ignoring the new intent.
+     * Start a one-shot flick from the current camera to {@code (wantYaw, wantPitch)}.
+     * If a path is already playing, this is ignored (call {@link #cancel} to replace) —
+     * unless chaining is enabled, in which case the path is re-targeted smoothly.
      */
     public void lookTo(MinecraftClient client, float wantYaw, float wantPitch, String reason) {
         if (client.player == null || cfg == null) return;
@@ -67,7 +62,7 @@ public final class MouseDriver {
         if (pathActive) {
             if (!(cfg.ninja && cfg.mouseChaining)) return;
             long nowC = System.currentTimeMillis();
-            if (nowC - lastChainAt < 120) return; // don't re-target every tick
+            if (nowC - lastChainAt < 150) return; // don't re-target every tick
             lastChainAt = nowC;
             double t = pathDurationMs <= 0 ? 1.0 : Math.min(1.0, (nowC - pathStartMs) / (double) pathDurationMs);
             double u = t * t * (3.0 - 2.0 * t);
@@ -90,9 +85,9 @@ public final class MouseDriver {
         double dist = Math.sqrt(dy * dy + dp * dp);
         if (dist < 0.35) return; // already there — don't twitch
 
-        // Occasional overshoot: land past the point, a later intent can correct.
+        // Occasional small overshoot: land just past the point, a later intent can correct.
         if (dist > 8.0 && rng.nextDouble() < 0.28) {
-            double extra = 0.06 + rng.nextDouble() * 0.10;
+            double extra = 0.04 + rng.nextDouble() * 0.06;
             dy += (float) (dy * extra);
             dp += (float) (dp * extra * 0.6);
         }
@@ -100,14 +95,15 @@ public final class MouseDriver {
         float endYaw = curYaw + dy;
         float endPitch = MathHelper.clamp(curPitch + dp, -89f, 89f);
 
+        // Cubic bezier with a slight perpendicular bump so the path isn't a straight line.
         float nx = dist > 1e-3 ? (float) (-dp / dist) : 0f;
         float ny = dist > 1e-3 ? (float) (dy / dist) : 0f;
-        float amp = (float) (dist * (0.08 + rng.nextDouble() * 0.18) * (rng.nextBoolean() ? 1 : -1));
+        float amp = (float) (dist * (0.03 + rng.nextDouble() * 0.08) * (rng.nextBoolean() ? 1 : -1));
 
         if (cfg.ninja && cfg.agilityRegimes) {
             long nowR = System.currentTimeMillis();
             if (nowR >= regimeUntil) {
-                double[] regimes = {0.75, 1.0, 1.3};
+                double[] regimes = {0.9, 1.0, 1.12};
                 regimeMult = regimes[rng.nextInt(regimes.length)];
                 regimeUntil = nowR + HumanTiming.logNormalMs(cfg.regimeDwellMinMs, cfg.regimeDwellMaxMs);
                 if (logger != null) logger.log("aim_regime", "mult", regimeMult);
@@ -115,15 +111,16 @@ public final class MouseDriver {
         }
         double agility = MathHelper.clamp(cfg.aimAgility, 0.05, 1.0)
             * (cfg.ninja && cfg.agilityRegimes ? regimeMult : 1.0);
-        // Fitts-ish: bigger flicks take longer; agility shortens them. AFK-slow is OK.
-        double duration = (160.0 + 340.0 * Math.log(dist / 6.0 + 1.0) / Math.log(2)) / agility;
+        // Fitts-ish: bigger flicks take longer; agility shortens them.
+        // Tuned so a 30° snap lands in ~350ms at agility 1.0 — players acquire fast.
+        double duration = (70.0 + 110.0 * Math.log(dist / 6.0 + 1.0) / Math.log(2)) / agility;
         duration *= 0.85 + rng.nextDouble() * 0.40;
-        pathDurationMs = Math.round(MathHelper.clamp(duration, 140, 1400));
+        pathDurationMs = Math.round(MathHelper.clamp(duration, 90, 700));
 
         y0 = curYaw; p0 = curPitch;
         y3 = endYaw; p3 = endPitch;
         if (chaining) {
-            // velocity-continuous entry: B'(0) = 3(P1-P0)/D must equal the incoming velocity
+            // velocity-continuous entry: B'(0) = 3(P1-P0)/D matches the incoming velocity
             y1 = (float) (curYaw + velYaw * pathDurationMs / 3.0);
             p1 = (float) (curPitch + velPitch * pathDurationMs / 3.0);
         } else {
@@ -195,41 +192,26 @@ public final class MouseDriver {
         double scale = cursorScale(client);
         if (scale <= 1e-9) return null;
 
-        boolean ninjaTremor = cfg != null && cfg.ninja && cfg.mouseIdleTremor;
-        double[] tremor = ninjaTremor ? tremorStep() : null;
-        double tremorGain = pathActive ? 1.0 + Math.max(0, cfg.tremorSpeedScaling) : 1.0;
-
         if (pathActive) {
             long now = System.currentTimeMillis();
             double t = pathDurationMs <= 0 ? 1.0 : (now - pathStartMs) / (double) pathDurationMs;
-            double dYaw, dPitch;
             if (t >= 1.0) {
                 float[] end = bezier(1.0);
-                dYaw = end[0] - lastYaw;
-                dPitch = end[1] - lastPitch;
+                double[] out = toCursor(end[0] - lastYaw, end[1] - lastPitch, scale);
                 pathActive = false;
                 lastSet = false;
-            } else {
-                t = t * t * (3.0 - 2.0 * t); // smoothstep
-                float[] pos = bezier(t);
-                dYaw = MathHelper.wrapDegrees(pos[0] - lastYaw);
-                dPitch = pos[1] - lastPitch;
-                lastYaw = pos[0];
-                lastPitch = pos[1];
+                return out;
             }
-            if (tremor != null) {
-                dYaw += tremor[0] * tremorGain;
-                dPitch += tremor[1] * tremorGain;
-            }
+            t = t * t * (3.0 - 2.0 * t); // smoothstep
+            float[] pos = bezier(t);
+            float dYaw = MathHelper.wrapDegrees(pos[0] - lastYaw);
+            float dPitch = pos[1] - lastPitch;
+            lastYaw = pos[0];
+            lastPitch = pos[1];
             return toCursor(dYaw, dPitch, scale);
         }
 
-        // Ninja: continuous OU tremor, idle included (increments sum to ~0 over time).
-        if (tremor != null) {
-            return toCursor(tremor[0], tremor[1], scale);
-        }
-
-        // Legacy: sparse idle tremor — not a tracking loop.
+        // Sparse idle tremor — not a tracking loop, and never a constant wander.
         if (cfg != null && cfg.mouseIdleTremor && timeDelta > 0) {
             long now = System.currentTimeMillis();
             if (now - lastTremorMs > 40) {
@@ -245,27 +227,6 @@ public final class MouseDriver {
             }
         }
         return null;
-    }
-
-    /** One Ornstein-Uhlenbeck step; returns the (yaw, pitch) increment since the last call. */
-    private double[] tremorStep() {
-        long now = System.currentTimeMillis();
-        double dt = lastTremorAtMs == 0 ? 0.02 : Math.min(0.25, (now - lastTremorAtMs) / 1000.0);
-        lastTremorAtMs = now;
-        if (dt <= 0) return null;
-        ThreadLocalRandom rng = ThreadLocalRandom.current();
-        double theta = Math.max(1.0, cfg.tremorMeanReversionPerSec);
-        double amp = Math.max(0.0, cfg.tremorAmplitudeDeg);
-        double sigma = amp * Math.sqrt(2.0 * theta);
-        double sq = Math.sqrt(dt);
-        tremorYaw += -theta * tremorYaw * dt + sigma * sq * rng.nextGaussian();
-        tremorPitch += -theta * tremorPitch * dt + sigma * sq * rng.nextGaussian() * 0.45;
-        double dy = tremorYaw - prevTremorYaw;
-        double dp = tremorPitch - prevTremorPitch;
-        prevTremorYaw = tremorYaw;
-        prevTremorPitch = tremorPitch;
-        if (Math.abs(dy) < 1e-6 && Math.abs(dp) < 1e-6) return null;
-        return new double[]{dy, dp};
     }
 
     private float[] bezier(double t) {

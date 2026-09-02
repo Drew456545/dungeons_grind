@@ -42,7 +42,7 @@ Buy-or-learn. On enable the bot types `/bal` then `/swordmax` once (`startupProb
 `ninja: true` (default) enables the realism layer; `false` restores the old mechanical behavior. All rates are tunable:
 
 - Timing: soft bounds instead of hard clamps (`softClampMarginPct`), rare heavy-tail pauses (`tailChancePerDelay`), per-session bounds jitter (`sessionJitterPct`), fatigue drift (`fatiguePerHour`), and long distractions (`distractionChancePerMinute`, 2–30 s by default).
-- Mouse: continuous OU tremor (`tremorAmplitudeDeg` etc.), flick chaining with velocity-continuous retargets (`mouseChaining`), and agility regimes (`agilityRegimes`) that rotate flick speed so no single Fitts regression fits.
+- Mouse: fast, tight one-shot flicks (~350 ms for a 30° snap at `aimAgility` 1.0 — the old default `0.4` is auto-migrated), subtle curve bump, sparse idle tremor only, and small flick-tempo regimes (`agilityRegimes`) so no single Fitts regression fits. `mouseChaining` (mid-path re-targets) exists but is off by default — it reads as servo ticking.
 - Mistakes: `misclickChance`, `wrongTargetChance`, `sprintHitChance`, `typoChancePerChar` (typo + backspace while typing commands).
 - Session theater: `breaksEnabled` with `focusMinutesMin/Max` and `breakMinutesMin/Max`.
 - `movingTargetPolicy`: `ignore` (default, ghost filter untouched) or `sometimes` (`movingTargetAttackChance`).

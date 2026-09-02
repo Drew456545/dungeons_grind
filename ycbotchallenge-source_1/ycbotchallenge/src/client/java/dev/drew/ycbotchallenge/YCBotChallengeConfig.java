@@ -62,9 +62,9 @@ public class YCBotChallengeConfig {
 
     /**
      * Aim feel — one slider, 0.0 to 1.0. Scales one-shot mouse-path duration only.
-     * The camera is never locked or written directly.
+     * The camera is never locked or written directly. 1.0 = a 30° snap in ~350ms.
      */
-    public double aimAgility = 0.4;
+    public double aimAgility = 1.0;
     /** After a flick lands, only start a NEW correction flick if error exceeds this. */
     public double lookReacquireDeg = 3.0;
     /** Only click the mob when the actual camera is this close to the aim point (chicken hitbox is only a few deg). */
@@ -362,17 +362,13 @@ public class YCBotChallengeConfig {
     public double tailChancePerDelay = 0.004;
     /** Out-of-bounds samples are squashed to this fraction of the excursion instead of clamped. */
     public double softClampMarginPct = 0.25;
-    /** Rare long distractions (2-30s default), per tick rate derived from this per-minute chance. */
-    public double distractionChancePerMinute = 0.7;
-    public int distractionMinMs = 2000;
-    public int distractionMaxMs = 30_000;
-    /** Blend a new look intent into the in-flight path (velocity-continuous) instead of ignoring it. */
-    public boolean mouseChaining = true;
-    /** Continuous OU tremor: stationary amplitude (deg), extra gain while a path runs, mean reversion rate. */
-    public double tremorAmplitudeDeg = 0.05;
-    public double tremorSpeedScaling = 0.6;
-    public double tremorMeanReversionPerSec = 14.0;
-    /** Rotate flick speed through slow/normal/fast regimes so no single Fitts regression fits. */
+    /** Rare long distractions, per tick rate derived from this per-minute chance. */
+    public double distractionChancePerMinute = 0.4;
+    public int distractionMinMs = 1500;
+    public int distractionMaxMs = 12_000;
+    /** Blend a new look intent into the in-flight path (velocity-continuous). Off by default: mid-path re-targets read as servo ticking. */
+    public boolean mouseChaining = false;
+    /** Subtle flick-tempo rotation (±~10%) so no single Fitts regression fits a session. */
     public boolean agilityRegimes = true;
     public int regimeDwellMinMs = 45_000;
     public int regimeDwellMaxMs = 90_000;
@@ -430,6 +426,9 @@ public class YCBotChallengeConfig {
         if (suffixScales == null) suffixScales = Map.of();
         if (movingTargetPolicy == null) movingTargetPolicy = "ignore";
         if (balCommand == null || balCommand.isBlank()) balCommand = "/bal";
+        // 0.6.x shipped aimAgility 0.4 with a much slower duration law; migrate the exact
+        // old default to the new one so existing configs get the faster flicks.
+        if (aimAgility == 0.4) aimAgility = 1.0;
         if (swordCommand == null || swordCommand.isBlank()) swordCommand = "/swordmax";
         if (zoneCommand == null || zoneCommand.isBlank()) zoneCommand = "/zone max";
         if (moneyCurrency == null || moneyCurrency.isBlank()) moneyCurrency = "chicken";
