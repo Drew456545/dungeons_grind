@@ -149,17 +149,23 @@ public class StatsTracker {
         summaryMoneyRe = compileLoose(cfg.summaryMoneyPattern);
     }
 
+    /** Last time the sidebar money row parsed (board is live). */
+    private long lastSidebarMoneyAt = 0;
+
     /**
-     * Best current money estimate: the chat-driven book when seeded (exact anchor
-     * + trailing summary rate, frozen 90s past the last anchor), else the sidebar.
+     * Best current money estimate: the live sidebar row when fresh (it is the
+     * board's own truth), else the chat-driven book (exact anchor + trailing
+     * summary rate, frozen 90s past the last anchor), else the last sidebar read.
      */
     public Double money() {
-        Double est = book.estimate(System.currentTimeMillis());
-        if (est != null) return est;
+        long now = System.currentTimeMillis();
         String key = moneyKey();
+        Double side = liveBals.get(key);
+        if (side != null && now - lastSidebarMoneyAt <= 3_000) return side;
+        Double est = book.estimate(now);
+        if (est != null) return est;
         Double v = snapshotBals.get(key);
-        if (v != null) return v;
-        return liveBals.get(key);
+        return v != null ? v : side;
     }
 
     /** Earning rate: exact summary-window rate when seen, else the balance-delta slope. */
@@ -392,15 +398,18 @@ public class StatsTracker {
         }
         Map<String, SidebarParser.Hit> hits = SidebarParser.parseCurrencies(lines, cfg.sidebarCurrencies);
         for (SidebarParser.Hit hit : hits.values()) applyCurrency(hit.currency(), hit.rawAmount(), hit.value(), hit.line());
-        if (!liveBals.containsKey(moneyKey()) && sidebarMoneyRe != null) {
+        if (sidebarMoneyRe != null) {
             for (String line : lines) {
                 Matcher mm = sidebarMoneyRe.matcher(line);
                 if (!mm.find()) continue;
-                String g1 = mm.group(1);
-                String g2 = mm.groupCount() >= 2 ? mm.group(2) : null;
-                Double v = Amounts.parse(g1 != null ? g1 : g2);
+                String raw = null;
+                for (int g = 1; g <= mm.groupCount(); g++) {
+                    if (mm.group(g) != null) { raw = mm.group(g); break; }
+                }
+                if (raw == null) continue;
+                Double v = Amounts.parse(raw);
                 if (v == null) continue;
-                applyCurrency(moneyKey(), g1 != null ? g1 : g2, v, line);
+                applyCurrency(moneyKey(), raw, v, line);
                 break;
             }
         }
@@ -438,6 +447,7 @@ public class StatsTracker {
         Double prev = liveBals.put(key, value);
         liveRaw.put(key, raw);
         balances.put(key, raw);
+        if (key.equals(moneyKey())) lastSidebarMoneyAt = System.currentTimeMillis();
         boolean changed = prev == null || Math.abs(prev - value) > 1e-6;
         if (changed) {
             if (key.equals(moneyKey())) noteBalance(value);
@@ -593,9 +603,16 @@ public class StatsTracker {
         return dh / dt;
     }
 
-    /** Wire to ClientReceiveMessageEvents.GAME. */
+    /** Wire to ClientReceiveMessageEvents.GAME. Multi-line packets are split and classified per line. */
     public void onGameMessage(Text message, boolean overlay) {
-        String text = ChatClassifier.clean(message.getString());
+        String rawAll = message.getString();
+        if (rawAll == null || rawAll.isBlank()) return;
+        for (String line : rawAll.split("\\R")) {
+            onChatLine(ChatClassifier.clean(line), overlay);
+        }
+    }
+
+    private void onChatLine(String text, boolean overlay) {
         if (text.isEmpty()) return;
         long now = System.currentTimeMillis();
         for (Pattern p : captchaRes) {
@@ -626,13 +643,16 @@ public class StatsTracker {
         // /bal replies: window-gated and anchored; classified AFTER upgrade lines so
         // a fail line can never be eaten as a balance (the 0.8.x corruption bug).
         if (!overlay && parseBalReply(text, now)) known = true;
+        // Evidence net: raw-log unrecognized lines after our own sends — upgrade
+        // commands (6s) AND /bal probes (8s), so reply formats are always captured.
+        boolean nearSend = (lastUpgradeSendAt != 0 && now - lastUpgradeSendAt <= 6_000)
+            || (lastBalSendAt != 0 && now - lastBalSendAt <= 8_000);
         if (overlay) {
             Matcher m = actionBarRe.matcher(text);
             if (m.find()) {
                 try { rebirthProgressPct = Double.parseDouble(m.group(1)); } catch (NumberFormatException ignored) {}
             }
-            if (!known && lastUpgradeSendAt != 0
-                && now - lastUpgradeSendAt <= 6_000) {
+            if (!known && nearSend) {
                 log("upgrade_response_raw", "raw", text, "overlay", true);
             }
             return;
@@ -665,8 +685,7 @@ public class StatsTracker {
         }
         // Unrecognized line right after a command send: capture the server's actual wording
         // so the patterns can be tuned from evidence instead of guessing.
-        if (!known && lastUpgradeSendAt != 0
-            && now - lastUpgradeSendAt <= 6_000) {
+        if (!known && nearSend) {
             log("upgrade_response_raw", "raw", text);
         }
     }

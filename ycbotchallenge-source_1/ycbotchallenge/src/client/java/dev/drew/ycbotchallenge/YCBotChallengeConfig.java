@@ -373,10 +373,14 @@ public class YCBotChallengeConfig {
         "/(?i)^\\s*-?\\s*money\\s*:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*$/",
         "/(?i)^\\s*(?:your\\s+)?balance\\s*:?\\s*\\$?\\(?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\)?\\s*$/"
     );
-    /** Sidebar money line (e.g. "75.1B Money"); group 1 value-first, group 2 label-first. Live balance feed. */
-    public String sidebarMoneyPattern = "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})/";
-    /** Log every new/changed raw sidebar line (debug the scoreboard parse from the JSONL). */
-    public boolean debugSidebar = false;
+    /**
+     * Sidebar money line: "75.1B Money" (value-first), "MONEY: 75.1B" (label-first),
+     * or the real EnchantedMC row "Your Balance 2.35T". First non-null group wins.
+     */
+    public String sidebarMoneyPattern =
+        "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})|YOUR\\s+BALANCE\\s*:?\\s*\\(?\\$?([\\d,.]+\\s*[A-Za-z]{0,4})\\)?/";
+    /** Log every new/changed raw sidebar line (debug the scoreboard parse from the JSONL). Default on while we tune parsers from live evidence. */
+    public boolean debugSidebar = true;
     /**
      * Hard cap between kill-driven /swordmax or /zone max sends of the same kind.
      * Success follow-ups (immediate re-run to learn the next tier) bypass this.
@@ -468,7 +472,7 @@ public class YCBotChallengeConfig {
     public Map<String, Double> rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
 
     /** Bump when shipping new default patterns; loaded configs below this get pattern lists replaced. */
-    public int configVersion = 6;
+    public int configVersion = 7;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -493,7 +497,7 @@ public class YCBotChallengeConfig {
 
     /** Old configs keep stale server-specific patterns forever; replace them wholesale on version bumps. */
     private boolean migrate() {
-        if (configVersion >= 6) return false;
+        if (configVersion >= 7) return false;
         boolean changed = false;
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
         if (configVersion < 4) {
@@ -523,7 +527,14 @@ public class YCBotChallengeConfig {
             zonePattern = fresh.zonePattern;
             changed = true;
         }
-        configVersion = 6;
+        if (configVersion < 7) {
+            // v7: parse the real "Your Balance 2.35T" sidebar row; sidebar raw
+            // logging on by default while parsers are tuned from live evidence.
+            sidebarMoneyPattern = fresh.sidebarMoneyPattern;
+            debugSidebar = true;
+            changed = true;
+        }
+        configVersion = 7;
         return changed;
     }
 

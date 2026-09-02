@@ -99,7 +99,28 @@ public final class EconomyChecks {
         n += eq("zone row value", found1 ? m1.group(1) : null, "1");
         var m2 = zoneRe.matcher(SidebarParser.strip("Zone: 3"));
         n += eq("legacy colon zone", m2.find() ? m2.group(1) : null, "3");
+
+        // Sidebar money rows: value-first, label-first, and the real "Your Balance" row.
+        Pattern moneyRe = Pattern.compile(
+            CFG.sidebarMoneyPattern.substring(1, CFG.sidebarMoneyPattern.length() - 1),
+            Pattern.CASE_INSENSITIVE);
+        n += eq("sidebar your-balance row", firstGroup(moneyRe, "Your Balance 2.35T"), 2.35e12, 1e6);
+        n += eq("sidebar your-balance parens", firstGroup(moneyRe, "Your Balance: (1.09T)"), 1.09e12, 1e6);
+        n += eq("sidebar value-first money", firstGroup(moneyRe, "75.1B MONEY"), 75.1e9, 1e3);
+        n += eq("sidebar label-first money", firstGroup(moneyRe, "MONEY: 75.1B"), 75.1e9, 1e3);
+        n += eq("zone row is not money", firstGroup(moneyRe, "Zone 1") == null, true);
+        n += eq("time row is not money", firstGroup(moneyRe, "Time Left 05:00") == null, true);
         return n;
+    }
+
+    /** Mirror of the group-scan in StatsTracker.pollSidebar: first non-null group, parsed. */
+    private static Double firstGroup(Pattern re, String line) {
+        var m = re.matcher(SidebarParser.strip(line));
+        if (!m.find()) return null;
+        for (int g = 1; g <= m.groupCount(); g++) {
+            if (m.group(g) != null) return Amounts.parse(m.group(g));
+        }
+        return null;
     }
 
     private static int failLines() {

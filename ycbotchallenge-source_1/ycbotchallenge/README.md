@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.9.0.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.9.1.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -30,9 +30,10 @@ Drop `ycbotchallenge-0.9.0.jar` into your `mods/` folder alongside Fabric Loader
 
 Chat-driven, zero-spam, buy-or-wait. `/swordmax` and `/zone max` are **never polled** — every send is event-driven with a plausible human reason, and each goes through the humanized typing pipeline (kill-lull gating, log-normal pauses, typos).
 
-**The money book.** Three exact anchors, all from chat (verified against live EnchantedMC logs):
+**The money book.** Exact anchors, verified against live EnchantedMC logs:
 
-- `/bal` once on enable seeds the balance (real reply: `Your Balances:` / ` - Money: (1.09T)`).
+- The sidebar `Your Balance 2.35T` row feeds the live balance every second (fresh board truth wins while it's parsing).
+- `/bal` once on enable seeds the book as a backup (real reply: `Your Balances:` / ` - Money: (1.09T)`; multi-line packets are split per line).
 - `Reward Summary: (60s)` → ` + 17.19B Money` accrues exact earnings every minute (overlap-clamped so re-anchoring never double-counts). Between anchors the estimate grows at the trailing summary rate, frozen 90s after the last anchor — no summaries means no income anyway.
 - A fail line while the price is known re-anchors the book exactly: balance = price − gap.
 
@@ -40,13 +41,13 @@ Chat-driven, zero-spam, buy-or-wait. `/swordmax` and `/zone max` are **never pol
 
 **The buy loop.** After each kill (post-settle, `postKillEvalDelayMin/MaxMs`), if the book covers a known price, the bot waits a humanized notice delay (`buyNoticeDelayMin/MaxMs`, 2–8s) and types the command. A fail line updates the price and it goes quiet. **Silence within `successSilenceMs` (3s) means the purchase succeeded** — no reliance on success wording — then the price resets to unknown, a human-plausible `/bal` re-seed follows (1.5–4s), and the next attempt waits until the balance passes the **old** price again (`retryPriceGrowthPct` margin). Unknown prices get one seed send per kind per session. `upgradeMinIntervalMs` (60s) per kind remains as a backstop ceiling, not a heartbeat.
 
-**Strict chat gate.** Upgrade lines classify only within `upgradeResponseWindowMs` (4s) of our own send, never on player/broadcast lines (`»` or `[rank]` prefix), and only via anchored patterns. This kills the 0.8.x failure mode where `EnchantedMC »` broadcasts matched the loose `enchanted` success pattern and fail lines were eaten as `/bal` replies. Success/maxed wording is never trusted; unrecognized lines in the window are still raw-logged (`upgrade_response_raw`) for evidence-based tuning.
+**Strict chat gate.** Upgrade lines classify only within `upgradeResponseWindowMs` (4s) of our own send, never on player/broadcast lines (`»` or `[rank]` prefix), and only via anchored patterns. This kills the 0.8.x failure mode where `EnchantedMC »` broadcasts matched the loose `enchanted` success pattern and fail lines were eaten as `/bal` replies. Success/maxed wording is never trusted; unrecognized lines are raw-logged (`upgrade_response_raw`) after both upgrade sends (6s) and `/bal` probes (8s), so reply formats are always captured for evidence-based tuning.
 
 **Zone.** Same model for `/zone max` (fail gap → `zoneTarget = bal + gap`), plus the TTK readiness gate below. A successful zone advance teleports you, so the stop protocol exempts displacements for `expectedTeleportAfterZoneMs` (8s) after our own zone send. Zone changes are detected from the sidebar `Zone 1` row (colon-less) or the `All mobs have been respawned in your zone.` broadcast, and force a full targeting reset (`zone_retarget`).
 
 Sword vs zone is a **log-scaled TTK readiness** `R`, not a sword-count quota. Fresh-zone mobs take ~40s; each `/swordmax` drops that. `R` lerps in log-space from this zone's TTK baseline down to `zoneReadyTtkMs` (2s). On a 40s start that crosses 50/50 around ~9s and reaches 1.0 at 2s. Weights: `swordWeight = 1-R`, `zoneWeight = R`. We only pick among **affordable** kinds; zone is refused while `R < zoneMinReadiness` (0.5) even if you already have the money. A high-sword enable whose first kills are already ~2s snaps `R` to 1 and zones as soon as it is affordable. HUD prints `ttk 8.2s  zone 48%`, the live `need` and `~ETA` to the next tier from the summary rate, and a `cd 41s` remainder when the 60s cap is holding. TTK baseline resets on zone changes, so `R` goes back to 0 on the new ~40s curve.
 
-The sidebar is still reread every second for the other currencies (`sidebarCurrencies`) and snapshots publish every `scoreboardSnapshotMs` (5s) for HUD/logs — but the sidebar is **not** on the buy path. Money values in the JSONL are suffixed strings (`75.1B`), not scientific notation. Config pattern lists auto-migrate (`configVersion` 6 replaces all economy patterns with the strict evidence-based defaults).
+The sidebar is reread every second: the `Your Balance` money row feeds the buy path directly, other currencies (`sidebarCurrencies`) are logged, and snapshots publish every `scoreboardSnapshotMs` (5s). `debugSidebar` defaults to **true** while parsers are tuned from live evidence — every new sidebar row lands in the JSONL as `sidebar_raw`. Money values in the JSONL are suffixed strings (`75.1B`), not scientific notation. Config pattern lists auto-migrate (`configVersion` 7 replaces economy patterns with the strict evidence-based defaults and flips `debugSidebar` on).
 
 ### Stop protocol + TTK
 
