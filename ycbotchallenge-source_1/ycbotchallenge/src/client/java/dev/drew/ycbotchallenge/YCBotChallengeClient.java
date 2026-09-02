@@ -134,6 +134,13 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
         combat.tick(client);
 
+        if (combat.stopRequest != null) {
+            String reason = combat.stopRequest;
+            combat.stopRequest = null;
+            emergencyStop(client, reason);
+            return;
+        }
+
         long now = System.currentTimeMillis();
         if (logger != null && now - lastStatusAt >= config.statusIntervalSeconds * 1000L) {
             lastStatusAt = now;
@@ -176,6 +183,18 @@ public class YCBotChallengeClient implements ClientModInitializer {
             guiRetryBlockUntil = System.currentTimeMillis() + 20_000;
         }
         captchaSolver.begin(client, source, detail);
+    }
+
+    /** Teleport or nearby player while grinding: full stop, right now, human takes over. */
+    private void emergencyStop(MinecraftClient client, String reason) {
+        if (logger != null) logger.log("stop_protocol", "reason", reason);
+        setEnabled(client, false, true);
+        pausedReason = "stopped";
+        if (client.player != null) {
+            client.player.sendMessage(Text.literal(
+                "§c[YCBotChallenge] STOPPED — " + reason + ". Press the toggle key to resume."), false);
+        }
+        LOGGER.info("stop protocol fired: {}", reason);
     }
 
     private void pauseForCaptcha(MinecraftClient client, String source, String detail) {

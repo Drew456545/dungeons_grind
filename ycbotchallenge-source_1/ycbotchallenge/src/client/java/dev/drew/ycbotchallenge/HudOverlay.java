@@ -32,6 +32,9 @@ public class HudOverlay {
         if (!on && "captcha".equals(YCBotChallengeClient.pausedReason)) {
             lines.add("§eCAPTCHA — solve it, then press the toggle key§r");
         }
+        if (!on && "stopped".equals(YCBotChallengeClient.pausedReason)) {
+            lines.add("§cSTOPPED (stop protocol) — press the toggle key to resume§r");
+        }
         if (on) {
             String solving = captcha != null ? captcha.hudLine() : null;
             if (solving != null) lines.add(solving);

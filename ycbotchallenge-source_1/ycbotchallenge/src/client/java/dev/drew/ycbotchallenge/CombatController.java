@@ -53,6 +53,12 @@ public class CombatController {
     private long nextFocusEndAt = 0;
     private int lastZoneSeq = 0;
     private long lastClickAt = 0;
+    /** Set to request the client stop the bot (teleport / player radar); consumed by the main tick. */
+    public String stopRequest = null;
+    private Vec3d lastTickPos = null;
+    private long lastRadarAt = 0;
+    /** Radar motion memory: entity id -> {x, z, lastMoveMs}. */
+    private final Map<Integer, double[]> radarMotion = new HashMap<>();
     private int clicksThisTarget = 0;
     public int kills = 0;
     public String lastTargetDesc = null;
@@ -127,6 +133,27 @@ public class CombatController {
         return System.currentTimeMillis() < breakUntil;
     }
 
+    private boolean radarWhitelisted(String name) {
+        for (String w : cfg.playerRadarWhitelist) {
+            if (w != null && w.equalsIgnoreCase(name)) return true;
+        }
+        return false;
+    }
+
+    /** Spawn NPCs / AFKers: ignore players who haven't moved within the configured window. */
+    private boolean radarIgnoredAsStationary(net.minecraft.entity.player.PlayerEntity p, long now) {
+        if (cfg.playerRadarIgnoreStationaryMs <= 0) return false;
+        double[] rec = radarMotion.computeIfAbsent(p.getId(), k -> new double[]{Double.NaN, Double.NaN, 0});
+        Vec3d pos = p.getEntityPos();
+        if (Double.isNaN(rec[0]) || Math.hypot(pos.x - rec[0], pos.z - rec[1]) > 0.5) {
+            rec[0] = pos.x;
+            rec[1] = pos.z;
+            rec[2] = now;
+            return false; // just moved (or just seen) — counts as active
+        }
+        return now - (long) rec[2] >= cfg.playerRadarIgnoreStationaryMs;
+    }
+
     private long focusMs() {
         return HumanTiming.logNormalMs(
             cfg.focusMinutesMin * 60_000, Math.max(cfg.focusMinutesMin * 60_000 + 1, cfg.focusMinutesMax * 60_000));
@@ -152,6 +179,8 @@ public class CombatController {
         currentEtaMs = null;
         ghosts.clear();
         motion.clear();
+        radarMotion.clear();
+        lastTickPos = null;
         MouseDriver.INSTANCE.cancel();
         releaseKeys(client);
     }
@@ -187,6 +216,35 @@ public class CombatController {
         if (zseq != lastZoneSeq) {
             lastZoneSeq = zseq;
             retargetForZone(client);
+        }
+
+        // Stop protocol: teleport = pulled for a check; another player in range = staff
+        // spectating (this gamemode is solo while grinding, so anyone else is a red flag).
+        if (cfg.stopProtocolEnabled) {
+            Vec3d pos = client.player.getEntityPos();
+            if (lastTickPos != null) {
+                double jumped = pos.distanceTo(lastTickPos);
+                if (jumped > cfg.teleportThresholdBlocks) {
+                    stopRequest = "teleport (" + Math.round(jumped) + " blocks)";
+                    lastTickPos = null;
+                    releaseKeys(client);
+                    return;
+                }
+            }
+            lastTickPos = pos;
+            if (now - lastRadarAt >= 200) {
+                lastRadarAt = now;
+                for (var p : client.world.getPlayers()) {
+                    if (p == client.player) continue;
+                    if (client.player.distanceTo(p) > cfg.playerRadarRadius) continue;
+                    String name = p.getName().getString();
+                    if (radarWhitelisted(name)) continue;
+                    if (radarIgnoredAsStationary(p, now)) continue;
+                    stopRequest = "player nearby: " + name;
+                    releaseKeys(client);
+                    return;
+                }
+            }
         }
 
         updateMotion(client);
@@ -232,12 +290,41 @@ public class CombatController {
             return;
         }
 
+        // Authoritative kill signal: the cooking mob's boss bar vanished (server-side death),
+        // even when the client keeps a ghost entity around. TTK measures connect -> bar gone.
+        // A quick vanish with a still-living entity = the tag didn't stick (retag below).
+        if (target != null && connected && !stats.bossBarMatches(targetMob)) {
+            boolean entityGone = target.isRemoved() || target.isDead() || !target.isAlive();
+            long cookMs = now - tagAt;
+            if (entityGone || cookMs >= cfg.barVanishMinCookMs) {
+                kills++;
+                stats.recordKill();
+                stats.recordKillDuration(cookMs, targetRarity);
+                wantsUpgradeWindow = true;
+                if (logger != null) {
+                    logger.log("kill",
+                        "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
+                        "timeToKillMs", cookMs, "kills", kills,
+                        "via", entityGone ? "death+bar" : "bossbar-gone",
+                        "clicks", clicksThisTarget);
+                }
+                target = null;
+                connected = false;
+                clicksThisTarget = 0;
+                lookIssued = false;
+                nextTarget = null;
+                nextTargetDesc = null;
+                nextActionAt = now + HumanTiming.logNormalMs(cfg.reactionDelayMinMs, cfg.reactionDelayMaxMs);
+                return;
+            }
+        }
+
         // current target dead? -> kill credit (only if we actually connected)
         if (target != null && (target.isRemoved() || target.isDead() || !target.isAlive())) {
             if (connected) {
                 kills++;
                 stats.recordKill();
-                stats.recordKillDuration(now - tagAt);
+                stats.recordKillDuration(now - tagAt, targetRarity);
                 wantsUpgradeWindow = true;
                 if (logger != null) {
                     logger.log("kill",
