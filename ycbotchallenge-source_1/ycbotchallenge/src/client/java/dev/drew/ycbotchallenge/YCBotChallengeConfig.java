@@ -66,9 +66,9 @@ public class YCBotChallengeConfig {
      */
     public double aimAgility = 0.4;
     /** After a flick lands, only start a NEW correction flick if error exceeds this. */
-    public double lookReacquireDeg = 12.0;
-    /** Only tap the mob when the actual camera is this close to the aim point. */
-    public double aimTapMaxErrorDeg = 25.0;
+    public double lookReacquireDeg = 3.0;
+    /** Only click the mob when the actual camera is this close to the aim point (chicken hitbox is only a few deg). */
+    public double aimTapMaxErrorDeg = 3.0;
     /** Sparse idle mouse noise while standing (not a tracking loop). */
     public boolean mouseIdleTremor = true;
     public double idleTremorChancePerSecond = 0.35;
@@ -116,6 +116,32 @@ public class YCBotChallengeConfig {
     public int nextTargetRescanMs = 750;
     public double cookLeashMinBlocks = 2.0;
     public double cookLeashMaxBlocks = 4.0;
+
+    /**
+     * DPS-driven handoff. While a mob cooks we read its boss-bar HP, compute an
+     * effective DPS from the HP slope, and only start looking for / walking to
+     * the next mob once ETA = HP / DPS drops below this lead time (reaction +
+     * flick + short walk). Before that we stay put and watch — no wandering off
+     * a mob that's still far from dying.
+     */
+    public int handoffLeadMs = 700;
+    /** If we've been cooking this long with NO boss-bar DPS signal at all, look for the next mob anyway (never stall). */
+    public int handoffFallbackMs = 4000;
+    /** Minimum boss-bar HP samples before trusting a DPS number. */
+    public int dpsMinSamples = 3;
+    /** DPS slope window (ms); older HP samples are dropped. */
+    public int dpsWindowMs = 10000;
+
+    /**
+     * Click-to-connect. Once in reach and aimed, click at 5-8 cps until the
+     * mob's boss bar appears (a hit landed). Missing is realistic, so we keep
+     * clicking rather than widening the aim tolerance. Never faster than the
+     * vanilla attack cooldown (see respectVanillaAttackCooldown).
+     */
+    public int clickCpsMin = 5;
+    public int clickCpsMax = 8;
+    /** Hard ceiling: skip a click if the vanilla attack cooldown isn't ready. */
+    public boolean respectVanillaAttackCooldown = true;
 
     /**
      * Ghost filter. Real dungeon mobs are ALWAYS stationary; client-side ghost
