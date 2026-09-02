@@ -66,13 +66,20 @@ public final class ChatClassifier {
         }
     }
 
-    /** "sword" / "zone" from the line's own wording, else the given fallback. */
+    /** "rebirth" / "sword" / "zone" from the line's own wording, else the given fallback. */
     public static String kindOf(String stripped, String fallback) {
         if (stripped == null) return fallback;
         String l = stripped.toLowerCase(Locale.ROOT);
+        if (l.contains("rebirth")) return "rebirth";
         if (l.contains("sword")) return "sword";
         if (l.contains("stage") || l.contains("zone")) return "zone";
         return fallback;
+    }
+
+    /** Rebirth container title (screenshot: "Rebirth GUI"). */
+    public static boolean isRebirthGui(String title) {
+        if (title == null || title.isBlank()) return false;
+        return SidebarParser.strip(title).toLowerCase(Locale.ROOT).contains("rebirth");
     }
 
     /** Reward Summary header seconds, e.g. "Reward Summary: (60s)" → 60. */
