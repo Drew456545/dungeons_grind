@@ -22,8 +22,11 @@ import net.minecraft.util.math.Vec3d;
 
 /**
  * The grind loop, matched to the server's mechanics: one hit TAGS a mob and
- * the server auto-attacks it until it dies — one mob at a time. So per cycle:
- * pick nearest mob -> walk into reach -> tap once -> wait for death -> next.
+ * the server auto-attacks it until it dies — one mob at a time. Per cycle:
+ * pick nearest mob -> walk into reach -> click until the boss bar confirms a
+ * connect (5-8 cps, misses are OK) -> stop spamming, let it cook -> as it
+ * nears death (ETA from boss-bar HP / DPS), pre-aim/walk to the next -> on
+ * death, the handoff is already done.
  */
 public class CombatController {
     private static final Pattern NAMEPLATE = Pattern.compile(
@@ -35,17 +38,19 @@ public class CombatController {
     private EventLogger logger;
 
     private LivingEntity target = null;
-    private boolean tagged = false;
+    /** Connected = a click landed (boss bar for this mob appeared). The server now cooks it. */
+    private boolean connected = false;
     private long tagAt = 0;
     private long targetPickedAt = 0;
     /** While the current mob cooks: the mob we'll go for next (pre-aimed so the handoff is instant). */
     private LivingEntity nextTarget = null;
     private long nextPickedAt = 0;
-    /** How far we may drift from the cooking mob this kill (rolled per tag). */
+    /** How far we may drift from the cooking mob this kill (rolled per connect). */
     private double cookLeash = 3.0;
     public String nextTargetDesc = null;
     private long nextActionAt = 0;   // humanized reaction / idle gate
-    private long lastTapAt = 0;
+    private long lastClickAt = 0;
+    private int clicksThisTarget = 0;
     public int kills = 0;
     public String lastTargetDesc = null;
     public String dominantDesc = null;
@@ -53,7 +58,12 @@ public class CombatController {
     private int dominantCount = 0;
 
     /** Upgrade controller may claim the post-kill stillness window. */
-    public boolean wantsUpgradeWindow = false;
+    public boolean wantsUpgradeWindow = true;
+
+    /** Live DPS / ETA read from the boss bar (null until we have samples). */
+    public Double currentHp = null;
+    public Double currentDps = null;
+    public Double currentEtaMs = null;
 
     private float approachYawOffset = 0f;
     /** Signed yaw error to the movement target (deg, + = target to the right). */
@@ -61,7 +71,6 @@ public class CombatController {
     private int prevOct = 0;
     private int octStaggerTicks = 0;
     private int pendingOct = 0;
-    private int attackHoldTicks = 0;
     private int sprintTapTicks = 0;
 
     private enum TrackStyle { FLICK_NEXT, WATCH, SCAN, HESITATE }
@@ -99,9 +108,10 @@ public class CombatController {
 
     public String stateDescription() {
         if (target == null) return "searching";
-        String s = (tagged ? "cooking " : "approaching ") + (lastTargetDesc == null ? "?" : lastTargetDesc);
-        if (tagged && nextTargetDesc != null) s += "  §8→ next: " + nextTargetDesc;
-        if (tagged) s += "  §8" + trackStyle.name().toLowerCase().replace('_', '-');
+        String phase = connected ? "cooking " : (clicksThisTarget > 0 ? "clicking " : "approaching ");
+        String s = phase + (lastTargetDesc == null ? "?" : lastTargetDesc);
+        if (connected && nextTargetDesc != null) s += "  §8→ next: " + nextTargetDesc;
+        if (connected) s += "  §8" + trackStyle.name().toLowerCase().replace('_', '-');
         return s;
     }
 
@@ -113,11 +123,15 @@ public class CombatController {
     public void reset(MinecraftClient client) {
         target = null;
         nextTarget = null;
-        tagged = false;
+        connected = false;
+        clicksThisTarget = 0;
         prevOct = 0;
         octStaggerTicks = 0;
         lookIssued = false;
         wantsUpgradeWindow = false;
+        currentHp = null;
+        currentDps = null;
+        currentEtaMs = null;
         MouseDriver.INSTANCE.cancel();
         releaseKeys(client);
     }
@@ -129,14 +143,14 @@ public class CombatController {
         client.options.leftKey.setPressed(false);
         client.options.rightKey.setPressed(false);
         client.options.sprintKey.setPressed(false);
-        if (attackHoldTicks <= 0) client.options.attackKey.setPressed(false);
+        // never hold the attack key; we fire discrete presses via timesPressed
+        client.options.attackKey.setPressed(false);
     }
 
     public void tick(MinecraftClient client) {
         if (client.player == null || client.world == null || client.interactionManager == null) return;
         long now = System.currentTimeMillis();
         ThreadLocalRandom rng = ThreadLocalRandom.current();
-        tickAttackHold(client);
 
         updateMotion(client);
 
@@ -146,7 +160,8 @@ public class CombatController {
                 logger.log("target_abandoned", "reason", "moving-ghost", "mob", targetMob, "rarity", targetRarity);
             }
             target = null;
-            tagged = false;
+            connected = false;
+            clicksThisTarget = 0;
             lookIssued = false;
         }
 
@@ -158,46 +173,53 @@ public class CombatController {
             return;
         }
 
-        // current target dead? -> kill credit
+        // current target dead? -> kill credit (only if we actually connected)
         if (target != null && (target.isRemoved() || target.isDead() || !target.isAlive())) {
-            if (tagged) {
+            if (connected) {
                 kills++;
                 stats.recordKill();
                 wantsUpgradeWindow = true;
                 if (logger != null) {
                     logger.log("kill",
                         "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
-                        "timeToKillMs", now - tagAt, "kills", kills, "via", "death");
+                        "timeToKillMs", now - tagAt, "kills", kills, "via", "death",
+                        "clicks", clicksThisTarget);
                 }
             }
             target = null;
-            tagged = false;
+            connected = false;
+            clicksThisTarget = 0;
             lookIssued = false;
+            nextTarget = null;
+            nextTargetDesc = null;
             nextActionAt = now + HumanTiming.logNormalMs(cfg.reactionDelayMinMs, cfg.reactionDelayMaxMs);
             return;
         }
 
-        // tagged mob that never dies = client-side ghost or unkillable — abandon it
-        if (target != null && tagged && now - tagAt > cfg.maxCookMs) {
+        // connected mob that never dies = client-side ghost or unkillable — abandon it
+        if (target != null && connected && now - tagAt > cfg.maxCookMs) {
             if (logger != null) {
                 logger.log("target_abandoned", "reason", "cook-timeout",
                     "mob", targetMob, "rarity", targetRarity, "afterMs", now - tagAt);
             }
             target = null;
-            tagged = false;
+            connected = false;
+            clicksThisTarget = 0;
             lookIssued = false;
         }
 
-        // stale un-killable target
-        if (target != null && !tagged && now - targetPickedAt > 12_000) {
+        // stale target we never managed to connect on
+        if (target != null && !connected && now - targetPickedAt > 12_000) {
             target = null;
+            clicksThisTarget = 0;
             lookIssued = false;
         }
 
-        // stage changed under us: current (untagged) target is no longer the dominant mob type
-        if (target != null && !tagged && cfg.targetDominant && dominantType != null
+        // stage changed under us: current (unconnected) target is no longer the dominant mob type
+        if (target != null && !connected && cfg.targetDominant && dominantType != null
             && target.getType() != dominantType && dominantCount >= cfg.minDominantPack) {
             target = null;
+            clicksThisTarget = 0;
             lookIssued = false;
         }
 
@@ -211,6 +233,7 @@ public class CombatController {
             nextTarget = null;
             nextTargetDesc = null;
             targetPickedAt = now;
+            clicksThisTarget = 0;
             rollAimPoint(client);
             lookIssued = false;
             readNameplate(target);
@@ -220,10 +243,36 @@ public class CombatController {
             }
         }
 
-        lastYawErrSigned = MouseDriver.signedYawError(client, tagged && nextTarget != null ? nextTarget : target);
+        lastYawErrSigned = MouseDriver.signedYawError(client, connected && nextTarget != null ? nextTarget : target);
 
-        if (tagged) {
+        // Re-tag safety: if a connect was recorded but the boss bar has since
+        // vanished (tag didn't stick / ghost), drop it and resume clicking.
+        if (connected && target != null && !stats.bossBarMatches(targetMob)) {
+            if (logger != null) logger.log("retag", "reason", "bossbar-vanished", "mob", targetMob);
+            connected = false;
+            clicksThisTarget = 0;
+            lookIssued = false;
+        }
+
+        if (connected) {
             tickCook(client, now);
+            return;
+        }
+
+        // --- not connected: approach + click until the boss bar confirms a hit ---
+
+        // Connect detection: a click has landed once the mob's boss bar is showing.
+        if (clicksThisTarget >= 1 && stats.bossBarMatches(targetMob)) {
+            connected = true;
+            tagAt = now;
+            cookLeash = rng.nextDouble(cfg.cookLeashMinBlocks, Math.max(cfg.cookLeashMinBlocks + 0.01, cfg.cookLeashMaxBlocks));
+            rollTrackStyle(client);
+            lookIssued = false;
+            stats.resetDps();
+            if (logger != null) {
+                logger.log("tag", "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
+                    "trackStyle", trackStyle.name(), "clicks", clicksThisTarget, "via", "connect");
+            }
             return;
         }
 
@@ -243,32 +292,57 @@ public class CombatController {
             tapSprint(client, false);
             return;
         }
+
+        // Tight final servo: reacquireIfNeeded (threshold = lookReacquireDeg)
+        // already re-flicks when the camera drifts off the hitbox. Here we only
+        // fire a click once the actual camera is within tolerance and the vanilla
+        // attack cooldown is ready. Missing is realistic and expected — we keep
+        // clicking at 5-8 cps until one connects (boss bar appears, handled above).
         double aimErr = MouseDriver.aimErrorDeg(client, target, aimHeightFrac);
-        if (!tagged && now - lastTapAt >= cfg.tapCooldownMs && aimErr <= cfg.aimTapMaxErrorDeg
-            && !MouseDriver.INSTANCE.isBusy()) {
+        if (aimErr <= cfg.aimTapMaxErrorDeg
+            && !MouseDriver.INSTANCE.isBusy()
+            && now - lastClickAt >= clickIntervalMs()
+            && vanillaAttackReady(client)) {
             pressAttack(client);
-            lastTapAt = now;
-            tagAt = now;
-            tagged = true;
-            cookLeash = rng.nextDouble(cfg.cookLeashMinBlocks, Math.max(cfg.cookLeashMinBlocks + 0.01, cfg.cookLeashMaxBlocks));
-            rollTrackStyle(client);
-            lookIssued = false;
-            if (logger != null) {
-                logger.log("tag", "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
-                    "trackStyle", trackStyle.name());
+            lastClickAt = now;
+            clicksThisTarget++;
+            if (logger != null && clicksThisTarget == 1) {
+                logger.log("click_start", "mob", targetMob, "aimErr", Math.round(aimErr * 10.0) / 10.0);
             }
         }
     }
 
     private void tickCook(MinecraftClient client, long now) {
+        // Refresh the DPS estimate from the boss bar every tick (cheap).
+        currentHp = stats.currentHpFor(targetMob);
+        stats.sampleDpsFor(targetMob);
+        currentDps = stats.dps();
+        if (currentHp != null && currentDps != null && currentDps > 0) {
+            currentEtaMs = currentHp / currentDps * 1000.0;
+        } else {
+            currentEtaMs = null;
+        }
+
+        boolean handoffDue = currentEtaMs != null && currentEtaMs <= cfg.handoffLeadMs;
+        // Fallback: if we've been cooking a while with no DPS signal at all, start
+        // looking for the next mob anyway so we never stall on a boss-bar-less mob.
+        boolean fallbackDue = currentDps == null && (now - tagAt) > cfg.handoffFallbackMs;
+
         // Stay in range of the cooking mob; camera is a one-shot intent, not a lock.
-        if (nextTarget == null || !validMob(client, nextTarget) || now - nextPickedAt > cfg.nextTargetRescanMs) {
-            LivingEntity n = pickTarget(client, target);
-            if (n != nextTarget) {
-                nextTarget = n;
-                nextTargetDesc = n != null ? describe(n) : null;
+        // Only acquire/pre-aim the next target once the handoff is due (or fallback).
+        if (handoffDue || fallbackDue) {
+            if (nextTarget == null || !validMob(client, nextTarget) || now - nextPickedAt > cfg.nextTargetRescanMs) {
+                LivingEntity n = pickTarget(client, target);
+                if (n != nextTarget) {
+                    nextTarget = n;
+                    nextTargetDesc = n != null ? describe(n) : null;
+                    if (logger != null && n != null) {
+                        logger.log("next_picked", "mob", describe(n),
+                            "etaMs", currentEtaMs, "via", handoffDue ? "eta" : "fallback");
+                    }
+                }
+                nextPickedAt = now;
             }
-            nextPickedAt = now;
         }
 
         switch (trackStyle) {
@@ -289,8 +363,13 @@ public class CombatController {
         boolean throughTarget = leash < toNext
             && Math.abs(MathHelper.wrapDegrees(bearingTo(client, nextTarget) - bearingTo(client, target))) < 35f;
         lastYawErrSigned = MouseDriver.signedYawError(client, nextTarget);
-        if (cfg.movement && toNext > cfg.reach && roomOnLeash && !throughTarget) moveToward(client, toNext, false);
-        else releaseKeys(client);
+        // Only pre-walk once the handoff is due, so we don't drift off a mob that's
+        // still far from dying.
+        if ((handoffDue || fallbackDue) && cfg.movement && toNext > cfg.reach && roomOnLeash && !throughTarget) {
+            moveToward(client, toNext, false);
+        } else {
+            releaseKeys(client);
+        }
     }
 
     private void tickScan(MinecraftClient client) {
@@ -391,16 +470,33 @@ public class CombatController {
         client.options.sprintKey.setPressed(sprintTapTicks > 0);
     }
 
+    /**
+     * Fire one real vanilla attack key-press by incrementing {@code timesPressed}.
+     * Vanilla's own {@code handleInputEvents} -> {@code doAttack()} consumes it on
+     * the next tick (ray-trace + swing + cooldown). We never hold the key.
+     */
     private void pressAttack(MinecraftClient client) {
-        client.options.attackKey.setPressed(true);
-        attackHoldTicks = HumanTiming.ticks(1, 2);
+        var attack = client.options.attackKey;
+        int cur = ((dev.drew.ycbotchallenge.mixin.KeyBindingAccessor) attack).ycbotchallenge$getTimesPressed();
+        ((dev.drew.ycbotchallenge.mixin.KeyBindingAccessor) attack).ycbotchallenge$setTimesPressed(cur + 1);
     }
 
-    private void tickAttackHold(MinecraftClient client) {
-        if (attackHoldTicks <= 0) return;
-        attackHoldTicks--;
-        if (attackHoldTicks <= 0) client.options.attackKey.setPressed(false);
-        else client.options.attackKey.setPressed(true);
+    /** Inter-click delay for the 5-8 cps spam, jittered log-normal. */
+    private long clickIntervalMs() {
+        int minMs = (int) Math.round(1000.0 / Math.max(1, cfg.clickCpsMax));
+        int maxMs = (int) Math.round(1000.0 / Math.max(1, cfg.clickCpsMin));
+        if (maxMs <= minMs) maxMs = minMs + 1;
+        return HumanTiming.logNormalMs(minMs, maxMs);
+    }
+
+    /** True when the vanilla attack cooldown is ready (never faster than vanilla allows). */
+    private boolean vanillaAttackReady(MinecraftClient client) {
+        if (!cfg.respectVanillaAttackCooldown) return true;
+        try {
+            return client.player.getAttackCooldownProgress(0.0f) >= 1.0f;
+        } catch (Throwable t) {
+            return true;
+        }
     }
 
     private void rollAimPoint(MinecraftClient client) {

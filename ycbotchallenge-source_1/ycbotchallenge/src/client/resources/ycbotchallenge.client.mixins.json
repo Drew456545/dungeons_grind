@@ -5,6 +5,7 @@
   "client": [
     "BossBarHudAccessor",
     "ChatScreenAccessor",
+    "KeyBindingAccessor",
     "MouseMixin"
   ],
   "injectors": {
