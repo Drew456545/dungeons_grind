@@ -461,8 +461,8 @@ public class YCBotChallengeConfig {
     public long playerRadarDwellMs = 5000;
     /** Ignore players who haven't moved for this long — spawn NPCs / AFKers (0 = everyone trips it). */
     public long playerRadarIgnoreStationaryMs = 0;
-    /** Names that never trip the radar (case-insensitive, matches any line of multi-line NPC plates). */
-    public List<String> playerRadarWhitelist = List.of("ZONE VISIBILITY", "CLICK HERE");
+    /** Names that never trip the radar (case-insensitive, small-caps-normalized, matches any line of multi-line NPC plates). */
+    public List<String> playerRadarWhitelist = List.of("ZONE VISIBILITY", "CLICK HERE", "Barn");
 
     // --- TTK measurement ---
 
@@ -477,7 +477,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 8;
+    public static final int CURRENT_CONFIG_VERSION = 9;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -555,6 +555,11 @@ public class YCBotChallengeConfig {
             sidebarCurrencies = fresh.sidebarCurrencies;
             rebirthsPattern = fresh.rebirthsPattern;
             debugSidebar = true;
+            changed = true;
+        }
+        if (configVersion < 9) {
+            // v9: whitelist the "Barn" zone NPC fixture (radar false-stop evidence).
+            playerRadarWhitelist = fresh.playerRadarWhitelist;
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;

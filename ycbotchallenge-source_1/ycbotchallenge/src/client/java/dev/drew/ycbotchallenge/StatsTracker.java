@@ -62,6 +62,8 @@ public class StatsTracker {
     private long lastUpgradeSendAt = 0;
     private long lastSpendAt = 0;
     private long lastBalSendAt = 0;
+    /** Balance estimate at the moment of our last upgrade send (retry floor after a seed buy). */
+    private Double lastSendBal = null;
     /** Last fail-line timestamps per kind — silence after a send is the success signal. */
     private volatile long lastSwordFailAt = 0;
     private volatile long lastZoneFailAt = 0;
@@ -258,6 +260,7 @@ public class StatsTracker {
         lastUpgradeKind = sword ? "sword" : "zone";
         long now = System.currentTimeMillis();
         lastUpgradeSendAt = now;
+        lastSendBal = money();
         // Advancing a zone teleports the player — exempt our own send from the stop protocol.
         if (!sword) expectTeleportUntil = now + Math.max(0, cfg.expectedTeleportAfterZoneMs);
     }
@@ -830,8 +833,9 @@ public class StatsTracker {
     /**
      * Silence-success bookkeeping, driven by the controller after the response
      * window elapses with no fail line: tentative debit of the known price (the
-     * post-buy /bal re-seed makes it exact), price reset, old price remembered
-     * as the unknown-price retry threshold.
+     * post-buy /bal re-seed makes it exact), price reset, and a retry threshold —
+     * the old price when known, else the balance we demonstrably could afford at
+     * send time (a successful seed buy must not stall the kind forever).
      */
     public void onUpgradeSuccess(String kind, long now) {
         boolean zone = "zone".equals(kind);
@@ -840,13 +844,14 @@ public class StatsTracker {
             book.debit(price, now);
             writeBookThrough();
         }
+        Double retryFloor = price != null ? price : lastSendBal;
         if (zone) {
-            if (zoneTarget != null) zoneLastPrice = zoneTarget;
+            zoneLastPrice = retryFloor != null ? retryFloor : zoneLastPrice;
             zoneTarget = null;
             zoneGap = null;
             zoneExploratorySent = false;
         } else {
-            if (swordTarget != null) swordLastPrice = swordTarget;
+            swordLastPrice = retryFloor != null ? retryFloor : swordLastPrice;
             swordTarget = null;
             swordGap = null;
             swordExploratorySent = false;
