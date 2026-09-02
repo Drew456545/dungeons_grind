@@ -27,6 +27,8 @@ public class UpgradeController {
     private int swordsSinceZone;
     private int zoneEvery;
     private long lastSendAt;
+    /** Kill count when we first observed we could afford the next upgrade; -1 = not yet affordable. */
+    private int affordableSinceKills = -1;
     public String lastKind = null;
 
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
@@ -63,6 +65,7 @@ public class UpgradeController {
         pending = null;
         typed = "";
         typedChars = 0;
+        affordableSinceKills = -1;
     }
 
     /**
@@ -74,10 +77,21 @@ public class UpgradeController {
 
         if (phase == Phase.IDLE) {
             if (!due(now)) return false;
+            boolean known = knownAffordable();
             if (!canAffordPreferred()) {
-                // Don't spam. Retry after a shorter jitter once money might have moved.
+                // Not affordable (or still unknown): reset the affordable-since marker and
+                // retry on a shorter jitter once money might have moved.
+                affordableSinceKills = -1;
                 if (now - lastSendAt > 20_000) rollNextDue(now, false);
                 return false;
+            }
+            // Affordable. Once we KNOW we can afford (cost + balance both parsed),
+            // wait for at least one more kill before interrupting combat to upgrade —
+            // feels like a player finishing a mob, then doing the buy in the lull.
+            if (known) {
+                if (affordableSinceKills < 0) affordableSinceKills = combat.kills;
+                int killsSince = combat.kills - affordableSinceKills;
+                if (killsSince < cfg.minKillsAfterAffordable) return false;
             }
             if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
             begin(client, combat, now);
@@ -187,6 +201,7 @@ public class UpgradeController {
         }
         phase = Phase.IDLE;
         pending = null;
+        affordableSinceKills = -1;
         rollNextDue(System.currentTimeMillis(), true);
     }
 
@@ -195,6 +210,7 @@ public class UpgradeController {
         closeOurChat(client);
         phase = Phase.IDLE;
         pending = null;
+        affordableSinceKills = -1;
         rollNextDue(System.currentTimeMillis(), false);
     }
 
@@ -216,6 +232,14 @@ public class UpgradeController {
         Double bal = stats.money();
         if (need == null || bal == null) return true; // unknown: try and learn
         return bal + 1e-6 >= need;
+    }
+
+    /** True only when we have actually parsed both the cost and the balance and can afford it. */
+    private boolean knownAffordable() {
+        String kind = nextKind();
+        Double need = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+        Double bal = stats.money();
+        return need != null && bal != null && bal + 1e-6 >= need;
     }
 
     public String nextKind() {

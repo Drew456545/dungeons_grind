@@ -302,6 +302,13 @@ public class YCBotChallengeConfig {
     public int typeKeyMaxMs = 180;
     public int upgradeReadPauseMinMs = 400;
     public int upgradeReadPauseMaxMs = 900;
+    /**
+     * Once the money balance is known to cover the next upgrade cost, wait for at
+     * least this many more kills before interrupting combat to type the command —
+     * a player finishes a mob, then does the buy in the lull rather than snapping
+     * to chat the instant money crosses the threshold.
+     */
+    public int minKillsAfterAffordable = 1;
     /** Sidebar key used for afford checks (chicken / money / souls...). */
     public String moneyCurrency = "money";
     /**
