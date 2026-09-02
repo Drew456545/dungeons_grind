@@ -286,7 +286,7 @@ public class YCBotChallengeConfig {
      * Sidebar currency names (case-insensitive) parsed from rows like
      * {@code | 131.56B MONEY} / {@code | 235 SHARDS}.
      */
-    public List<String> sidebarCurrencies = List.of("money", "souls", "essence", "shards", "credits");
+    public List<String> sidebarCurrencies = List.of("money", "souls", "essence", "shards", "credits", "swings");
     /** How often the canonical balance snapshot (HUD / logs / buy eval) is published. */
     public int scoreboardSnapshotMs = 5000;
     public List<String> balancePatterns = List.of(
@@ -471,8 +471,14 @@ public class YCBotChallengeConfig {
     /** Rarity HP scaling: TTK is divided by (1 + scale) so the zone benchmark compares across rarities. */
     public Map<String, Double> rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
 
-    /** Bump when shipping new default patterns; loaded configs below this get pattern lists replaced. */
-    public int configVersion = 7;
+    /**
+     * Bump when shipping new default patterns; loaded configs below this get pattern
+     * lists replaced. The field default is 0 ON PURPOSE: Gson runs field initializers
+     * before overlaying JSON, so a config file that lacks this key would otherwise
+     * "look" current and skip every migration. save() always writes the current version.
+     */
+    public static final int CURRENT_CONFIG_VERSION = 8;
+    public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -497,7 +503,7 @@ public class YCBotChallengeConfig {
 
     /** Old configs keep stale server-specific patterns forever; replace them wholesale on version bumps. */
     private boolean migrate() {
-        if (configVersion >= 7) return false;
+        if (configVersion >= CURRENT_CONFIG_VERSION) return false;
         boolean changed = false;
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
         if (configVersion < 4) {
@@ -534,7 +540,23 @@ public class YCBotChallengeConfig {
             debugSidebar = true;
             changed = true;
         }
-        configVersion = 7;
+        if (configVersion < 8) {
+            // v8: force every evidence-based economy pattern — covers configs whose
+            // configVersion was missing from the JSON (Gson field initializers made
+            // it look current, silently skipping the v6/v7 migrations).
+            balPatterns = fresh.balPatterns;
+            sidebarMoneyPattern = fresh.sidebarMoneyPattern;
+            upgradeFailPatterns = fresh.upgradeFailPatterns;
+            upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
+            upgradeNeedAmountPattern = fresh.upgradeNeedAmountPattern;
+            summaryHeaderPattern = fresh.summaryHeaderPattern;
+            summaryMoneyPattern = fresh.summaryMoneyPattern;
+            zonePattern = fresh.zonePattern;
+            sidebarCurrencies = fresh.sidebarCurrencies;
+            debugSidebar = true;
+            changed = true;
+        }
+        configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
 
@@ -593,6 +615,7 @@ public class YCBotChallengeConfig {
     }
 
     public void save(Path file) {
+        configVersion = CURRENT_CONFIG_VERSION;
         try {
             Files.createDirectories(file.getParent());
             Files.writeString(file, GSON.toJson(this));

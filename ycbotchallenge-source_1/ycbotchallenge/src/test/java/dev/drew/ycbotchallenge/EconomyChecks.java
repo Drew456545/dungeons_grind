@@ -110,6 +110,24 @@ public final class EconomyChecks {
         n += eq("sidebar label-first money", firstGroup(moneyRe, "MONEY: 75.1B"), 75.1e9, 1e3);
         n += eq("zone row is not money", firstGroup(moneyRe, "Zone 1") == null, true);
         n += eq("time row is not money", firstGroup(moneyRe, "Time Left 05:00") == null, true);
+
+        // The REAL EnchantedMC sidebar (0.9.1 debugSidebar capture): small-caps
+        // labels and a box-drawing bullet — "│ 5.62T ᴍᴏɴᴇʏ".
+        n += eq("small-caps strip", SidebarParser.strip("│ 5.62T ᴍᴏɴᴇʏ"), "5.62T money");
+        n += eq("small-caps money row", firstGroup(moneyRe, "│ 5.62T ᴍᴏɴᴇʏ"), 5.62e12, 1e9);
+        n += eq("whole-trillion amount", firstGroup(moneyRe, "│ 6T ᴍᴏɴᴇʏ"), 6e12, 1e6);
+        var realHits = SidebarParser.parseCurrencies(List.of(
+                "│ 5.62T ᴍᴏɴᴇʏ",
+                "│ 485.27M ꜱᴏᴜʟꜱ",
+                "│ 31.23M ᴇꜱꜱᴇɴᴄᴇ",
+                "│ 91 ꜱʜᴀʀᴅꜱ",
+                "│ ꜱᴡɪɴɢꜱ: 63.31K"
+        ), CFG.sidebarCurrencies);
+        n += eq("real money parsed", realHits.get("money") != null ? realHits.get("money").value() : null, 5.62e12, 1e9);
+        n += eq("real souls parsed", realHits.get("souls") != null ? realHits.get("souls").value() : null, 485.27e6, 1);
+        n += eq("real essence parsed", realHits.get("essence") != null ? realHits.get("essence").value() : null, 31.23e6, 1);
+        n += eq("real shards parsed", realHits.get("shards") != null ? realHits.get("shards").value() : null, 91.0, 1e-6);
+        n += eq("real swings parsed", realHits.get("swings") != null ? realHits.get("swings").value() : null, 63.31e3, 1);
         return n;
     }
 

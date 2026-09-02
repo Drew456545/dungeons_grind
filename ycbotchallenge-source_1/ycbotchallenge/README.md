@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.9.1.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.9.2.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
