@@ -22,7 +22,7 @@ public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, OPEN, TYPE, SEND, READ }
     private enum Kind { SWORD, ZONE, PROBE }
 
-    private record PendingCmd(String text, Kind kind) {}
+    private record PendingCmd(String text, Kind kind, long notBefore) {}
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
@@ -106,13 +106,22 @@ public class UpgradeController {
             if (!startupProbed) {
                 startupProbed = true;
                 if (cfg.startupProbes) {
-                    queue.add(new PendingCmd(cfg.balCommand, Kind.PROBE));
-                    queue.add(new PendingCmd(cfg.swordCommand, Kind.SWORD));
+                    queue.add(new PendingCmd(cfg.balCommand, Kind.PROBE, 0));
+                    queue.add(new PendingCmd(cfg.swordCommand, Kind.SWORD, 0));
                 }
+            }
+            String reprobe = stats.consumeReprobe();
+            if (reprobe != null) {
+                // up-arrow + enter a second or two after a successful buy: the fail line
+                // on the re-send teaches the next tier's gap (a success maxes the tier).
+                queue.add(new PendingCmd(
+                    "zone".equals(reprobe) ? cfg.zoneCommand : cfg.swordCommand,
+                    "zone".equals(reprobe) ? Kind.ZONE : Kind.SWORD,
+                    now + HumanTiming.logNormalMs(1200, 3000)));
             }
             PendingCmd head = queue.peek();
             if (head != null) {
-                if (now - lastSendAt < cfg.probeMinIntervalMs) return false;
+                if (now < head.notBefore()) return false;
                 if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
                 begin(client, combat, now, queue.poll());
                 return true;
@@ -138,7 +147,7 @@ public class UpgradeController {
             }
             begin(client, combat, now, new PendingCmd(
                 "zone".equals(kind) ? cfg.zoneCommand : cfg.swordCommand,
-                "zone".equals(kind) ? Kind.ZONE : Kind.SWORD));
+                "zone".equals(kind) ? Kind.ZONE : Kind.SWORD, 0));
             return true;
         }
 
