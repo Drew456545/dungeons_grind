@@ -28,7 +28,11 @@ Drop `ycbotchallenge-0.5.1.jar` into your `mods/` folder alongside Fabric Loader
 
 ### Economy (upgrade loop)
 
-Buy-or-learn. On enable the bot types `/bal` then `/swordmax` once (`startupProbes`) to seed the balance and remaining cost. From then on the preferred command *is* the probe: a fail response parses to the exact remaining gap, and the next attempt is scheduled at `now + gap / incomeRate` (income rate = slope of balance samples over the trailing 5 min). No blind timers.
+Buy-or-learn. On enable the bot types `/bal` then `/swordmax` once (`startupProbes`) to seed the balance and remaining cost. From then on the preferred command *is* the probe: a fail response parses to the exact remaining gap, and the next attempt is scheduled at `now + gap / incomeRate` (income rate = slope of balance samples over the trailing 5 min; the sidebar money line feeds it continuously, `/bal` is just the startup seed). No blind timers.
+
+A *successful* buy re-sends the same command a second or two later — up-arrow + enter, like a player checking the next price. Since a success maxes the tier, the re-send's fail line teaches the next gap. A `maxed` response retires that kind for the session.
+
+Zone changes force a full targeting reset: new zone = new mobs, so the target/lock state *and* the ghost blacklist are dropped (`zone_retarget` event). The same reset happens on every enable.
 
 - `zoneReadyTtkMs` (default 2000) — median time-to-kill at/under this flips priority to `/zone max`: fast kills mean the zone is farmed out.
 - `ttkWindowKills` (8) — rolling window for the median TTK. A per-zone baseline is snapshotted a few kills after each zone change and logged via `zone_benchmark` events.
