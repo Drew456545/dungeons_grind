@@ -40,6 +40,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
     public void onInitializeClient() {
         configPath = FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge.json");
         config = YCBotChallengeConfig.load(configPath);
+        Amounts.configure(config.suffixScales);
         stats = new StatsTracker(config);
         combat = new CombatController(config, stats);
         upgrades = new UpgradeController(config, stats);
@@ -194,6 +195,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         if (on) {
             pausedReason = null;
             stats.captchaMessage = null;
+            HumanTiming.beginSession(config);
         }
         if (on) {
             if (logger == null) {

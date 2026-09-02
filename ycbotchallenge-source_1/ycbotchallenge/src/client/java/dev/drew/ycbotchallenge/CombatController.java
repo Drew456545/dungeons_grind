@@ -49,6 +49,8 @@ public class CombatController {
     private double cookLeash = 3.0;
     public String nextTargetDesc = null;
     private long nextActionAt = 0;   // humanized reaction / idle gate
+    private long breakUntil = 0;     // break scheduler: inert while now < breakUntil
+    private long nextFocusEndAt = 0;
     private long lastClickAt = 0;
     private int clicksThisTarget = 0;
     public int kills = 0;
@@ -120,6 +122,21 @@ public class CombatController {
         return UpgradeController.playerStill(client);
     }
 
+    public boolean isOnBreak() {
+        return System.currentTimeMillis() < breakUntil;
+    }
+
+    private long focusMs() {
+        return HumanTiming.logNormalMs(
+            cfg.focusMinutesMin * 60_000, Math.max(cfg.focusMinutesMin * 60_000 + 1, cfg.focusMinutesMax * 60_000));
+    }
+
+    /** movingTargetPolicy "sometimes": a human would swing at the twitching mob anyway. */
+    private boolean mayAttackMoving() {
+        return cfg.ninja && "sometimes".equalsIgnoreCase(cfg.movingTargetPolicy)
+            && ThreadLocalRandom.current().nextDouble() < cfg.movingTargetAttackChance;
+    }
+
     public void reset(MinecraftClient client) {
         target = null;
         nextTarget = null;
@@ -165,10 +182,32 @@ public class CombatController {
             lookIssued = false;
         }
 
+        // break scheduler: human-length breaks between focus blocks
+        if (cfg.ninja && cfg.breaksEnabled) {
+            if (now < breakUntil) { releaseKeys(client); return; }
+            if (nextFocusEndAt == 0) nextFocusEndAt = now + focusMs();
+            if (now >= nextFocusEndAt) {
+                breakUntil = now + HumanTiming.logNormalMs(
+                    cfg.breakMinutesMin * 60_000, Math.max(cfg.breakMinutesMin * 60_000 + 1, cfg.breakMinutesMax * 60_000));
+                nextFocusEndAt = breakUntil + focusMs();
+                if (logger != null) logger.log("break_start", "durationMs", breakUntil - now);
+                releaseKeys(client);
+                return;
+            }
+        }
+
         // occasional human-ish idle
         if (now < nextActionAt) { releaseKeys(client); return; }
         if (rng.nextDouble() < cfg.idleChancePerMinute / (60.0 * 20.0)) { // per tick
             nextActionAt = now + rng.nextLong(cfg.idleMinMs, cfg.idleMaxMs + 1);
+            releaseKeys(client);
+            return;
+        }
+
+        // rare long distraction — the heavy tail idleChance can't produce
+        if (cfg.ninja && rng.nextDouble() < cfg.distractionChancePerMinute / (60.0 * 20.0)) {
+            nextActionAt = now + HumanTiming.logNormalMs(cfg.distractionMinMs, cfg.distractionMaxMs);
+            if (logger != null) logger.log("distracted", "pauseMs", nextActionAt - now);
             releaseKeys(client);
             return;
         }
@@ -178,6 +217,7 @@ public class CombatController {
             if (connected) {
                 kills++;
                 stats.recordKill();
+                stats.recordKillDuration(now - tagAt);
                 wantsUpgradeWindow = true;
                 if (logger != null) {
                     logger.log("kill",
@@ -288,9 +328,14 @@ public class CombatController {
         releaseKeys(client);
         // Arrived while sprinting: drop the sprint *key* and wait a tick so the
         // hit isn't a knockback sprint-hit (shoves the mob, trips ghost filter).
+        // Ninja: with small probability we skip the discipline and sprint-hit anyway.
         if (client.player.isSprinting() || sprintTapTicks > 0) {
-            tapSprint(client, false);
-            return;
+            if (cfg.ninja && sprintTapTicks <= 0 && rng.nextDouble() < cfg.sprintHitChance) {
+                if (logger != null) logger.log("sprint_hit_slip");
+            } else {
+                tapSprint(client, false);
+                return;
+            }
         }
 
         // Tight final servo: reacquireIfNeeded (threshold = lookReacquireDeg)
@@ -299,7 +344,12 @@ public class CombatController {
         // attack cooldown is ready. Missing is realistic and expected — we keep
         // clicking at 5-8 cps until one connects (boss bar appears, handled above).
         double aimErr = MouseDriver.aimErrorDeg(client, target, aimHeightFrac);
-        if (aimErr <= cfg.aimTapMaxErrorDeg
+        double tapTol = cfg.aimTapMaxErrorDeg;
+        if (cfg.ninja && aimErr > tapTol && rng.nextDouble() < cfg.misclickChance) {
+            tapTol *= 2.5; // sloppy click — mostly still misses, which is the point
+            if (logger != null) logger.log("misclick", "aimErr", Math.round(aimErr * 10.0) / 10.0);
+        }
+        if (aimErr <= tapTol
             && !MouseDriver.INSTANCE.isBusy()
             && now - lastClickAt >= clickIntervalMs()
             && vanillaAttackReady(client)) {
@@ -538,7 +588,10 @@ public class CombatController {
     }
 
     private void maybeLook(MinecraftClient client, Entity e, String reason) {
-        if (e == null || MouseDriver.INSTANCE.isBusy()) return;
+        if (e == null) return;
+        // Ninja chaining: mid-path corrections blend into the flight; other intents wait.
+        if (MouseDriver.INSTANCE.isBusy()
+            && !(cfg.ninja && cfg.mouseChaining && reason.endsWith("correct"))) return;
         if (lookIssued && lookEntityId == e.getId()) return;
         float lead = 0f;
         if ("approach".equals(reason) && approachYawOffset != 0f) {
@@ -552,7 +605,8 @@ public class CombatController {
     }
 
     private void reacquireIfNeeded(MinecraftClient client, Entity e, String reason) {
-        if (e == null || MouseDriver.INSTANCE.isBusy() || !lookIssued) return;
+        if (e == null || !lookIssued) return;
+        if (MouseDriver.INSTANCE.isBusy() && !(cfg.ninja && cfg.mouseChaining)) return;
         double err = MouseDriver.aimErrorDeg(client, e, aimHeightFrac);
         if (err > cfg.lookReacquireDeg) {
             lookIssued = false;
@@ -584,7 +638,7 @@ public class CombatController {
         if (!le.isAlive() || le.isRemoved()) return false;
         if (!inZone(e.getEntityPos())) return false;
         if (cfg.stationaryOnly) {
-            if (ghosts.contains(e.getId())) return false;
+            if (ghosts.contains(e.getId()) && !mayAttackMoving()) return false;
             Motion m = motion.get(e.getId());
             // must have been observed standing still before it's targetable
             if (m == null || m.ticks < cfg.minObservationTicks) return false;
@@ -706,6 +760,12 @@ public class CombatController {
                 score *= 1.0 + (rng.nextDouble() * 2 - 1) * cfg.targetCostJitter;  // vary the lap
             }
             if (score < bestScore) { best = le; bestScore = score; }
+        }
+        // Ninja: occasionally pick a random in-range mob instead of the optimal one.
+        if (cfg.ninja && best != null && candidates.size() > 1 && rng.nextDouble() < cfg.wrongTargetChance) {
+            LivingEntity oops = candidates.get(rng.nextInt(candidates.size()));
+            if (logger != null) logger.log("target_mispick", "mob", describe(oops));
+            return oops;
         }
         return best;
     }
