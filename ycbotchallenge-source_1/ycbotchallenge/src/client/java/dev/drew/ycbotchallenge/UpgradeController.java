@@ -137,6 +137,11 @@ public class UpgradeController {
                 evalAt = now + HumanTiming.logNormalMs(cfg.postKillEvalDelayMinMs, cfg.postKillEvalDelayMaxMs);
             }
             if (now < evalAt) return false;
+            // Response latch: the last command never got a classified response (patterns blind?)
+            // => we know nothing, so the probe cap governs even "affordable" buys.
+            if (lastSendAt != 0 && !stats.lastSendClassified() && now - lastSendAt < cfg.probeMinIntervalMs) {
+                return false;
+            }
             Double bal = stats.money();
             Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
             boolean probe;
@@ -247,6 +252,8 @@ public class UpgradeController {
                 if (pendingKind != Kind.PROBE) {
                     lastKind = pendingKind == Kind.SWORD ? "sword" : "zone";
                     stats.noteUpgradeSend(pendingKind == Kind.SWORD);
+                } else {
+                    stats.noteProbeSend();
                 }
                 client.setScreen(null);
                 phase = Phase.READ;
