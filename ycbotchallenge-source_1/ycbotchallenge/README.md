@@ -20,6 +20,7 @@ Drop `ycbotchallenge-0.5.1.jar` into your `mods/` folder alongside Fabric Loader
 
 - `reach`, `targetRange` — tap distance and how far it will walk for a mob.
 - `tapCooldownMs`, `reactionDelayMinMs/MaxMs`, `idleChancePerMinute` — humanization.
+- `approachClickCpsMin/Max` (2–3), `approachClickMaxDist` (6) — anticipatory swing spam while closing in, with a vigor multiplier re-rolled every few seconds so the tempo wanders. Mostly whiffs at air, like a real player running up. Set max 0 to disable.
 - `movement: false` — stand still and only tag what wanders into reach.
 - `zoneMin`/`zoneMax` — `[x, y, z]` arrays bounding the farming zone (null = anywhere).
 - `runLabel` — tag for the log file (`"baseline"`, `"asc6-geared"`, `"2x-souls"`, ...). Change it between experiment runs.

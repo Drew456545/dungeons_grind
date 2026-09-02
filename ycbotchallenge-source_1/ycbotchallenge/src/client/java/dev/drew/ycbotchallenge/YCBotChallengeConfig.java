@@ -140,6 +140,11 @@ public class YCBotChallengeConfig {
      */
     public int clickCpsMin = 5;
     public int clickCpsMax = 8;
+    /** Anticipatory swing spam while closing in on a target (mostly whiffs — that's the point). Set max 0 to disable. */
+    public double approachClickCpsMin = 2;
+    public double approachClickCpsMax = 3;
+    /** Only start approach spam within this many blocks of the target. */
+    public double approachClickMaxDist = 6.0;
     /** Hard ceiling: skip a click if the vanilla attack cooldown isn't ready. */
     public boolean respectVanillaAttackCooldown = true;
 

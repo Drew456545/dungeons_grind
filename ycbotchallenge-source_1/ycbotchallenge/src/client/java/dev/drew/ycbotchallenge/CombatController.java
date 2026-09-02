@@ -320,6 +320,16 @@ public class CombatController {
         reacquireIfNeeded(client, target, "approach-correct");
 
         double dist = client.player.distanceTo(target);
+
+        // Anticipatory swing spam on the way in: 2-3 cps with a wandering vigor.
+        // Mostly whiffs at air — that's exactly what a player closing in looks like.
+        if (cfg.approachClickCpsMax > 0 && dist <= cfg.approachClickMaxDist
+            && now - lastClickAt >= approachIntervalMs()) {
+            pressAttack(client);
+            lastClickAt = now;
+            clicksThisTarget++; // a whiff counts; a lucky early land is how connects happen
+        }
+
         if (dist > cfg.reach) {
             if (cfg.movement) moveToward(client, dist, true);
             return;
@@ -537,6 +547,23 @@ public class CombatController {
         int maxMs = (int) Math.round(1000.0 / Math.max(1, cfg.clickCpsMin));
         if (maxMs <= minMs) maxMs = minMs + 1;
         return HumanTiming.logNormalMs(minMs, maxMs);
+    }
+
+    private long approachVigorUntil = 0;
+    private double approachVigor = 1.0;
+
+    /** Approach-spam interval: log-normal around 2-3 cps, with the vigor re-rolled every few seconds. */
+    private long approachIntervalMs() {
+        long now = System.currentTimeMillis();
+        if (now >= approachVigorUntil) {
+            ThreadLocalRandom rng = ThreadLocalRandom.current();
+            approachVigor = 0.8 + rng.nextDouble() * 0.5; // 0.8x .. 1.3x
+            approachVigorUntil = now + 1500 + rng.nextInt(2500);
+        }
+        int minMs = (int) Math.round(1000.0 / Math.max(0.5, cfg.approachClickCpsMax));
+        int maxMs = (int) Math.round(1000.0 / Math.max(0.5, cfg.approachClickCpsMin));
+        if (maxMs <= minMs) maxMs = minMs + 1;
+        return Math.round(HumanTiming.logNormalMs(minMs, maxMs) * approachVigor);
     }
 
     /** True when the vanilla attack cooldown is ready (never faster than vanilla allows). */
