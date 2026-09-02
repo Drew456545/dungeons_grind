@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.9.2.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.9.3.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -44,6 +44,8 @@ Chat-driven, zero-spam, buy-or-wait. `/swordmax` and `/zone max` are **never pol
 **Strict chat gate.** Upgrade lines classify only within `upgradeResponseWindowMs` (4s) of our own send, never on player/broadcast lines (`»` or `[rank]` prefix), and only via anchored patterns. This kills the 0.8.x failure mode where `EnchantedMC »` broadcasts matched the loose `enchanted` success pattern and fail lines were eaten as `/bal` replies. Success/maxed wording is never trusted; unrecognized lines are raw-logged (`upgrade_response_raw`) after both upgrade sends (6s) and `/bal` probes (8s), so reply formats are always captured for evidence-based tuning.
 
 **Zone.** Same model for `/zone max` (fail gap → `zoneTarget = bal + gap`), plus the TTK readiness gate below. A successful zone advance teleports you, so the stop protocol exempts displacements for `expectedTeleportAfterZoneMs` (8s) after our own zone send. Zone changes are detected from the sidebar `Zone 1` row (colon-less) or the `All mobs have been respawned in your zone.` broadcast, and force a full targeting reset (`zone_retarget`).
+
+**Rebirth reset.** A rebirth zeroes money and resets sword/zone progression, so every learned price is stale the moment it happens. Detected two ways: the sidebar `rebirth: N` counter incrementing (or resetting, for ascensions), and a money collapse (≥1B → ~0 while we didn't just buy something). Either wipes all learned prices, gaps, maxed flags, and seed flags (`economy_reset` event) — the loop re-discovers post-rebirth prices with one fresh seed send per kind.
 
 Sword vs zone is a **log-scaled TTK readiness** `R`, not a sword-count quota. Fresh-zone mobs take ~40s; each `/swordmax` drops that. `R` lerps in log-space from this zone's TTK baseline down to `zoneReadyTtkMs` (2s). On a 40s start that crosses 50/50 around ~9s and reaches 1.0 at 2s. Weights: `swordWeight = 1-R`, `zoneWeight = R`. We only pick among **affordable** kinds; zone is refused while `R < zoneMinReadiness` (0.5) even if you already have the money. A high-sword enable whose first kills are already ~2s snaps `R` to 1 and zones as soon as it is affordable. HUD prints `ttk 8.2s  zone 48%`, the live `need` and `~ETA` to the next tier from the summary rate, and a `cd 41s` remainder when the 60s cap is holding. TTK baseline resets on zone changes, so `R` goes back to 0 on the new ~40s curve.
 

@@ -278,7 +278,7 @@ public class YCBotChallengeConfig {
     public double[] zoneMax = null;
 
     // Parsing knobs (match the Node analyzer's expectations)
-    public String rebirthsPattern = "Rebirths:\\s*([\\d,]+)";
+    public String rebirthsPattern = "rebirths?\\s*:?\\s*([\\d,]+)";
     public String zonePattern = "Zone\\s*:?\\s*(.+)";
     public String multiplierPattern = "Multiplier:\\s*(\\S+)";
     public String actionBarPattern = "Rebirth Progress:.*?\\(([\\d.]+)%\\)";
@@ -553,6 +553,7 @@ public class YCBotChallengeConfig {
             summaryMoneyPattern = fresh.summaryMoneyPattern;
             zonePattern = fresh.zonePattern;
             sidebarCurrencies = fresh.sidebarCurrencies;
+            rebirthsPattern = fresh.rebirthsPattern;
             debugSidebar = true;
             changed = true;
         }

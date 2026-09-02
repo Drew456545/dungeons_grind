@@ -447,7 +447,17 @@ public class StatsTracker {
         Double prev = liveBals.put(key, value);
         liveRaw.put(key, raw);
         balances.put(key, raw);
-        if (key.equals(moneyKey())) lastSidebarMoneyAt = System.currentTimeMillis();
+        if (key.equals(moneyKey())) {
+            long nowMs = System.currentTimeMillis();
+            lastSidebarMoneyAt = nowMs;
+            // Money collapsing to ~zero while we didn't just buy anything = a rebirth
+            // wiped the balance (the sidebar rebirth counter is the primary signal;
+            // this covers boards where that row isn't always rendered).
+            if (prev != null && prev >= 1e9 && value <= Math.max(1e6, prev * 0.01)
+                && nowMs - lastSpendAt > 10_000) {
+                rebirthReset("money-collapse");
+            }
+        }
         boolean changed = prev == null || Math.abs(prev - value) > 1e-6;
         if (changed) {
             if (key.equals(moneyKey())) noteBalance(value);
@@ -481,10 +491,35 @@ public class StatsTracker {
             rebirthTimes.addLast(System.currentTimeMillis());
             while (rebirthTimes.size() > 500) rebirthTimes.removeFirst();
             log("rebirth", "rebirths", n, "prev", prev, "delta", n - prev);
+            rebirthReset("sidebar-counter");
         } else {
             ascensions++;
             log("ascension", "via", "rebirth-reset", "rebirthsBefore", prev, "rebirthsAfter", n, "ascensions", ascensions);
+            rebirthReset("ascension");
         }
+    }
+
+    /**
+     * A rebirth zeroes money and resets sword/zone progression — every learned
+     * price, maxed flag, and seed flag is stale the moment it happens. Wipe the
+     * economy so the loop re-discovers post-rebirth prices from scratch.
+     */
+    private void rebirthReset(String via) {
+        swordTarget = null;
+        zoneTarget = null;
+        swordGap = null;
+        zoneGap = null;
+        swordLastPrice = null;
+        zoneLastPrice = null;
+        swordMaxed = false;
+        zoneMaxed = false;
+        swordSeeded = false;
+        zoneSeeded = false;
+        swordExploratorySent = false;
+        zoneExploratorySent = false;
+        swordBuysThisZone = 0;
+        upgradeChatFrag = null;
+        log("economy_reset", "via", via);
     }
 
     private void pollBossBars(MinecraftClient client) {

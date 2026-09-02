@@ -128,7 +128,21 @@ public final class EconomyChecks {
         n += eq("real essence parsed", realHits.get("essence") != null ? realHits.get("essence").value() : null, 31.23e6, 1);
         n += eq("real shards parsed", realHits.get("shards") != null ? realHits.get("shards").value() : null, 91.0, 1e-6);
         n += eq("real swings parsed", realHits.get("swings") != null ? realHits.get("swings").value() : null, 63.31e3, 1);
+
+        // Rebirth counter row (real capture: "│ ʀᴇʙɪʀᴛʜ: 1" — singular, small caps).
+        Pattern rebirthRe = Pattern.compile(CFG.rebirthsPattern, Pattern.CASE_INSENSITIVE);
+        n += eq("rebirth row value", firstGroupStr(rebirthRe, "│ ʀᴇʙɪʀᴛʜ: 1"), "1");
+        n += eq("rebirth zero", firstGroupStr(rebirthRe, "│ ʀᴇʙɪʀᴛʜ: 0"), "0");
+        n += eq("legacy plural rebirths", firstGroupStr(rebirthRe, "Rebirths: 5"), "5");
+        n += eq("swing-rate row is not rebirth",
+            rebirthRe.matcher(SidebarParser.strip("│ ꜱᴡɪɴɢ ʀᴀᴛᴇ: 4/s")).find(), false);
         return n;
+    }
+
+    /** First regex group as a string (matcher.find once). */
+    private static String firstGroupStr(Pattern re, String line) {
+        var m = re.matcher(SidebarParser.strip(line));
+        return m.find() ? m.group(1) : null;
     }
 
     /** Mirror of the group-scan in StatsTracker.pollSidebar: first non-null group, parsed. */
