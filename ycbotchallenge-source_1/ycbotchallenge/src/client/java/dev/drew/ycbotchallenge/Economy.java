@@ -79,4 +79,44 @@ public final class Economy {
         if (!swordOpen) return "zone";
         return R >= 0.5 ? "zone" : "sword";
     }
+
+    /** Snapshot covers the next-tier price. Unknown price is never "affordable". */
+    public static boolean knownAffordable(Double need, Double bal) {
+        return need != null && bal != null && bal + 1e-6 >= need;
+    }
+
+    /**
+     * Hard cap between kill-driven buys of the same kind. A success follow-up
+     * (immediate re-run to learn the next tier) always passes.
+     */
+    public static boolean cooldownElapsed(long nowMs, long lastSendAt, int minIntervalMs, boolean followUp) {
+        if (followUp) return true;
+        if (lastSendAt <= 0) return true;
+        int min = Math.max(0, minIntervalMs);
+        return nowMs - lastSendAt >= min;
+    }
+
+    /**
+     * One-shot discovery send: allowed only while we have never learned a price
+     * and have not already seeded this kind. Not a timer, not a per-minute poll.
+     */
+    public static boolean allowUnknownSeed(Double target, boolean alreadySeeded, boolean maxed) {
+        return !maxed && target == null && !alreadySeeded;
+    }
+
+    /**
+     * Wait {@code minExtra} further kills after the one that first made the
+     * upgrade affordable (0 = buy on the crossing kill's eval).
+     */
+    public static boolean extraKillsReached(int killsNow, int affordableAtKill, int minExtra) {
+        if (minExtra <= 0) return true;
+        if (affordableAtKill < 0) return false;
+        return killsNow - affordableAtKill >= minExtra;
+    }
+
+    /** True once {@code settleMs} have passed since a spend (or there was no spend). */
+    public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
+        if (lastSpendAt <= 0) return true;
+        return nowMs - lastSpendAt >= Math.max(0, settleMs);
+    }
 }

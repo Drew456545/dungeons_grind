@@ -14,6 +14,7 @@ public final class EconomyChecks {
         n += targets();
         n += readiness();
         n += choose();
+        n += gates();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -65,6 +66,26 @@ public final class EconomyChecks {
         n += eq("absolute target", abs, 277.81e9, 1e3);
         n += eq("not bal+amt", abs.equals(131.56e9 + 277.81e9), false);
 
+        String enchanted = "You don't have enough money to purchase any sword upgrades! "
+            + "You need 536.24B Money to purchase the next sword upgrade.";
+        n += eq("enchanted fail is not gap", Economy.isGapNeed(enchanted), false);
+        Double enchantedAmt = Amounts.parseAll(enchanted).isEmpty() ? null : Amounts.parseAll(enchanted).get(0);
+        n += eq("enchanted amount token", enchantedAmt, 536.24e9, 1e3);
+        n += eq("enchanted absolute target",
+            Economy.targetFromFail(536.24e9, 450.82e9, enchanted), 536.24e9, 1e3);
+        n += eq("450B cannot buy 536B", Economy.knownAffordable(536.24e9, 450.82e9), false);
+        n += eq("540B can buy 536B", Economy.knownAffordable(536.24e9, 540e9), true);
+
+        String splitNeed = "You need 536.24B Money to purchase the next sword upgrade.";
+        n += eq("split need line is not gap", Economy.isGapNeed(splitNeed), false);
+        n += eq("split need token", Amounts.parseAll(splitNeed).get(0), 536.24e9, 1e3);
+
+        java.util.regex.Pattern needSword = java.util.regex.Pattern.compile(
+            "(?i)need\\s+(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money[\\s\\S]{0,80}?sword");
+        java.util.regex.Matcher nm = needSword.matcher(splitNeed);
+        n += eq("need-money-sword captures",
+            nm.find() ? Amounts.parse(nm.group("amount")) : -1, 536.24e9, 1e3);
+
         String gap = "You need 96.56B more Money for the next sword upgrade.";
         n += eq("more is gap", Economy.isGapNeed(gap), true);
         n += eq("gap target", Economy.targetFromFail(96.56e9, 131.56e9, gap), 228.12e9, 1e3);
@@ -101,6 +122,54 @@ public final class EconomyChecks {
             Economy.preferredKind(true, true, 0.8), "zone");
         n += eq("prefer early sword",
             Economy.preferredKind(true, true, 0.2), "sword");
+        return n;
+    }
+
+    private static int gates() {
+        int n = 0;
+        n += eq("unknown price not affordable", Economy.knownAffordable(null, 450.82e9), false);
+        n += eq("null bal not affordable", Economy.knownAffordable(536.24e9, null), false);
+
+        n += eq("follow-up bypasses cooldown",
+            Economy.cooldownElapsed(10_000, 9_500, 60_000, true), true);
+        n += eq("kill-driven blocked by 60s",
+            Economy.cooldownElapsed(30_000, 1_000, 60_000, false), false);
+        n += eq("kill-driven allowed after 60s",
+            Economy.cooldownElapsed(61_000, 1_000, 60_000, false), true);
+        n += eq("never sent is off cooldown",
+            Economy.cooldownElapsed(5_000, 0, 60_000, false), true);
+
+        n += eq("first unknown seed allowed",
+            Economy.allowUnknownSeed(null, false, false), true);
+        n += eq("no seed once price known",
+            Economy.allowUnknownSeed(536.24e9, false, false), false);
+        n += eq("no seed once already seeded",
+            Economy.allowUnknownSeed(null, true, false), false);
+        n += eq("no seed when maxed",
+            Economy.allowUnknownSeed(null, false, true), false);
+
+        n += eq("crossing kill with min 0",
+            Economy.extraKillsReached(10, 10, 0), true);
+        n += eq("crossing kill with min 1 waits",
+            Economy.extraKillsReached(10, 10, 1), false);
+        n += eq("next kill with min 1",
+            Economy.extraKillsReached(11, 10, 1), true);
+        n += eq("not yet affordable",
+            Economy.extraKillsReached(10, -1, 1), false);
+
+        n += eq("no spend is settled",
+            Economy.sidebarSettled(5_000, 0, 2500), true);
+        n += eq("spend still lagging",
+            Economy.sidebarSettled(3_000, 2_000, 2500), false);
+        n += eq("spend settled",
+            Economy.sidebarSettled(5_000, 2_000, 2500), true);
+
+        // After a successful buy we debit locally so a stale high board cannot re-arm.
+        double board = 540e9;
+        double paid = 536.24e9;
+        double book = Math.max(0, board - paid);
+        n += eq("debit blocks immediate re-afford",
+            Economy.knownAffordable(536.24e9, book), false);
         return n;
     }
 

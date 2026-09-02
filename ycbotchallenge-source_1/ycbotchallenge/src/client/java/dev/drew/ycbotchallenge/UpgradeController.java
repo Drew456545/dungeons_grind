@@ -12,16 +12,16 @@ import net.minecraft.util.math.Vec3d;
 /**
  * Stationary, typed {@code /swordmax} / {@code /zone max} (+ a startup {@code /bal} seed).
  *
- * Economy-driven, buy-or-learn: on enable we type /bal then /swordmax once, which seeds
- * balance and the next-tier price. From then on we only type a buy when the scoreboard
- * snapshot covers that absolute target. Zone vs sword is a log-scaled TTK readiness
- * (fresh stage ~40s → 2s farmed-out), not a sword-count quota.
+ * Kill-gated buy-or-wait: the sidebar is re-read after each kill, and we type an
+ * upgrade command only when the settled book covers the last fail-chat price.
+ * A successful buy immediately re-runs the same command to learn the next tier.
+ * Unknown prices get one seed send per kind per session — never a per-minute poll.
  */
 public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, OPEN, TYPE, SEND, READ }
     private enum Kind { SWORD, ZONE, PROBE }
 
-    private record PendingCmd(String text, Kind kind, long notBefore) {}
+    private record PendingCmd(String text, Kind kind, long notBefore, boolean followUp) {}
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
@@ -37,13 +37,17 @@ public class UpgradeController {
     private final ArrayDeque<PendingCmd> queue = new ArrayDeque<>();
     private int swordsSinceZone;
     private long lastSendAt;
+    private long lastSwordSendAt;
+    private long lastZoneSendAt;
     private boolean startupProbed = false;
     /** Kill-driven economy: one affordability evaluation per kill, after the sidebar settles. */
     private int lastKillCount = 0;
-    private long evalAt = 0;
+    /** {@link Long#MAX_VALUE} = no eval pending. Must not start at 0 (that is immediately due). */
+    private long evalAt = Long.MAX_VALUE;
     public String lastKind = null;
-    private boolean zoneProbedThisZone = false;
     private int lastZoneSeq = -1;
+    private int swordAffordableAtKill = -1;
+    private int zoneAffordableAtKill = -1;
 
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -80,6 +84,9 @@ public class UpgradeController {
             if (remaining != null && remaining > 0 && bal2 != null) {
                 sb.append("  ").append(Math.min(999, Math.round(100.0 * bal2 / remaining))).append("%");
             }
+            long last = lastSendFor(kind);
+            long remainMs = last <= 0 ? 0 : (last + Math.max(0, cfg.upgradeMinIntervalMs)) - System.currentTimeMillis();
+            if (remainMs > 0) sb.append("  cd ").append((remainMs + 999) / 1000).append("s");
         }
         return sb.toString();
     }
@@ -94,9 +101,10 @@ public class UpgradeController {
         queue.clear();
         startupProbed = false;
         lastKillCount = 0;
-        evalAt = 0;
-        zoneProbedThisZone = false;
+        evalAt = Long.MAX_VALUE;
         lastZoneSeq = -1;
+        swordAffordableAtKill = -1;
+        zoneAffordableAtKill = -1;
     }
 
     /**
@@ -111,29 +119,35 @@ public class UpgradeController {
             if (!startupProbed) {
                 startupProbed = true;
                 if (cfg.startupProbes) {
-                    queue.add(new PendingCmd(cfg.balCommand, Kind.PROBE, 0));
-                    queue.add(new PendingCmd(cfg.swordCommand, Kind.SWORD, 0));
+                    queue.add(new PendingCmd(cfg.balCommand, Kind.PROBE, 0, false));
                 }
             }
             String reprobe = stats.consumeReprobe();
             if (reprobe != null) {
-                // one learn-probe after a successful buy: the fail line teaches the next absolute price
-                queue.add(new PendingCmd(
-                    "zone".equals(reprobe) ? cfg.zoneCommand : cfg.swordCommand,
-                    "zone".equals(reprobe) ? Kind.ZONE : Kind.SWORD,
-                    now + HumanTiming.logNormalMs(1200, 3000)));
+                boolean alreadyFollowUp = false;
+                for (PendingCmd c : queue) {
+                    if (c.followUp()) { alreadyFollowUp = true; break; }
+                }
+                if (!alreadyFollowUp) {
+                    // Immediate re-run after a successful buy — up-arrow to learn the next tier.
+                    queue.add(new PendingCmd(
+                        "zone".equals(reprobe) ? cfg.zoneCommand : cfg.swordCommand,
+                        "zone".equals(reprobe) ? Kind.ZONE : Kind.SWORD,
+                        now + HumanTiming.logNormalMs(1200, 3000),
+                        true));
+                }
             }
             PendingCmd head = queue.peek();
             if (head != null) {
                 if (now < head.notBefore()) return false;
-                if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
+                // Follow-ups start even while moving (WAIT_STILL); /bal still waits for a lull.
+                if (!head.followUp() && !combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
                 begin(client, combat, now, queue.poll());
                 return true;
             }
             int zoneSeq = stats.zoneChangeSeq();
             if (zoneSeq != lastZoneSeq) {
                 lastZoneSeq = zoneSeq;
-                zoneProbedThisZone = false;
                 swordsSinceZone = 0;
             }
             // Kill-driven: one evaluation per kill, after the sidebar balance settles.
@@ -141,26 +155,36 @@ public class UpgradeController {
                 lastKillCount = combat.kills;
                 evalAt = now + HumanTiming.logNormalMs(cfg.postKillEvalDelayMinMs, cfg.postKillEvalDelayMaxMs);
             }
-            if (now < evalAt) return false;
-            if (lastSendAt != 0 && !stats.lastSendClassified() && now - lastSendAt < cfg.probeMinIntervalMs) {
+            if (evalAt == Long.MAX_VALUE || now < evalAt) return false;
+            int settleMs = Math.max(cfg.upgradeSpendSettleMs, cfg.postKillEvalDelayMinMs);
+            if (!stats.sidebarSettled(now, settleMs)) return false;
+            if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
+
+            stats.publishSnapshot(true);
+            updateAffordableMarks(combat.kills);
+            String kind = buyKind();
+            boolean seed = false;
+            if (kind == null) {
+                kind = seedUnknownKind();
+                seed = kind != null;
+            }
+            if (kind == null) {
+                skipEval("unaffordable", null);
                 return false;
             }
-            stats.publishSnapshot(true);
-            String kind = buyKind();
-            boolean probe = false;
-            if (kind == null) {
-                // learn-probe zone once this stage when TTK readiness is already high but we have no price
-                double R = stats.zoneReadiness();
-                if (!stats.zoneMaxed && stats.zoneTarget == null && R >= cfg.zoneMinReadiness
-                    && !zoneProbedThisZone && now - lastSendAt >= cfg.probeMinIntervalMs) {
-                    kind = "zone";
-                    probe = true;
-                    zoneProbedThisZone = true;
-                } else {
-                    return false;
-                }
+            if (lastSendAt != 0 && !stats.lastSendClassified() && now - lastSendAt < cfg.probeMinIntervalMs) {
+                skipEval("unclassified", kind);
+                return false;
             }
-            if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
+            if (!Economy.cooldownElapsed(now, lastSendFor(kind), cfg.upgradeMinIntervalMs, false)) {
+                skipEval("cooldown", kind);
+                return false;
+            }
+            if (!seed && !extraKillsOk(kind, combat.kills)) {
+                skipEval("extra-kills", kind);
+                return false;
+            }
+
             Double remaining = "zone".equals(kind) ? stats.zoneTarget : stats.swordTarget;
             Double bal = stats.money();
             if (logger != null) {
@@ -172,11 +196,14 @@ public class UpgradeController {
                     "zoneReady", Math.round(1000.0 * stats.zoneReadiness()) / 10.0,
                     "incomePerMin", stats.moneyPerMinute() != null ? Amounts.format(stats.moneyPerMinute()) : null,
                     "ttkMs", stats.medianTtkMs(),
-                    "probe", probe);
+                    "seed", seed,
+                    "followUp", false);
             }
+            evalAt = Long.MAX_VALUE;
+            if (seed) stats.noteSeeded(kind);
             begin(client, combat, now, new PendingCmd(
                 "zone".equals(kind) ? cfg.zoneCommand : cfg.swordCommand,
-                "zone".equals(kind) ? Kind.ZONE : Kind.SWORD, 0));
+                "zone".equals(kind) ? Kind.ZONE : Kind.SWORD, 0, false));
             return true;
         }
 
@@ -261,6 +288,8 @@ public class UpgradeController {
                 lastSendAt = now;
                 if (pendingKind != Kind.PROBE) {
                     lastKind = pendingKind == Kind.SWORD ? "sword" : "zone";
+                    if (pendingKind == Kind.SWORD) lastSwordSendAt = now;
+                    else lastZoneSendAt = now;
                     stats.noteUpgradeSend(pendingKind == Kind.SWORD);
                 } else {
                     stats.noteProbeSend();
@@ -295,8 +324,66 @@ public class UpgradeController {
 
     private boolean knownAffordable(String kind) {
         Double need = "zone".equals(kind) ? stats.zoneTarget : stats.swordTarget;
+        return Economy.knownAffordable(need, stats.money());
+    }
+
+    /**
+     * First-price discovery only. Never a poll: at most one send per kind until
+     * fail-chat teaches the absolute cost, then we wait for the scoreboard.
+     */
+    private String seedUnknownKind() {
+        double R = stats.zoneReadiness();
+        String pref = Economy.preferredKind(!stats.swordMaxed, !stats.zoneMaxed, R);
+        if ("zone".equals(pref) && R < cfg.zoneMinReadiness) pref = stats.swordMaxed ? null : "sword";
+        if (pref != null && Economy.allowUnknownSeed(
+                "zone".equals(pref) ? stats.zoneTarget : stats.swordTarget,
+                stats.seeded(pref),
+                "zone".equals(pref) ? stats.zoneMaxed : stats.swordMaxed)) {
+            return pref;
+        }
+        if (Economy.allowUnknownSeed(stats.swordTarget, stats.swordSeeded, stats.swordMaxed)) return "sword";
+        if (R >= cfg.zoneMinReadiness
+            && Economy.allowUnknownSeed(stats.zoneTarget, stats.zoneSeeded, stats.zoneMaxed)) {
+            return "zone";
+        }
+        return null;
+    }
+
+    private void updateAffordableMarks(int kills) {
+        if (knownAffordable("sword")) {
+            if (swordAffordableAtKill < 0) swordAffordableAtKill = kills;
+        } else {
+            swordAffordableAtKill = -1;
+        }
+        if (knownAffordable("zone")) {
+            if (zoneAffordableAtKill < 0) zoneAffordableAtKill = kills;
+        } else {
+            zoneAffordableAtKill = -1;
+        }
+    }
+
+    private boolean extraKillsOk(String kind, int kills) {
+        int at = "zone".equals(kind) ? zoneAffordableAtKill : swordAffordableAtKill;
+        return Economy.extraKillsReached(kills, at, cfg.minKillsAfterAffordable);
+    }
+
+    private long lastSendFor(String kind) {
+        if (kind == null) return Math.max(lastSwordSendAt, lastZoneSendAt);
+        return "zone".equals(kind) ? lastZoneSendAt : lastSwordSendAt;
+    }
+
+    private void skipEval(String reason, String kind) {
+        evalAt = Long.MAX_VALUE;
+        if (logger == null) return;
+        Double remaining = kind == null ? null
+            : ("zone".equals(kind) ? stats.zoneTarget : stats.swordTarget);
         Double bal = stats.money();
-        return need != null && bal != null && bal + 1e-6 >= need;
+        logger.log("upgrade_skip", "reason", reason,
+            "kind", kind,
+            "target", remaining != null ? Amounts.format(remaining) : null,
+            "bal", bal != null ? Amounts.format(bal) : null,
+            "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
+            "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null);
     }
 
     private void begin(MinecraftClient client, CombatController combat, long now, PendingCmd cmd) {

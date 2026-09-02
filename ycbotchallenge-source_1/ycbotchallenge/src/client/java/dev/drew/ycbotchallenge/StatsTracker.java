@@ -54,8 +54,12 @@ public class StatsTracker {
     private long upgradeChatFragAt = 0;
     public String lastUpgradeKind = null;
     private long lastUpgradeSendAt = 0;
+    private long lastSpendAt = 0;
     private long lastBalSendAt = 0;
     private long lastClassifiedAt = 0;
+    /** One-shot unknown-price seed per kind; not reset on bot toggle (avoids re-spam). */
+    public boolean swordSeeded = false;
+    public boolean zoneSeeded = false;
     private int zoneChangeSeq = 0;
     private String reprobeKind = null;
     private int swordBuysThisZone = 0;
@@ -209,7 +213,22 @@ public class StatsTracker {
 
     public void noteUpgradeSend(boolean sword) {
         lastUpgradeKind = sword ? "sword" : "zone";
-        lastUpgradeSendAt = System.currentTimeMillis();
+        long now = System.currentTimeMillis();
+        lastUpgradeSendAt = now;
+        lastSpendAt = now;
+    }
+
+    public boolean seeded(String kind) {
+        return "zone".equals(kind) ? zoneSeeded : swordSeeded;
+    }
+
+    public void noteSeeded(String kind) {
+        if ("zone".equals(kind)) zoneSeeded = true;
+        else swordSeeded = true;
+    }
+
+    public boolean sidebarSettled(long nowMs, int settleMs) {
+        return Economy.sidebarSettled(nowMs, lastSpendAt, settleMs);
     }
 
     public void noteProbeSend() {
@@ -218,7 +237,8 @@ public class StatsTracker {
 
     /** False when the most recent upgrade command never produced a classified response (patterns blind). */
     public boolean lastSendClassified() {
-        return lastUpgradeSendAt != 0 && lastClassifiedAt >= lastUpgradeSendAt;
+        if (lastUpgradeSendAt == 0) return true;
+        return lastClassifiedAt >= lastUpgradeSendAt;
     }
 
     private static Pattern compileLoose(String p) {
@@ -513,11 +533,16 @@ public class StatsTracker {
         }
         boolean known = false;
         if (!overlay) known = parseBalReply(text);
-        if (!overlay && parseUpgradeChat(text)) known = true;
+        // Upgrade fail/success can land as overlay (system/action-bar) or chat.
+        if (parseUpgradeChat(text)) known = true;
         if (overlay) {
             Matcher m = actionBarRe.matcher(text);
             if (m.find()) {
                 try { rebirthProgressPct = Double.parseDouble(m.group(1)); } catch (NumberFormatException ignored) {}
+            }
+            if (!known && lastUpgradeSendAt != 0
+                && System.currentTimeMillis() - lastUpgradeSendAt <= 6_000) {
+                log("upgrade_response_raw", "raw", text, "overlay", true);
             }
             return;
         }
@@ -628,15 +653,17 @@ public class StatsTracker {
             return true;
         }
         if (success && !fail) {
+            Double knownPrice = "zone".equals(kind) ? zoneTarget : swordTarget;
             if ("zone".equals(kind)) { zoneTarget = null; zoneGap = null; }
             else { swordTarget = null; swordGap = null; swordBuysThisZone++; }
             reprobeKind = kind;
             lastClassifiedAt = System.currentTimeMillis();
             upgradeChatFrag = null;
-            if (amt != null) {
-                debitMoney(amt);
+            Double paid = amt != null ? amt : knownPrice;
+            if (paid != null) {
+                debitMoney(paid);
                 log("upgrade_result", "kind", kind, "success", true, "fail", false,
-                    "paid", Amounts.format(amt), "message", text);
+                    "paid", Amounts.format(paid), "message", text);
             } else {
                 log("upgrade_result", "kind", kind, "success", true, "fail", false, "message", text);
             }
