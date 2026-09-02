@@ -40,8 +40,9 @@ public class UpgradeController {
     private int zoneEvery;
     private long lastSendAt;
     private boolean startupProbed = false;
-    /** Kill count when we first observed we could afford the next upgrade; -1 = not yet affordable. */
-    private int affordableSinceKills = -1;
+    /** Kill-driven economy: one affordability evaluation per kill, after the sidebar settles. */
+    private int lastKillCount = 0;
+    private long evalAt = 0;
     public String lastKind = null;
 
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
@@ -56,7 +57,6 @@ public class UpgradeController {
 
     public String hudLine() {
         if (!cfg.upgradesEnabled) return null;
-        long now = System.currentTimeMillis();
         String kind = chooseKind();
         Double bal = stats.money();
         Double rate = stats.moneyPerMinute();
@@ -74,9 +74,10 @@ public class UpgradeController {
         if (phase != Phase.IDLE) {
             sb.append("  §e").append(phase.name().toLowerCase());
         } else if (kind != null) {
-            long dueIn = planNext(kind, now) - now;
-            if (dueIn > 1_000) {
-                sb.append("  buy in ").append(dueIn < 60_000 ? (dueIn / 1000) + "s" : (dueIn / 60_000) + "m");
+            Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+            Double bal2 = stats.money();
+            if (remaining != null && remaining > 0 && bal2 != null) {
+                sb.append("  ").append(Math.min(999, Math.round(100.0 * bal2 / remaining))).append("%");
             }
         }
         return sb.toString();
@@ -91,7 +92,8 @@ public class UpgradeController {
         typoAt = -1;
         queue.clear();
         startupProbed = false;
-        affordableSinceKills = -1;
+        lastKillCount = 0;
+        evalAt = 0;
     }
 
     /**
@@ -128,22 +130,34 @@ public class UpgradeController {
             }
             String kind = chooseKind();
             if (kind == null) return false;
-            if (now < planNext(kind, now)) return false;
-            if (!knownAffordable(kind) && now - lastSendAt < cfg.probeMinIntervalMs) return false;
-            // Known-affordable: finish the current mob first, buy in the lull.
-            if (knownAffordable(kind)) {
-                if (affordableSinceKills < 0) affordableSinceKills = combat.kills;
-                if (combat.kills - affordableSinceKills < cfg.minKillsAfterAffordable) return false;
+            // Kill-driven: one evaluation per kill, after the sidebar balance settles.
+            // Evaluating post-kill IS the wait-one-kill rule.
+            if (combat.kills != lastKillCount) {
+                lastKillCount = combat.kills;
+                evalAt = now + HumanTiming.logNormalMs(cfg.postKillEvalDelayMinMs, cfg.postKillEvalDelayMaxMs);
+            }
+            if (now < evalAt) return false;
+            Double bal = stats.money();
+            Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
+            boolean probe;
+            if (remaining != null && bal != null) {
+                if (bal + 1e-6 < remaining) return false; // not yet — the next kill re-evaluates
+                probe = false;
+            } else {
+                // Unknown cost or balance: rare capped probe, never a tight loop
+                if (now - lastSendAt < cfg.probeMinIntervalMs) return false;
+                probe = true;
             }
             if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) return false;
             if (logger != null) {
-                Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
                 logger.log("upgrade_plan", "kind", kind,
                     "remaining", remaining,
-                    "bal", stats.money(),
+                    "bal", bal,
+                    "pct", remaining != null && remaining > 0 && bal != null
+                        ? Math.round(1000.0 * bal / remaining) / 10.0 : null,
                     "incomePerMin", stats.moneyPerMinute(),
                     "ttkMs", stats.medianTtkMs(),
-                    "knownAffordable", knownAffordable(kind));
+                    "probe", probe);
             }
             begin(client, combat, now, new PendingCmd(
                 "zone".equals(kind) ? cfg.zoneCommand : cfg.swordCommand,
@@ -255,7 +269,8 @@ public class UpgradeController {
         boolean zoneOpen = !stats.zoneMaxed;
         if (!swordOpen && !zoneOpen) return null;
         Double ttk = stats.medianTtkMs();
-        boolean zoneHot = zoneOpen && ttk != null && ttk <= cfg.zoneReadyTtkMs;
+        boolean zoneHot = zoneOpen && ttk != null && ttk <= cfg.zoneReadyTtkMs
+            && stats.swordBuysThisZone() >= cfg.zoneMinSwordBuysThisZone;
         boolean ratioDue = swordsSinceZone >= zoneEvery;
         if (zoneOpen && (zoneHot || ratioDue)) {
             // zone is the prize; if it's known-unaffordable but the sword is known-affordable, sword first
@@ -268,20 +283,6 @@ public class UpgradeController {
             return "zone";
         }
         return swordOpen ? "sword" : "zone";
-    }
-
-    /** When the next attempt for {@code kind} should fire: now + remaining/income-rate, politeness-clamped. */
-    private long planNext(String kind, long now) {
-        long earliest = Math.max(now, lastSendAt + cfg.probeMinIntervalMs);
-        Double remaining = "zone".equals(kind) ? stats.zoneRemaining : stats.swordRemaining;
-        Double bal = stats.money();
-        if (remaining == null) return earliest;              // unknown: probe-by-buying
-        double gap = bal != null ? Math.max(0, remaining - bal) : remaining;
-        if (gap <= 0) return earliest;                       // affordable: buy as soon as polite
-        Double rate = stats.moneyPerMinute();
-        if (rate == null || rate <= 0) return now + cfg.upgradePeriodMaxMs; // no income signal: slow poll
-        long etaMs = (long) (gap / (rate / 60_000.0));
-        return earliest + Math.max(0, Math.min((long) cfg.upgradePeriodMaxMs, etaMs));
     }
 
     private boolean knownAffordable(String kind) {
@@ -315,7 +316,6 @@ public class UpgradeController {
         phase = Phase.IDLE;
         pending = null;
         typoAt = -1;
-        affordableSinceKills = -1;
     }
 
     private void abort(MinecraftClient client, String why) {
@@ -324,7 +324,6 @@ public class UpgradeController {
         phase = Phase.IDLE;
         pending = null;
         typoAt = -1;
-        affordableSinceKills = -1;
     }
 
     private static void closeOurChat(MinecraftClient client) {

@@ -44,6 +44,7 @@ public class StatsTracker {
     private long lastUpgradeSendAt = 0;
     private int zoneChangeSeq = 0;
     private String reprobeKind = null;
+    private int swordBuysThisZone = 0;
     public final Set<String> activeBoosts = new HashSet<>();
     private final Map<String, Long> boostSince = new HashMap<>();
 
@@ -208,6 +209,7 @@ public class StatsTracker {
                 zoneChangeSeq++;
                 zoneBaselineTtkMs = null;
                 zoneKills = 0;
+                swordBuysThisZone = 0;
                 lastBenchmarkLogged = null;
                 log("zone_change", "zone", z);
             }
@@ -383,8 +385,9 @@ public class StatsTracker {
                 break;
             }
         }
-        if (!overlay) parseBalReply(text);
-        parseUpgradeChat(text);
+        boolean known = false;
+        if (!overlay) known = parseBalReply(text);
+        if (parseUpgradeChat(text)) known = true;
         if (overlay) {
             Matcher m = actionBarRe.matcher(text);
             if (m.find()) {
@@ -396,35 +399,44 @@ public class StatsTracker {
             if (p.matcher(text).find()) {
                 ascensions++;
                 log("ascension", "via", "chat", "message", text, "ascensions", ascensions);
-                return;
+                known = true;
+                break;
             }
         }
         for (Pattern p : prestigeRes) {
             if (p.matcher(text).find()) {
                 prestiges++;
                 log("prestige", "via", "chat", "message", text, "prestiges", prestiges);
-                return;
+                known = true;
+                break;
             }
+        }
+        // Unrecognized line right after a command send: capture the server's actual wording
+        // so the patterns can be tuned from evidence instead of guessing.
+        if (!known && lastUpgradeSendAt != 0
+            && System.currentTimeMillis() - lastUpgradeSendAt <= 6_000) {
+            log("upgrade_response_raw", "raw", text);
         }
     }
 
     /** A balCommand reply: authoritative current balance + income-rate sample. */
-    private void parseBalReply(String text) {
+    private boolean parseBalReply(String text) {
         for (Pattern p : balRes) {
             Matcher m = p.matcher(text);
             if (!m.find()) continue;
             Double v = amountFrom(m);
-            if (v == null) return;
+            if (v == null) return true; // pattern matched, amount unreadable — still a known line
             String key = cfg.moneyCurrency == null ? "chicken" : cfg.moneyCurrency.toLowerCase();
             balances.put(key, Amounts.format(v));
             noteBalance(v);
             log("balance_probe", "balance", v, "raw", text);
             checkBecameAffordable();
-            return;
+            return true;
         }
+        return false;
     }
 
-    private void parseUpgradeChat(String text) {
+    private boolean parseUpgradeChat(String text) {
         boolean fail = anyMatch(upgradeFailRes, text);
         boolean success = anyMatch(upgradeSuccessRes, text);
         boolean maxed = anyMatch(upgradeMaxedRes, text);
@@ -437,10 +449,10 @@ public class StatsTracker {
                 if (!Amounts.parseAll(text).isEmpty()) fail = true;
             }
         }
-        if (!fail && !success && !maxed) return;
+        if (!fail && !success && !maxed) return false;
         // success/maxed lines from OTHER players' broadcasts don't describe us
         if ((success || maxed) && !fail && sinceSend > 15_000 && !text.toLowerCase(java.util.Locale.ROOT).contains("you")) {
-            return;
+            return false;
         }
 
         // Classify the kind by keyword anywhere in the line; fall back to what we last sent.
@@ -448,7 +460,7 @@ public class StatsTracker {
         String kind = lower.contains("sword") ? "sword"
             : lower.contains("zone") ? "zone"
             : lastUpgradeKind;
-        if (kind == null) return;
+        if (kind == null) return false;
 
         // Amount: legacy named-group patterns first, else first parseable token in the line.
         Double amt = firstAmount("zone".equals(kind) ? zoneRemainingRes : swordRemainingRes, text);
@@ -461,14 +473,14 @@ public class StatsTracker {
             if ("zone".equals(kind)) { zoneMaxed = true; zoneRemaining = null; }
             else { swordMaxed = true; swordRemaining = null; }
             log("upgrade_maxed", "kind", kind, "raw", text);
-            return;
+            return true;
         }
         if (success && !fail) {
             // purchased: next cost unknown until we re-send the command and read the fail line
-            if ("zone".equals(kind)) zoneRemaining = null; else swordRemaining = null;
+            if ("zone".equals(kind)) zoneRemaining = null; else { swordRemaining = null; swordBuysThisZone++; }
             reprobeKind = kind;
             log("upgrade_result", "kind", kind, "success", true, "fail", false, "message", text);
-            return;
+            return true;
         }
         if (fail) {
             if (amt != null) {
@@ -478,6 +490,7 @@ public class StatsTracker {
             log("upgrade_result", "kind", kind, "success", false, "fail", true, "message", text);
             checkBecameAffordable();
         }
+        return true;
     }
 
     private void checkBecameAffordable() {
@@ -561,6 +574,9 @@ public class StatsTracker {
         reprobeKind = null;
         return k;
     }
+
+    /** Successful sword purchases since the current zone started. */
+    public int swordBuysThisZone() { return swordBuysThisZone; }
 
     public double killsPerSecond(long windowMs) {
         return killsPerMinute(windowMs) / 60.0;
