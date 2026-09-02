@@ -37,8 +37,17 @@ public class StatsTracker {
     public String multiplier = null;
     public Double rebirthProgressPct = null;
     public final Map<String, String> balances = new HashMap<>();
+    public Double swordRemaining = null;
+    public Double zoneRemaining = null;
+    public boolean becameAffordable = false;
+    public String lastUpgradeKind = null;
     public final Set<String> activeBoosts = new HashSet<>();
     private final Map<String, Long> boostSince = new HashMap<>();
+
+    /** DPS estimate from the cooking mob's boss-bar HP slope. */
+    private static final Pattern BOSS_HP = Pattern.compile("[\u2764\u2665]\uFE0F?\\s*([0-9]+)");
+    private final ArrayDeque<long[]> dpsSamples = new ArrayDeque<>(); // {timeMs, hp}
+    private long lastDpsSampleAt = 0;
 
     public final ArrayDeque<Long> killTimes = new ArrayDeque<>();
     public final ArrayDeque<Long> rebirthTimes = new ArrayDeque<>();
@@ -52,6 +61,10 @@ public class StatsTracker {
     private final List<Pattern> ascensionRes = new ArrayList<>();
     private final List<Pattern> prestigeRes = new ArrayList<>();
     private final List<Pattern> captchaRes = new ArrayList<>();
+    private final List<Pattern> swordRemainingRes = new ArrayList<>();
+    private final List<Pattern> zoneRemainingRes = new ArrayList<>();
+    private final List<Pattern> upgradeSuccessRes = new ArrayList<>();
+    private final List<Pattern> upgradeFailRes = new ArrayList<>();
 
     /** Set when a captcha chat line is seen; consumed (and cleared) by the main tick. */
     public volatile String captchaMessage = null;
@@ -70,6 +83,28 @@ public class StatsTracker {
         for (String p : cfg.ascensionChatPatterns) ascensionRes.add(compileLoose(p));
         for (String p : cfg.prestigeChatPatterns) prestigeRes.add(compileLoose(p));
         for (String p : cfg.captchaChatPatterns) captchaRes.add(compileLoose(p));
+        if (cfg.swordRemainingPatterns != null)
+            for (String p : cfg.swordRemainingPatterns) swordRemainingRes.add(compileLoose(p));
+        if (cfg.zoneRemainingPatterns != null)
+            for (String p : cfg.zoneRemainingPatterns) zoneRemainingRes.add(compileLoose(p));
+        if (cfg.upgradeSuccessPatterns != null)
+            for (String p : cfg.upgradeSuccessPatterns) upgradeSuccessRes.add(compileLoose(p));
+        if (cfg.upgradeFailPatterns != null)
+            for (String p : cfg.upgradeFailPatterns) upgradeFailRes.add(compileLoose(p));
+    }
+
+    public Double money() {
+        String key = cfg.moneyCurrency == null ? "chicken" : cfg.moneyCurrency.toLowerCase();
+        String raw = balances.get(key);
+        if (raw == null) raw = balances.get("money");
+        if (raw == null && !balances.isEmpty()) {
+            raw = balances.values().iterator().next();
+        }
+        return Amounts.parse(raw);
+    }
+
+    public void noteUpgradeSend(boolean sword) {
+        lastUpgradeKind = sword ? "sword" : "zone";
     }
 
     private static Pattern compileLoose(String p) {
@@ -90,6 +125,10 @@ public class StatsTracker {
         ctx.addProperty("ascensions", ascensions);
         if (zone != null) ctx.addProperty("zone", zone);
         if (multiplier != null) ctx.addProperty("multiplier", multiplier);
+        Double bal = money();
+        if (bal != null) ctx.addProperty("money", bal);
+        if (swordRemaining != null) ctx.addProperty("swordRemaining", swordRemaining);
+        if (zoneRemaining != null) ctx.addProperty("zoneRemaining", zoneRemaining);
         return ctx;
     }
 
@@ -134,6 +173,7 @@ public class StatsTracker {
                 String prev = balances.put(name, raw);
                 if (prev != null && !prev.equals(raw)) {
                     log("balance", "currency", name, "raw", raw);
+                    checkBecameAffordable();
                 }
             }
         }
@@ -186,6 +226,90 @@ public class StatsTracker {
         });
     }
 
+    /** Live boss bars (never null). Safe to call every tick. */
+    private Map<?, ClientBossBar> bossBars(MinecraftClient client) {
+        try {
+            return ((BossBarHudAccessor) client.inGameHud.getBossBarHud()).ycBotChallenge$getBossBars();
+        } catch (Throwable t) {
+            return java.util.Collections.emptyMap();
+        }
+    }
+
+    /** Text before the heart on a boss bar title, trimmed (e.g. "LVL1 Chicken"). */
+    private static String bossBarPrefix(String title) {
+        int i = indexOfHeart(title);
+        return (i > 0 ? title.substring(0, i) : title).trim();
+    }
+
+    private static int indexOfHeart(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\u2764' || c == '\u2665') return i;
+        }
+        return -1;
+    }
+
+    /** True if any boss bar's title mentions {@code mobName} (e.g. "Chicken" in "LVL1 Chicken ❤ 78"). */
+    public boolean bossBarMatches(String mobName) {
+        if (mobName == null || mobName.isBlank()) return false;
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.inGameHud == null) return false;
+        for (ClientBossBar bar : bossBars(client).values()) {
+            String prefix = bossBarPrefix(bar.getName().getString());
+            if (prefix.toLowerCase().contains(mobName.toLowerCase())) return true;
+        }
+        return false;
+    }
+
+    /** Current heart HP of the boss bar whose title mentions {@code mobName}, or null. */
+    public Double currentHpFor(String mobName) {
+        if (mobName == null || mobName.isBlank()) return null;
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.inGameHud == null) return null;
+        Double best = null;
+        for (ClientBossBar bar : bossBars(client).values()) {
+            String title = bar.getName().getString();
+            if (!bossBarPrefix(title).toLowerCase().contains(mobName.toLowerCase())) continue;
+            Matcher m = BOSS_HP.matcher(title);
+            if (m.find()) {
+                try {
+                    double hp = Double.parseDouble(m.group(1));
+                    // if multiple match, take the lowest (most-damaged = the one cooking)
+                    if (best == null || hp < best) best = hp;
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return best;
+    }
+
+    /** Record a (now, hp) sample for the DPS slope. Call every tick while cooking. */
+    public void sampleDpsFor(String mobName) {
+        Double hp = currentHpFor(mobName);
+        if (hp == null) return;
+        long now = System.currentTimeMillis();
+        dpsSamples.addLast(new long[]{now, (long) Math.round(hp)});
+        long cutoff = now - cfg.dpsWindowMs;
+        while (!dpsSamples.isEmpty() && dpsSamples.peekFirst()[0] < cutoff) dpsSamples.removeFirst();
+        lastDpsSampleAt = now;
+    }
+
+    /** Clear the DPS window (call on connect so it measures only this mob's cook). */
+    public void resetDps() {
+        dpsSamples.clear();
+        lastDpsSampleAt = 0;
+    }
+
+    /** Effective damage/sec from the boss-bar HP slope (positive), or null if too few samples. */
+    public Double dps() {
+        if (dpsSamples.size() < cfg.dpsMinSamples) return null;
+        long[] first = dpsSamples.peekFirst();
+        long[] last = dpsSamples.peekLast();
+        double dt = (last[0] - first[0]) / 1000.0;
+        if (dt <= 0) return null;
+        double dh = first[1] - last[1]; // hp dropped => positive
+        return dh / dt;
+    }
+
     /** Wire to ClientReceiveMessageEvents.GAME. */
     public void onGameMessage(Text message, boolean overlay) {
         String text = message.getString();
@@ -196,6 +320,7 @@ public class StatsTracker {
                 break;
             }
         }
+        parseUpgradeChat(text);
         if (overlay) {
             Matcher m = actionBarRe.matcher(text);
             if (m.find()) {
@@ -217,6 +342,73 @@ public class StatsTracker {
                 return;
             }
         }
+    }
+
+    private void parseUpgradeChat(String text) {
+        boolean fail = anyMatch(upgradeFailRes, text);
+        boolean success = anyMatch(upgradeSuccessRes, text);
+        Double swordAmt = firstAmount(swordRemainingRes, text);
+        Double zoneAmt = firstAmount(zoneRemainingRes, text);
+        if (swordAmt == null && zoneAmt == null && lastUpgradeKind != null) {
+            // generic "need 1.2M more" after we just sent a command
+            Double any = Amounts.parse(text);
+            if (any != null && (fail || text.toLowerCase().contains("need") || text.toLowerCase().contains("remain"))) {
+                if ("zone".equals(lastUpgradeKind)) zoneAmt = any;
+                else swordAmt = any;
+            }
+        }
+        if (swordAmt != null) {
+            swordRemaining = swordAmt;
+            log("upgrade_chat", "kind", "sword", "remaining", swordAmt, "raw", text);
+        }
+        if (zoneAmt != null) {
+            zoneRemaining = zoneAmt;
+            log("upgrade_chat", "kind", "zone", "remaining", zoneAmt, "raw", text);
+        }
+        if (success || fail) {
+            log("upgrade_result",
+                "kind", lastUpgradeKind,
+                "success", success && !fail,
+                "fail", fail,
+                "message", text);
+        }
+        if (swordAmt != null || zoneAmt != null || success || fail) {
+            checkBecameAffordable();
+        }
+    }
+
+    private void checkBecameAffordable() {
+        Double bal = money();
+        if (bal == null) return;
+        if (swordRemaining != null && bal >= swordRemaining) becameAffordable = true;
+        if (zoneRemaining != null && bal >= zoneRemaining) becameAffordable = true;
+    }
+
+    private static boolean anyMatch(List<Pattern> res, String text) {
+        for (Pattern p : res) if (p.matcher(text).find()) return true;
+        return false;
+    }
+
+    private static Double firstAmount(List<Pattern> res, String text) {
+        for (Pattern p : res) {
+            Matcher m = p.matcher(text);
+            if (m.find()) {
+                Double v = amountFrom(m);
+                if (v != null) return v;
+            }
+        }
+        return null;
+    }
+
+    private static Double amountFrom(Matcher m) {
+        try {
+            String named = m.group("amount");
+            if (named != null) return Amounts.parse(named);
+        } catch (IllegalArgumentException ignored) {}
+        if (m.groupCount() >= 1) {
+            try { return Amounts.parse(m.group(1)); } catch (Exception ignored) {}
+        }
+        return Amounts.parse(m.group());
     }
 
     public void recordKill() {

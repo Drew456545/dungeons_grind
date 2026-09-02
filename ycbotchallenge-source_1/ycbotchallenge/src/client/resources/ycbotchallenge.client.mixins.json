@@ -3,7 +3,10 @@
   "package": "dev.drew.ycbotchallenge.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "BossBarHudAccessor"
+    "BossBarHudAccessor",
+    "ChatScreenAccessor",
+    "KeyBindingAccessor",
+    "MouseMixin"
   ],
   "injectors": {
     "defaultRequire": 1

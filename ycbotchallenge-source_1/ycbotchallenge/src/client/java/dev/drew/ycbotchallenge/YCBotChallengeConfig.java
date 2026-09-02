@@ -61,17 +61,25 @@ public class YCBotChallengeConfig {
     public double sprintAlignMaxDeg = 45.0;
 
     /**
-     * Aim feel — one slider, 0.0 to 1.0.
-     * Low (0.2) = heavy/lazy: slow turns, lots of momentum, eases in and out.
-     * High (0.9) = agile: quick turns, still momentum-limited, never snaps.
-     * Turn rate and acceleration both scale from this; there is no instant
-     * rotation anywhere — every turn ramps up and coasts down.
+     * Aim feel — one slider, 0.0 to 1.0. Scales one-shot mouse-path duration only.
+     * The camera is never locked or written directly.
      */
     public double aimAgility = 0.4;
-    /** Stop micro-adjusting once within this many degrees of the target (humans don't pixel-track). */
-    public double aimDeadzoneDeg = 2.5;
-    /** Only tap the mob when actually looking at it — aim error must be under this. */
-    public double aimTapMaxErrorDeg = 25.0;
+    /** After a flick lands, only start a NEW correction flick if error exceeds this. */
+    public double lookReacquireDeg = 3.0;
+    /** Only click the mob when the actual camera is this close to the aim point (chicken hitbox is only a few deg). */
+    public double aimTapMaxErrorDeg = 3.0;
+    /** Sparse idle mouse noise while standing (not a tracking loop). */
+    public boolean mouseIdleTremor = true;
+    public double idleTremorChancePerSecond = 0.35;
+    /**
+     * Per-kill look style weights (normalized). Flick-next glances at the next
+     * mob once; watch waits until death; scan pans; hesitate idles then commits.
+     */
+    public double trackStyleFlickNext = 0.45;
+    public double trackStyleWatchThenFind = 0.30;
+    public double trackStyleScan = 0.15;
+    public double trackStyleHesitate = 0.10;
     /**
      * Target choice = lowest estimated travel cost, in blocks:
      *   cost = distance + turnCostBlocks * (angle off camera / 180).
@@ -100,17 +108,40 @@ public class YCBotChallengeConfig {
     public Map<String, Double> rarityBonusBlocks = Map.of(
         "UNCOMMON", 1.5, "RARE", 4.0, "EPIC", 8.0, "LEGENDARY", 12.0);
     /**
-     * While a tagged mob cooks we can't tag another, but we don't need to watch
-     * it: pick the next mob, pre-aim at it, and walk toward it as far as the
-     * leash allows (the server keeps auto-attacking while we're near the tagged
-     * mob). The leash is re-rolled between min and max on every tag so how far
-     * we drift varies kill to kill. The pick is re-evaluated every
-     * nextTargetRescanMs so a rarer mob spawning nearby gets noticed.
+     * While a tagged mob cooks we can't tag another. Movement toward the next
+     * mob is still leash-limited; the camera is a one-shot look intent (see
+     * track-style weights), not a lock on nextTarget.
      */
     public boolean preAimNext = true;
     public int nextTargetRescanMs = 750;
     public double cookLeashMinBlocks = 2.0;
     public double cookLeashMaxBlocks = 4.0;
+
+    /**
+     * DPS-driven handoff. While a mob cooks we read its boss-bar HP, compute an
+     * effective DPS from the HP slope, and only start looking for / walking to
+     * the next mob once ETA = HP / DPS drops below this lead time (reaction +
+     * flick + short walk). Before that we stay put and watch — no wandering off
+     * a mob that's still far from dying.
+     */
+    public int handoffLeadMs = 700;
+    /** If we've been cooking this long with NO boss-bar DPS signal at all, look for the next mob anyway (never stall). */
+    public int handoffFallbackMs = 4000;
+    /** Minimum boss-bar HP samples before trusting a DPS number. */
+    public int dpsMinSamples = 3;
+    /** DPS slope window (ms); older HP samples are dropped. */
+    public int dpsWindowMs = 10000;
+
+    /**
+     * Click-to-connect. Once in reach and aimed, click at 5-8 cps until the
+     * mob's boss bar appears (a hit landed). Missing is realistic, so we keep
+     * clicking rather than widening the aim tolerance. Never faster than the
+     * vanilla attack cooldown (see respectVanillaAttackCooldown).
+     */
+    public int clickCpsMin = 5;
+    public int clickCpsMax = 8;
+    /** Hard ceiling: skip a click if the vanilla attack cooldown isn't ready. */
+    public boolean respectVanillaAttackCooldown = true;
 
     /**
      * Ghost filter. Real dungeon mobs are ALWAYS stationary; client-side ghost
@@ -248,6 +279,7 @@ public class YCBotChallengeConfig {
     public String actionBarPattern = "Rebirth Progress:.*?\\(([\\d.]+)%\\)";
     public List<String> balancePatterns = List.of(
         "money|Money:\\s*\\$?(\\S+)",
+        "chicken|([\\d,.]+[KMBTQkmbtq]?)\\s*Chicken",
         "souls|Souls:\\s*.?\\s*(\\S+)",
         "essence|Essence:\\s*.?\\s*(\\S+)",
         "shards|Shards:\\s*.?\\s*(\\S+)",
@@ -256,12 +288,51 @@ public class YCBotChallengeConfig {
     public List<String> ascensionChatPatterns = List.of("ascend", "ascension");
     public List<String> prestigeChatPatterns = List.of("prestige");
 
+    /** AFK upgrades: typed chat, only while standing still. */
+    public boolean upgradesEnabled = true;
+    public String swordCommand = "/swordmax";
+    public String zoneCommand = "/zone max";
+    public int upgradePeriodMinMs = 132_000;
+    public int upgradePeriodMaxMs = 240_000;
+    public int zoneEverySwordsMin = 5;
+    public int zoneEverySwordsMax = 6;
+    public int upgradeStopPauseMinMs = 200;
+    public int upgradeStopPauseMaxMs = 800;
+    public int typeKeyMinMs = 80;
+    public int typeKeyMaxMs = 180;
+    public int upgradeReadPauseMinMs = 400;
+    public int upgradeReadPauseMaxMs = 900;
+    /** Sidebar key used for afford checks (chicken / money / souls...). */
+    public String moneyCurrency = "chicken";
+    /**
+     * Chat/action-bar remaining-cost. Named groups {@code amount} and optional
+     * {@code kind} (sword/zone). Plain substrings or /regex/.
+     */
+    public List<String> swordRemainingPatterns = List.of(
+        "/(?i)sword[^\\n]{0,80}?(?:need|remaining|left|more|cost)[^\\n]{0,40}?(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)/",
+        "/(?i)(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)[^\\n]{0,40}?(?:more|needed|remaining)[^\\n]{0,20}?sword/"
+    );
+    public List<String> zoneRemainingPatterns = List.of(
+        "/(?i)zone[^\\n]{0,80}?(?:need|remaining|left|more|cost)[^\\n]{0,40}?(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)/",
+        "/(?i)(?<amount>[\\d,.]+\\s*[KMBTQkmbtq]?)[^\\n]{0,40}?(?:more|needed|remaining)[^\\n]{0,20}?zone/"
+    );
+    public List<String> upgradeSuccessPatterns = List.of(
+        "upgraded", "purchased", "bought", "maxed", "enchanted"
+    );
+    public List<String> upgradeFailPatterns = List.of(
+        "not enough", "can't afford", "cannot afford", "insufficient", "need more"
+    );
+
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     public static YCBotChallengeConfig load(Path file) {
         try {
             if (Files.exists(file)) {
-                return GSON.fromJson(Files.readString(file), YCBotChallengeConfig.class);
+                YCBotChallengeConfig cfg = GSON.fromJson(Files.readString(file), YCBotChallengeConfig.class);
+                if (cfg != null) {
+                    cfg.normalize();
+                    return cfg;
+                }
             }
         } catch (Exception e) {
             YCBotChallengeClient.LOGGER.warn("Failed to read config, using defaults: {}", e.toString());
@@ -269,6 +340,21 @@ public class YCBotChallengeConfig {
         YCBotChallengeConfig cfg = new YCBotChallengeConfig();
         cfg.save(file);
         return cfg;
+    }
+
+    /** Fill nulls when an older config json is missing new fields. */
+    public void normalize() {
+        if (balancePatterns == null) balancePatterns = List.of();
+        if (ascensionChatPatterns == null) ascensionChatPatterns = List.of();
+        if (prestigeChatPatterns == null) prestigeChatPatterns = List.of();
+        if (captchaChatPatterns == null) captchaChatPatterns = List.of();
+        if (swordRemainingPatterns == null) swordRemainingPatterns = List.of();
+        if (zoneRemainingPatterns == null) zoneRemainingPatterns = List.of();
+        if (upgradeSuccessPatterns == null) upgradeSuccessPatterns = List.of();
+        if (upgradeFailPatterns == null) upgradeFailPatterns = List.of();
+        if (swordCommand == null || swordCommand.isBlank()) swordCommand = "/swordmax";
+        if (zoneCommand == null || zoneCommand.isBlank()) zoneCommand = "/zone max";
+        if (moneyCurrency == null || moneyCurrency.isBlank()) moneyCurrency = "chicken";
     }
 
     public void save(Path file) {

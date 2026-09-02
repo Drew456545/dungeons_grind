@@ -28,6 +28,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private Path configPath;
     private StatsTracker stats;
     private CombatController combat;
+    private UpgradeController upgrades;
     private CaptchaSolver captchaSolver;
     private EventLogger logger;
     private KeyBinding toggleKey;
@@ -41,6 +42,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         config = YCBotChallengeConfig.load(configPath);
         stats = new StatsTracker(config);
         combat = new CombatController(config, stats);
+        upgrades = new UpgradeController(config, stats);
+        MouseDriver.INSTANCE.configure(config, null);
         captchaSolver = new CaptchaSolver(config, new CaptchaSolver.Callbacks() {
             @Override public void onSolved(MinecraftClient client) {
                 // stay enabled; combat resumes on the next tick. Drop any captcha
@@ -61,7 +64,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
         HudElementRegistry.addLast(
             Identifier.of("ycbotchallenge", "hud"),
-            (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver).render(context));
+            (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver, upgrades).render(context));
 
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             stats.onGameMessage(message, overlay);
@@ -105,6 +108,10 @@ public class YCBotChallengeClient implements ClientModInitializer {
             beginCaptcha(client, "chat", captchaChat);
             return;
         }
+        if (upgrades.isBusy()) {
+            upgrades.tick(client, combat);
+            return;
+        }
         if (client.currentScreen != null
             && (config.pauseOnAnyScreen
                 || (config.pauseOnContainerScreen && client.currentScreen instanceof HandledScreen))) {
@@ -117,6 +124,10 @@ public class YCBotChallengeClient implements ClientModInitializer {
             } else {
                 beginCaptcha(client, "gui", title);
             }
+            return;
+        }
+
+        if (upgrades.tick(client, combat)) {
             return;
         }
 
@@ -156,6 +167,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
         combat.reset(client);
+        upgrades.reset(client);
+        MouseDriver.INSTANCE.cancel();
         if ("gui".equals(source)) {
             // if this screen (or a sibling) is still around after the solve, next
             // detection within the window falls back to a manual pause
@@ -189,7 +202,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
                     config.runLabel, () -> stats.context());
                 stats.setLogger(logger);
                 combat.setLogger(logger);
+                upgrades.setLogger(logger);
                 captchaSolver.setLogger(logger);
+                MouseDriver.INSTANCE.configure(config, logger);
                 logger.log("session_start",
                     "username", client.getSession() != null ? client.getSession().getUsername() : null);
                 LOGGER.info("Logging to {}", logger.getFile());
@@ -197,7 +212,11 @@ public class YCBotChallengeClient implements ClientModInitializer {
             logger.log("bot_on");
         } else {
             if (logger != null) logger.log("bot_off");
-            if (client != null) combat.reset(client);
+            if (client != null) {
+                combat.reset(client);
+                upgrades.reset(client);
+            }
+            MouseDriver.INSTANCE.cancel();
             captchaSolver.cancel();
         }
         if (!silent && client != null && client.player != null) {
@@ -213,7 +232,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
             logger = null;
             stats.setLogger(null);
             combat.setLogger(null);
+            upgrades.setLogger(null);
             captchaSolver.setLogger(null);
+            MouseDriver.INSTANCE.configure(config, null);
         }
     }
 }
