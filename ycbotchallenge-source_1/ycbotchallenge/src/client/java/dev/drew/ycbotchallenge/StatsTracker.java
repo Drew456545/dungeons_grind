@@ -519,9 +519,18 @@ public class StatsTracker {
         while (killTimes.size() > 1000) killTimes.removeFirst();
     }
 
-    /** Tag-to-death duration for one kill; feeds the median TTK and the per-zone baseline. */
-    public void recordKillDuration(long ms) {
-        killDurations.addLast(ms);
+    /**
+     * Connect-to-boss-bar-gone duration for one kill, normalized by the rarity HP scale
+     * (a 1.40x legendary shouldn't read as slower farming). Feeds the median TTK and the
+     * per-zone baseline.
+     */
+    public void recordKillDuration(long ms, String rarity) {
+        double scale = 1.0;
+        if (rarity != null && cfg.rarityHpScale != null) {
+            Double s = cfg.rarityHpScale.get(rarity.toUpperCase(java.util.Locale.ROOT));
+            if (s != null) scale += s;
+        }
+        killDurations.addLast(Math.round(ms / scale));
         while (killDurations.size() > 200) killDurations.removeFirst();
         zoneKills++;
         if (zoneBaselineTtkMs == null && zoneKills >= 3) zoneBaselineTtkMs = medianTtkMs();

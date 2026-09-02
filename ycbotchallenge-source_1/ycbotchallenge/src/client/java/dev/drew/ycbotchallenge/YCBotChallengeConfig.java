@@ -398,6 +398,25 @@ public class YCBotChallengeConfig {
     public String movingTargetPolicy = "ignore";
     public double movingTargetAttackChance = 0.15;
 
+    // --- Stop protocol: teleport = pulled for a check; another player = staff spectating (solo gamemode) ---
+
+    public boolean stopProtocolEnabled = true;
+    /** Single-tick displacement past this many blocks counts as a teleport. */
+    public double teleportThresholdBlocks = 12.0;
+    /** Another player within this radius trips the stop protocol. */
+    public double playerRadarRadius = 48.0;
+    /** Ignore players who haven't moved for this long — spawn NPCs / AFKers (0 = everyone trips it). */
+    public long playerRadarIgnoreStationaryMs = 0;
+    /** Names that never trip the radar (case-insensitive). */
+    public List<String> playerRadarWhitelist = List.of();
+
+    // --- TTK measurement ---
+
+    /** Boss-bar-vanish kill credit requires the entity gone OR this much cook time (below it = tag didn't stick). */
+    public int barVanishMinCookMs = 1200;
+    /** Rarity HP scaling: TTK is divided by (1 + scale) so the zone benchmark compares across rarities. */
+    public Map<String, Double> rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
+
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     public static YCBotChallengeConfig load(Path file) {
@@ -432,6 +451,8 @@ public class YCBotChallengeConfig {
             "/(?i)(?:balance|money|bal)\\s*:?\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
             "/(?i)\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?:balance|money)/");
         if (suffixScales == null) suffixScales = Map.of();
+        if (rarityHpScale == null) rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
+        if (playerRadarWhitelist == null) playerRadarWhitelist = List.of();
         if (movingTargetPolicy == null) movingTargetPolicy = "ignore";
         if (balCommand == null || balCommand.isBlank()) balCommand = "/bal";
         // 0.6.x shipped aimAgility 0.4 with a much slower duration law; migrate the exact
