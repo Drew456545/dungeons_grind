@@ -34,6 +34,12 @@ A *successful* buy re-sends the same command a second or two later — up-arrow 
 
 Zone changes force a full targeting reset: new zone = new mobs, so the target/lock state *and* the ghost blacklist are dropped (`zone_retarget` event). The same reset happens on every enable.
 
+### Stop protocol + TTK
+
+- **Stop protocol** (`stopProtocolEnabled`): a single-tick displacement over `teleportThresholdBlocks` (12) — i.e. being teleported, which mid-grind means pulled for a check — stops the bot instantly. So does any other player within `playerRadarRadius` (48): this gamemode is solo while grinding, so anyone else is staff. `playerRadarIgnoreStationaryMs` (>0) ignores players who haven't moved that long (spawn NPCs, AFKers) and `playerRadarWhitelist` never trips on listed names. Fires a `stop_protocol` event and a red chat notice.
+- **TTK** now measures connect → boss-bar-gone (server-authoritative death) instead of client-side entity removal, which ghosts were glitching. A bar that vanishes under `barVanishMinCookMs` with the entity still alive counts as a tag that didn't stick, not a kill.
+- **Rarity HP scaling**: kill durations are normalized by `rarityHpScale` (default RARE +15%, EPIC +30%, LEGENDARY +40%) before entering the TTK window, so a tanky legendary doesn't read as slow farming. Mobs with no rarity tag get 1.0 (the nameplate parser can't see a tag that isn't there).
+
 - `zoneReadyTtkMs` (default 2000) — median time-to-kill at/under this flips priority to `/zone max`: fast kills mean the zone is farmed out.
 - `ttkWindowKills` (8) — rolling window for the median TTK. A per-zone baseline is snapshotted a few kills after each zone change and logged via `zone_benchmark` events.
 - `probeMinIntervalMs` (25s) — min gap between typed commands (server spam/cooldown politeness).
