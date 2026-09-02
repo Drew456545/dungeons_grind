@@ -329,6 +329,70 @@ public class YCBotChallengeConfig {
     public List<String> upgradeFailPatterns = List.of(
         "not enough", "can't afford", "cannot afford", "insufficient", "need more"
     );
+    /** Response lines meaning the kind is fully upgraded (no amount present). */
+    public List<String> upgradeMaxedPatterns = List.of("maxed", "max level", "fully upgraded");
+
+    // --- Economy: /bal seed + income-driven scheduling ---
+
+    /** On bot enable, type balCommand then swordCommand once to seed balance + remaining cost. No recurring probes. */
+    public boolean startupProbes = true;
+    public String balCommand = "/bal";
+    /** Reply patterns for balCommand; named group {@code amount} or first group. Plain substrings or /regex/. */
+    public List<String> balPatterns = List.of(
+        "/(?i)(?:balance|money|bal)\\s*:?\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
+        "/(?i)\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?:balance|money)/"
+    );
+    /** Min gap between typed command sends (server spam/cooldown politeness). */
+    public int probeMinIntervalMs = 25_000;
+    /** Median time-to-kill at or under this => zone max becomes the priority buy. */
+    public int zoneReadyTtkMs = 2000;
+    /** Rolling window (kills) for the median time-to-kill. */
+    public int ttkWindowKills = 8;
+    /** Extra amount suffixes merged over the built-in K..Dc table, e.g. {"UTG": 1e36}. */
+    public Map<String, Double> suffixScales = Map.of();
+
+    // --- Ninja humanization (single behavior set; ninja=false restores the old mechanical one) ---
+
+    public boolean ninja = true;
+    /** Per-session multiplier on all delay bounds: 1 ± this, rolled at enable. */
+    public double sessionJitterPct = 0.12;
+    /** Delay means drift up by this fraction per hour of uptime (fatigue). */
+    public double fatiguePerHour = 0.04;
+    /** Chance any sampled delay becomes a real outlier pause (heavy tail). */
+    public double tailChancePerDelay = 0.004;
+    /** Out-of-bounds samples are squashed to this fraction of the excursion instead of clamped. */
+    public double softClampMarginPct = 0.25;
+    /** Rare long distractions (2-30s default), per tick rate derived from this per-minute chance. */
+    public double distractionChancePerMinute = 0.7;
+    public int distractionMinMs = 2000;
+    public int distractionMaxMs = 30_000;
+    /** Blend a new look intent into the in-flight path (velocity-continuous) instead of ignoring it. */
+    public boolean mouseChaining = true;
+    /** Continuous OU tremor: stationary amplitude (deg), extra gain while a path runs, mean reversion rate. */
+    public double tremorAmplitudeDeg = 0.05;
+    public double tremorSpeedScaling = 0.6;
+    public double tremorMeanReversionPerSec = 14.0;
+    /** Rotate flick speed through slow/normal/fast regimes so no single Fitts regression fits. */
+    public boolean agilityRegimes = true;
+    public int regimeDwellMinMs = 45_000;
+    public int regimeDwellMaxMs = 90_000;
+    /** Chance a click fires at up to 2.5x the normal aim tolerance (a sloppy click). */
+    public double misclickChance = 0.02;
+    /** Chance target selection picks a random in-range mob instead of the optimal one. */
+    public double wrongTargetChance = 0.02;
+    /** Chance the sprint-drop tick is skipped, producing a knockback sprint-hit. */
+    public double sprintHitChance = 0.01;
+    /** Per-char chance of a typo + backspace correction while typing commands. */
+    public double typoChancePerChar = 0.01;
+    /** Periodic human-length breaks. */
+    public boolean breaksEnabled = true;
+    public int focusMinutesMin = 45;
+    public int focusMinutesMax = 90;
+    public int breakMinutesMin = 1;
+    public int breakMinutesMax = 4;
+    /** "ignore" = ghost filter untouched; "sometimes" = attack movers with movingTargetAttackChance. */
+    public String movingTargetPolicy = "ignore";
+    public double movingTargetAttackChance = 0.15;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -359,6 +423,13 @@ public class YCBotChallengeConfig {
         if (zoneRemainingPatterns == null) zoneRemainingPatterns = List.of();
         if (upgradeSuccessPatterns == null) upgradeSuccessPatterns = List.of();
         if (upgradeFailPatterns == null) upgradeFailPatterns = List.of();
+        if (upgradeMaxedPatterns == null) upgradeMaxedPatterns = List.of("maxed", "max level", "fully upgraded");
+        if (balPatterns == null) balPatterns = List.of(
+            "/(?i)(?:balance|money|bal)\\s*:?\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
+            "/(?i)\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?:balance|money)/");
+        if (suffixScales == null) suffixScales = Map.of();
+        if (movingTargetPolicy == null) movingTargetPolicy = "ignore";
+        if (balCommand == null || balCommand.isBlank()) balCommand = "/bal";
         if (swordCommand == null || swordCommand.isBlank()) swordCommand = "/swordmax";
         if (zoneCommand == null || zoneCommand.isBlank()) zoneCommand = "/zone max";
         if (moneyCurrency == null || moneyCurrency.isBlank()) moneyCurrency = "chicken";
