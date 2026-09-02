@@ -10,6 +10,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 /**
@@ -56,6 +57,8 @@ public class EventLogger {
                 case Number n -> row.addProperty(key, n);
                 case Boolean b -> row.addProperty(key, b);
                 case List<?> list -> row.add(key, GSON.toJsonTree(list));
+                case Map<?, ?> map -> row.add(key, GSON.toJsonTree(map));
+                case com.google.gson.JsonElement el -> row.add(key, el);
                 default -> row.addProperty(key, String.valueOf(val));
             }
         }

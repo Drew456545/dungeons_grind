@@ -282,8 +282,14 @@ public class YCBotChallengeConfig {
     public String zonePattern = "Zone:\\s*(.+)";
     public String multiplierPattern = "Multiplier:\\s*(\\S+)";
     public String actionBarPattern = "Rebirth Progress:.*?\\(([\\d.]+)%\\)";
+    /**
+     * Sidebar currency names (case-insensitive) parsed from rows like
+     * {@code | 131.56B MONEY} / {@code | 235 SHARDS}.
+     */
+    public List<String> sidebarCurrencies = List.of("money", "souls", "essence", "shards", "credits");
+    /** How often the canonical balance snapshot (HUD / logs / buy eval) is published. */
+    public int scoreboardSnapshotMs = 5000;
     public List<String> balancePatterns = List.of(
-        "chicken|([\\d,.]+\\s*[A-Za-z]{0,4})\\s*Chicken",
         "souls|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*SOULS\\b|SOULS\\s*:?\\s*.?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
         "essence|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*ESSENCE\\b|ESSENCE\\s*:?\\s*.?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
         "shards|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*SHARDS\\b|SHARDS\\s*:?\\s*.?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
@@ -299,6 +305,7 @@ public class YCBotChallengeConfig {
     /** Legacy: inert since the kill-driven scheduler replaced the fixed buy timer. */
     public int upgradePeriodMinMs = 132_000;
     public int upgradePeriodMaxMs = 240_000;
+    /** Legacy; no longer used as a zone trigger (TTK readiness is the signal). */
     public int zoneEverySwordsMin = 5;
     public int zoneEverySwordsMax = 6;
     public int upgradeStopPauseMinMs = 200;
@@ -332,7 +339,8 @@ public class YCBotChallengeConfig {
         "upgraded", "purchased", "bought", "maxed", "enchanted", "unlocked"
     );
     public List<String> upgradeFailPatterns = List.of(
-        "not enough", "can't afford", "cannot afford", "insufficient", "need more", "have enough"
+        "don't have enough", "do not have enough", "not enough",
+        "can't afford", "cannot afford", "insufficient", "need more", "have enough"
     );
     /** Response lines meaning the kind is fully upgraded (no amount present). */
     public List<String> upgradeMaxedPatterns = List.of("maxed", "max level", "fully upgraded");
@@ -355,10 +363,15 @@ public class YCBotChallengeConfig {
     /** After a kill, wait this long for the sidebar balance to update before evaluating affordability. */
     public int postKillEvalDelayMinMs = 1500;
     public int postKillEvalDelayMaxMs = 2500;
-    /** Zone becomes the preferred buy only after this many successful sword buys in the current zone. */
-    public int zoneMinSwordBuysThisZone = 1;
-    /** Median time-to-kill at or under this => zone max becomes the priority buy. */
+    /** Legacy; TTK readiness no longer requires a sword buy this zone. */
+    public int zoneMinSwordBuysThisZone = 0;
+    /** Median TTK at this value => zone readiness R=1 (log-lerped from the per-zone baseline). */
     public int zoneReadyTtkMs = 2000;
+    /**
+     * Minimum zone readiness before /zone max is allowed, even if it is the only
+     * affordable upgrade. 0.5 ≈ the log-lerp midpoint (~9s on a 40s baseline).
+     */
+    public double zoneMinReadiness = 0.5;
     /** Rolling window (kills) for the median time-to-kill. */
     public int ttkWindowKills = 8;
     /** Extra amount suffixes merged over the built-in K..Dc table, e.g. {"UTG": 1e36}. */
@@ -430,7 +443,7 @@ public class YCBotChallengeConfig {
     public Map<String, Double> rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
 
     /** Bump when shipping new default patterns; loaded configs below this get pattern lists replaced. */
-    public int configVersion = 3;
+    public int configVersion = 4;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -455,9 +468,11 @@ public class YCBotChallengeConfig {
 
     /** Old configs keep stale server-specific patterns forever; replace them wholesale on version bumps. */
     private boolean migrate() {
-        if (configVersion >= 3) return false;
+        if (configVersion >= 4) return false;
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
         balancePatterns = fresh.balancePatterns;
+        sidebarCurrencies = fresh.sidebarCurrencies;
+        scoreboardSnapshotMs = fresh.scoreboardSnapshotMs;
         balPatterns = fresh.balPatterns;
         sidebarMoneyPattern = fresh.sidebarMoneyPattern;
         swordRemainingPatterns = fresh.swordRemainingPatterns;
@@ -466,7 +481,10 @@ public class YCBotChallengeConfig {
         upgradeFailPatterns = fresh.upgradeFailPatterns;
         upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
         playerRadarWhitelist = fresh.playerRadarWhitelist;
-        configVersion = 3;
+        zoneMinSwordBuysThisZone = 0;
+        zoneMinReadiness = fresh.zoneMinReadiness;
+        if (moneyCurrency != null && moneyCurrency.equalsIgnoreCase("chicken")) moneyCurrency = "money";
+        configVersion = 4;
         return true;
     }
 
@@ -500,7 +518,14 @@ public class YCBotChallengeConfig {
         if (aimAgility == 0.4) aimAgility = 1.0;
         if (swordCommand == null || swordCommand.isBlank()) swordCommand = "/swordmax";
         if (zoneCommand == null || zoneCommand.isBlank()) zoneCommand = "/zone max";
-        if (moneyCurrency == null || moneyCurrency.isBlank()) moneyCurrency = "chicken";
+        if (moneyCurrency == null || moneyCurrency.isBlank() || moneyCurrency.equalsIgnoreCase("chicken")) {
+            moneyCurrency = "money";
+        }
+        if (sidebarCurrencies == null || sidebarCurrencies.isEmpty()) {
+            sidebarCurrencies = List.of("money", "souls", "essence", "shards", "credits");
+        }
+        if (scoreboardSnapshotMs < 500) scoreboardSnapshotMs = 5000;
+        if (zoneMinReadiness < 0 || zoneMinReadiness > 1) zoneMinReadiness = 0.5;
     }
 
     public void save(Path file) {

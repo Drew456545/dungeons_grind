@@ -12,8 +12,12 @@ import java.util.regex.Pattern;
 
 /** Parses sidebar/chat amounts like {@code 1.25K}, {@code 14.5M}, {@code 37.16UTG}, {@code 58}. */
 public final class Amounts {
+    /**
+     * Number + optional short suffix, but do not swallow the following currency word.
+     * {@code 235 SHARDS} is 235 (not suffix {@code SHAR}); {@code 131.56B} is billions.
+     */
     private static final Pattern TOKEN = Pattern.compile(
-        "([\\d,]+(?:\\.\\d+)?)\\s*([A-Za-z]{0,4})");
+        "([\\d,]+(?:\\.\\d+)?)(?:\\s*([A-Za-z]{1,4}))?(?![A-Za-z])");
 
     /** Built-in idle-game suffix table (case-insensitive keys). */
     private static final Map<String, Double> BUILTIN = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
@@ -54,7 +58,7 @@ public final class Amounts {
         if (v != null) return v;
         v = BUILTIN.get(suffix);
         if (v == null && warned.add(suffix.toUpperCase(Locale.ROOT))) {
-            YCBotChallengeClient.LOGGER.warn(
+            org.slf4j.LoggerFactory.getLogger("ycbotchallenge").warn(
                 "Unknown amount suffix '{}' — add it under suffixScales in ycbotchallenge.json", suffix);
         }
         return v;

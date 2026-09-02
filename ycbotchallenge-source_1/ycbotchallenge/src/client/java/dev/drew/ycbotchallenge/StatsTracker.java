@@ -7,7 +7,9 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -36,14 +38,20 @@ public class StatsTracker {
     public String zone = null;
     public String multiplier = null;
     public Double rebirthProgressPct = null;
-    public final Map<String, String> balances = new HashMap<>();
-    /** Total price of the next tier = balance at fail time + the fail message's gap. */
+    public final Map<String, String> balances = new LinkedHashMap<>();
+    /** Total price of the next tier — absolute "You need X to purchase", or bal+gap when the line says more/left. */
     public Double swordTarget = null;
     public Double zoneTarget = null;
     private Double swordGap = null;
     private Double zoneGap = null;
-    /** The one money balance — written by the sidebar money line (live) and /bal (authoritative seed). */
-    private Double moneyBal = null;
+    /** Live parsed sidebar amounts (updated every poll). Canonical snapshot is published on an interval. */
+    private final Map<String, Double> liveBals = new LinkedHashMap<>();
+    private final Map<String, String> liveRaw = new LinkedHashMap<>();
+    private final Map<String, Double> snapshotBals = new LinkedHashMap<>();
+    private final Map<String, String> snapshotRaw = new LinkedHashMap<>();
+    private long lastSnapshotAt = 0;
+    private String upgradeChatFrag = null;
+    private long upgradeChatFragAt = 0;
     public String lastUpgradeKind = null;
     private long lastUpgradeSendAt = 0;
     private long lastBalSendAt = 0;
@@ -126,7 +134,77 @@ public class StatsTracker {
     }
 
     public Double money() {
-        return moneyBal;
+        String key = moneyKey();
+        Double v = snapshotBals.get(key);
+        if (v != null) return v;
+        return liveBals.get(key);
+    }
+
+    public double zoneReadiness() {
+        return Economy.zoneReadiness(medianTtkMs(), zoneBaselineTtkMs, cfg.zoneReadyTtkMs);
+    }
+
+    /** Copy live bals into the canonical snapshot (HUD / logs / buy eval). */
+    public void publishSnapshot(boolean force) {
+        long now = System.currentTimeMillis();
+        int interval = Math.max(500, cfg.scoreboardSnapshotMs);
+        if (!force && lastSnapshotAt != 0 && now - lastSnapshotAt < interval) return;
+        if (liveBals.isEmpty() && !force) return;
+        snapshotBals.clear();
+        snapshotBals.putAll(liveBals);
+        snapshotRaw.clear();
+        snapshotRaw.putAll(liveRaw);
+        lastSnapshotAt = now;
+        if (logger != null) {
+            log("scoreboard_snapshot",
+                "bals", formattedBalances(snapshotBals),
+                "lines", cfg.debugSidebar ? List.copyOf(liveRaw.values()) : null);
+        }
+    }
+
+    public Map<String, String> formattedBalances() {
+        Map<String, Double> src = snapshotBals.isEmpty() ? liveBals : snapshotBals;
+        return formattedBalances(src);
+    }
+
+    private static Map<String, String> formattedBalances(Map<String, Double> src) {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Double> e : src.entrySet()) {
+            if (e.getValue() != null) out.put(e.getKey(), Amounts.format(e.getValue()));
+        }
+        return out;
+    }
+
+    public String hudBalancesLine() {
+        Map<String, Double> src = snapshotBals.isEmpty() ? liveBals : snapshotBals;
+        if (src.isEmpty()) return null;
+        StringBuilder sb = new StringBuilder();
+        List<String> names = cfg.sidebarCurrencies != null && !cfg.sidebarCurrencies.isEmpty()
+            ? cfg.sidebarCurrencies : List.of("money", "souls", "essence", "shards", "credits");
+        for (String name : names) {
+            String key = name.toLowerCase(Locale.ROOT);
+            Double v = src.get(key);
+            if (v == null) continue;
+            if (sb.length() > 0) sb.append("  ");
+            sb.append(hudColor(key)).append(Amounts.format(v)).append(" ").append(key).append("§r");
+        }
+        return sb.length() == 0 ? null : sb.toString();
+    }
+
+    private static String hudColor(String name) {
+        return switch (name) {
+            case "money" -> "§a";
+            case "souls" -> "§c";
+            case "essence" -> "§d";
+            case "shards" -> "§b";
+            case "credits" -> "§7";
+            default -> "§f";
+        };
+    }
+
+    private String moneyKey() {
+        String k = cfg.moneyCurrency;
+        return (k == null || k.isBlank()) ? "money" : k.toLowerCase(Locale.ROOT);
     }
 
     public void noteUpgradeSend(boolean sword) {
@@ -163,6 +241,12 @@ public class StatsTracker {
         if (multiplier != null) ctx.addProperty("multiplier", multiplier);
         Double bal = money();
         if (bal != null) ctx.addProperty("money", Amounts.format(bal));
+        Map<String, String> bals = formattedBalances();
+        if (!bals.isEmpty()) {
+            JsonObject o = new JsonObject();
+            bals.forEach(o::addProperty);
+            ctx.add("bals", o);
+        }
         if (swordTarget != null) ctx.addProperty("swordTarget", Amounts.format(swordTarget));
         if (zoneTarget != null) ctx.addProperty("zoneTarget", Amounts.format(zoneTarget));
         return ctx;
@@ -197,42 +281,46 @@ public class StatsTracker {
             Double bal = money();
             log("income", "moneyPerMin", Amounts.format(rate), "balance", bal != null ? Amounts.format(bal) : null);
         }
+        publishSnapshot(false);
     }
 
     private void pollSidebar(MinecraftClient client) {
         Scoreboard sb = client.world.getScoreboard();
         ScoreboardObjective obj = sb.getObjectiveForSlot(ScoreboardDisplaySlot.SIDEBAR);
         if (obj == null) return;
+        List<String> lines = new ArrayList<>();
         for (ScoreboardEntry entry : sb.getScoreboardEntries(obj)) {
-            String owner = entry.owner();
-            Team team = sb.getScoreHolderTeam(owner);
-            String line = Team.decorateName(team, Text.literal(owner)).getString();
+            if (entry.hidden()) continue;
+            Team team = sb.getScoreHolderTeam(entry.owner());
+            String line = Team.decorateName(team, entry.name()).getString();
+            line = SidebarParser.strip(line);
             if (line.isBlank()) continue;
-            handleSidebarLine(line.trim());
+            lines.add(line);
+            handleSidebarProgress(line);
         }
+        Map<String, SidebarParser.Hit> hits = SidebarParser.parseCurrencies(lines, cfg.sidebarCurrencies);
+        for (SidebarParser.Hit hit : hits.values()) applyCurrency(hit.currency(), hit.rawAmount(), hit.value(), hit.line());
+        if (!liveBals.containsKey(moneyKey()) && sidebarMoneyRe != null) {
+            for (String line : lines) {
+                Matcher mm = sidebarMoneyRe.matcher(line);
+                if (!mm.find()) continue;
+                String g1 = mm.group(1);
+                String g2 = mm.groupCount() >= 2 ? mm.group(2) : null;
+                Double v = Amounts.parse(g1 != null ? g1 : g2);
+                if (v == null) continue;
+                applyCurrency(moneyKey(), g1 != null ? g1 : g2, v, line);
+                break;
+            }
+        }
+        for (String line : lines) applyBalancePatterns(line);
     }
 
-    private void handleSidebarLine(String line) {
-        // Sidebar lines arrive decorated with literal § formatting codes from team prefix/suffix
-        // (that's how servers order the rows) — strip them before any regex touches the text.
-        line = line.replaceAll("§.", "");
+    private void handleSidebarProgress(String line) {
         if (cfg.debugSidebar) {
             if (seenSidebarLines.size() > 500) seenSidebarLines.clear();
             if (seenSidebarLines.add(line)) log("sidebar_raw", "line", line);
         }
         Matcher m;
-        // Money gets its own dedicated pattern — one balance, one source, no currency-map ambiguity.
-        Matcher mm = sidebarMoneyRe.matcher(line);
-        if (mm.find()) {
-            String g1 = mm.group(1);
-            String g2 = mm.groupCount() >= 2 ? mm.group(2) : null;
-            Double v = Amounts.parse(g1 != null ? g1 : g2);
-            if (v != null && (moneyBal == null || Math.abs(v - moneyBal) > 1e-6)) {
-                moneyBal = v;
-                noteBalance(v);
-                log("balance", "currency", "money", "raw", line, "parsed", Amounts.format(v));
-            }
-        }
         if ((m = zoneRe.matcher(line)).find()) {
             String z = m.group(1).trim();
             if (!z.equals(zone)) {
@@ -251,22 +339,34 @@ public class StatsTracker {
                 onRebirthValue(Integer.parseInt(m.group(1).replace(",", "")));
             } catch (NumberFormatException ignored) {}
         }
+    }
+
+    private void applyCurrency(String name, String raw, double value, String line) {
+        String key = name.toLowerCase(Locale.ROOT);
+        Double prev = liveBals.put(key, value);
+        liveRaw.put(key, raw);
+        balances.put(key, raw);
+        boolean changed = prev == null || Math.abs(prev - value) > 1e-6;
+        if (changed) {
+            if (key.equals(moneyKey())) noteBalance(value);
+            log("balance", "currency", key, "raw", raw, "parsed", Amounts.format(value), "line", line);
+        }
+    }
+
+    private void applyBalancePatterns(String line) {
         for (int i = 0; i < balanceRes.size(); i++) {
+            String name = balanceNames.get(i).toLowerCase(Locale.ROOT);
+            if (liveBals.containsKey(name)) continue;
             Matcher bm = balanceRes.get(i).matcher(line);
-            if (bm.find()) {
-                String name = balanceNames.get(i);
-                // Patterns may put the value in group 1 (value-first, e.g. "708.6K MONEY")
-                // or group 2 (label-first, e.g. "MONEY: 708.6K").
-                String g1 = bm.group(1);
-                String g2 = bm.groupCount() >= 2 ? bm.group(2) : null;
-                String raw = g1 != null ? g1 : g2;
-                if (raw == null) continue;
-                raw = raw.trim();
-                String prev = balances.put(name, raw);
-                if (prev != null && !prev.equals(raw)) {
-                    log("balance", "currency", name, "raw", raw);
-                }
-            }
+            if (!bm.find()) continue;
+            String g1 = bm.group(1);
+            String g2 = bm.groupCount() >= 2 ? bm.group(2) : null;
+            String raw = g1 != null ? g1 : g2;
+            if (raw == null) continue;
+            raw = raw.trim();
+            Double v = Amounts.parse(raw);
+            if (v == null) continue;
+            applyCurrency(name, raw, v, line);
         }
     }
 
@@ -413,7 +513,7 @@ public class StatsTracker {
         }
         boolean known = false;
         if (!overlay) known = parseBalReply(text);
-        if (parseUpgradeChat(text)) known = true;
+        if (!overlay && parseUpgradeChat(text)) known = true;
         if (overlay) {
             Matcher m = actionBarRe.matcher(text);
             if (m.find()) {
@@ -453,8 +553,14 @@ public class StatsTracker {
             if (!m.find()) continue;
             Double v = amountFrom(m);
             if (v == null) return true; // pattern matched, amount unreadable — still a known line
-            moneyBal = v; // /bal is authoritative
+            String key = moneyKey();
+            liveBals.put(key, v);
+            liveRaw.put(key, Amounts.format(v));
+            balances.put(key, Amounts.format(v));
+            snapshotBals.put(key, v);
+            snapshotRaw.put(key, Amounts.format(v));
             noteBalance(v);
+            publishSnapshot(true);
             log("balance_probe", "balance", Amounts.format(v), "raw", text);
             return true;
         }
@@ -462,33 +568,51 @@ public class StatsTracker {
     }
 
     private boolean parseUpgradeChat(String text) {
+        long now = System.currentTimeMillis();
+        if (upgradeChatFrag != null && now - upgradeChatFragAt <= 2000) {
+            boolean stitched = parseUpgradeChatOnce(upgradeChatFrag + " " + text);
+            if (stitched) {
+                upgradeChatFrag = null;
+                return true;
+            }
+        }
+        return parseUpgradeChatOnce(text);
+    }
+
+    private boolean parseUpgradeChatOnce(String text) {
         boolean fail = anyMatch(upgradeFailRes, text);
         boolean success = anyMatch(upgradeSuccessRes, text);
         boolean maxed = anyMatch(upgradeMaxedRes, text);
         long sinceSend = lastUpgradeSendAt == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - lastUpgradeSendAt;
         if (!fail && !success && !maxed && lastUpgradeKind != null && sinceSend <= 15_000) {
-            // generic shortfall phrasing the fail patterns missed ("You need 1.2M more")
-            String l = text.toLowerCase(java.util.Locale.ROOT);
+            String l = text.toLowerCase(Locale.ROOT);
             if (l.contains("need") || l.contains("remain") || l.contains("left")
-                || l.contains("afford") || l.contains("cost")) {
+                || l.contains("afford") || l.contains("cost") || l.contains("enough")) {
                 if (!Amounts.parseAll(text).isEmpty()) fail = true;
             }
         }
-        if (!fail && !success && !maxed) return false;
-        // success/maxed lines from OTHER players' broadcasts don't describe us
-        if ((success || maxed) && !fail && sinceSend > 15_000 && !text.toLowerCase(java.util.Locale.ROOT).contains("you")) {
+        if (!fail && !success && !maxed) {
+            // first half of a split fail ("You don't have enough...") — wait for the amount line
+            if (sinceSend <= 6_000) {
+                String l = text.toLowerCase(Locale.ROOT);
+                if (l.contains("enough") || l.contains("need") || l.contains("afford")
+                    || l.contains("purchase") || l.contains("cost")) {
+                    upgradeChatFrag = text;
+                    upgradeChatFragAt = System.currentTimeMillis();
+                }
+            }
+            return false;
+        }
+        if ((success || maxed) && !fail && sinceSend > 15_000 && !text.toLowerCase(Locale.ROOT).contains("you")) {
             return false;
         }
 
-        // Classify the kind by keyword anywhere in the line ("stage" = zone on this server);
-        // keyword-less lines ("You need X Money.") inherit the last command sent.
-        String lower = text.toLowerCase(java.util.Locale.ROOT);
+        String lower = text.toLowerCase(Locale.ROOT);
         String kind = lower.contains("sword") ? "sword"
             : (lower.contains("zone") || lower.contains("stage")) ? "zone"
             : lastUpgradeKind;
         if (kind == null) return false;
 
-        // Amount: legacy named-group patterns first, else first parseable token in the line.
         Double amt = firstAmount("zone".equals(kind) ? zoneRemainingRes : swordRemainingRes, text);
         if (amt == null) {
             java.util.List<Double> all = Amounts.parseAll(text);
@@ -499,18 +623,17 @@ public class StatsTracker {
             if ("zone".equals(kind)) { zoneMaxed = true; zoneTarget = null; zoneGap = null; }
             else { swordMaxed = true; swordTarget = null; swordGap = null; }
             lastClassifiedAt = System.currentTimeMillis();
+            upgradeChatFrag = null;
             log("upgrade_maxed", "kind", kind, "raw", text);
             return true;
         }
         if (success && !fail) {
-            // purchased: next tier's price unknown until we re-send and read the fail line
             if ("zone".equals(kind)) { zoneTarget = null; zoneGap = null; }
             else { swordTarget = null; swordGap = null; swordBuysThisZone++; }
             reprobeKind = kind;
             lastClassifiedAt = System.currentTimeMillis();
+            upgradeChatFrag = null;
             if (amt != null) {
-                // the success line carries the price paid — debit it locally so the balance
-                // doesn't sit stale-high and invite a repeat buy before the next /bal
                 debitMoney(amt);
                 log("upgrade_result", "kind", kind, "success", true, "fail", false,
                     "paid", Amounts.format(amt), "message", text);
@@ -521,20 +644,27 @@ public class StatsTracker {
         }
         if (fail) {
             lastClassifiedAt = System.currentTimeMillis();
-            if (amt != null) {
-                // "You need X more" — X is the GAP; total tier price = balance at fail time + gap
-                Double bal = moneyBal;
-                if ("zone".equals(kind)) {
-                    zoneGap = amt;
-                    zoneTarget = bal != null ? bal + amt : null;
-                } else {
-                    swordGap = amt;
-                    swordTarget = bal != null ? bal + amt : null;
-                }
-                Double target = "zone".equals(kind) ? zoneTarget : swordTarget;
-                log("upgrade_chat", "kind", kind, "gap", Amounts.format(amt),
-                    "target", target != null ? Amounts.format(target) : null, "raw", text);
+            if (amt == null) {
+                upgradeChatFrag = text;
+                upgradeChatFragAt = System.currentTimeMillis();
+                log("upgrade_result", "kind", kind, "success", false, "fail", true, "message", text);
+                return true;
             }
+            upgradeChatFrag = null;
+            Double bal = money();
+            Double target = Economy.targetFromFail(amt, bal, text);
+            boolean gap = Economy.isGapNeed(text);
+            if ("zone".equals(kind)) {
+                zoneGap = gap ? amt : null;
+                zoneTarget = target;
+            } else {
+                swordGap = gap ? amt : null;
+                swordTarget = target;
+            }
+            log("upgrade_chat", "kind", kind,
+                "gap", gap ? Amounts.format(amt) : null,
+                "target", target != null ? Amounts.format(target) : null,
+                "absolute", !gap, "raw", text);
             log("upgrade_result", "kind", kind, "success", false, "fail", true, "message", text);
         }
         return true;
@@ -542,9 +672,17 @@ public class StatsTracker {
 
     /** Subtract a known purchase cost from the local money balance. */
     private void debitMoney(double paid) {
-        if (moneyBal == null) return;
-        moneyBal = Math.max(0, moneyBal - paid);
-        noteBalance(moneyBal);
+        String key = moneyKey();
+        Double cur = liveBals.get(key);
+        if (cur == null) cur = snapshotBals.get(key);
+        if (cur == null) return;
+        double next = Math.max(0, cur - paid);
+        liveBals.put(key, next);
+        liveRaw.put(key, Amounts.format(next));
+        snapshotBals.put(key, next);
+        snapshotRaw.put(key, Amounts.format(next));
+        balances.put(key, Amounts.format(next));
+        noteBalance(next);
     }
 
     private void checkBecameAffordable() {
