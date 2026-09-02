@@ -409,8 +409,8 @@ public class YCBotChallengeConfig {
     public long playerRadarDwellMs = 5000;
     /** Ignore players who haven't moved for this long — spawn NPCs / AFKers (0 = everyone trips it). */
     public long playerRadarIgnoreStationaryMs = 0;
-    /** Names that never trip the radar (case-insensitive). */
-    public List<String> playerRadarWhitelist = List.of();
+    /** Names that never trip the radar (case-insensitive, matches any line of multi-line NPC plates). */
+    public List<String> playerRadarWhitelist = List.of("ZONE VISIBILITY", "CLICK HERE");
 
     // --- TTK measurement ---
 
@@ -454,7 +454,10 @@ public class YCBotChallengeConfig {
             "/(?i)\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?:balance|money)/");
         if (suffixScales == null) suffixScales = Map.of();
         if (rarityHpScale == null) rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
-        if (playerRadarWhitelist == null) playerRadarWhitelist = List.of();
+        // migrate: 0.7.5 shipped an empty whitelist; fill it with the zone NPC's plate lines
+        if (playerRadarWhitelist == null || playerRadarWhitelist.isEmpty()) {
+            playerRadarWhitelist = List.of("ZONE VISIBILITY", "CLICK HERE");
+        }
         if (movingTargetPolicy == null) movingTargetPolicy = "ignore";
         if (balCommand == null || balCommand.isBlank()) balCommand = "/bal";
         // 0.6.x shipped aimAgility 0.4 with a much slower duration law; migrate the exact

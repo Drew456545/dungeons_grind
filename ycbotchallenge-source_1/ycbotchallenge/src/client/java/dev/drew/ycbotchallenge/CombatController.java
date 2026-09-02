@@ -133,10 +133,15 @@ public class CombatController {
         return System.currentTimeMillis() < breakUntil;
     }
 
+    /** Match any whitelist entry against the full name or any single line of it (NPCs use multi-line plates). */
     private boolean radarWhitelisted(String name) {
-        String clean = name.replaceAll("§.", "");
+        String clean = name.replaceAll("§.", "").trim();
         for (String w : cfg.playerRadarWhitelist) {
-            if (w != null && (w.equalsIgnoreCase(name) || w.equalsIgnoreCase(clean))) return true;
+            if (w == null) continue;
+            if (w.equalsIgnoreCase(clean)) return true;
+            for (String line : clean.split("\\n")) {
+                if (w.equalsIgnoreCase(line.trim())) return true;
+            }
         }
         return false;
     }
