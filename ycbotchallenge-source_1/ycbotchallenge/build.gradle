@@ -36,6 +36,23 @@ java {
     }
 }
 
+sourceSets {
+    test {
+        compileClasspath += sourceSets.client.compileClasspath + sourceSets.client.output
+        runtimeClasspath += sourceSets.client.runtimeClasspath + sourceSets.client.output
+    }
+}
+
+tasks.register('economyChecks', JavaExec) {
+    group = 'verification'
+    description = 'Run sidebar/fail-chat/TTK readiness checks (no Minecraft runtime).'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.drew.ycbotchallenge.EconomyChecks'
+}
+
+tasks.named('check') { dependsOn('economyChecks') }
+
 processResources {
     inputs.property "version", project.version
     filesMatching("fabric.mod.json") {
