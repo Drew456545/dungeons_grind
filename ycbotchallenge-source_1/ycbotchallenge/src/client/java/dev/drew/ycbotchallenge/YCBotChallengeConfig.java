@@ -283,7 +283,6 @@ public class YCBotChallengeConfig {
     public String multiplierPattern = "Multiplier:\\s*(\\S+)";
     public String actionBarPattern = "Rebirth Progress:.*?\\(([\\d.]+)%\\)";
     public List<String> balancePatterns = List.of(
-        "money|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
         "chicken|([\\d,.]+\\s*[A-Za-z]{0,4})\\s*Chicken",
         "souls|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*SOULS\\b|SOULS\\s*:?\\s*.?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
         "essence|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*ESSENCE\\b|ESSENCE\\s*:?\\s*.?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
@@ -347,6 +346,10 @@ public class YCBotChallengeConfig {
     public List<String> balPatterns = List.of(
         "/(?i)-?\\s*money\\s*:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/"
     );
+    /** Sidebar money line (e.g. "75.1B Money"); group 1 value-first, group 2 label-first. Live balance feed. */
+    public String sidebarMoneyPattern = "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})/";
+    /** Log every new/changed raw sidebar line (debug the scoreboard parse from the JSONL). */
+    public boolean debugSidebar = false;
     /** Hard cap on unsolicited probe commands (unknown cost/balance). 75s = never more than ~2 in 2-3 min. */
     public int probeMinIntervalMs = 75_000;
     /** After a kill, wait this long for the sidebar balance to update before evaluating affordability. */
@@ -427,7 +430,7 @@ public class YCBotChallengeConfig {
     public Map<String, Double> rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
 
     /** Bump when shipping new default patterns; loaded configs below this get pattern lists replaced. */
-    public int configVersion = 2;
+    public int configVersion = 3;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -452,17 +455,18 @@ public class YCBotChallengeConfig {
 
     /** Old configs keep stale server-specific patterns forever; replace them wholesale on version bumps. */
     private boolean migrate() {
-        if (configVersion >= 2) return false;
+        if (configVersion >= 3) return false;
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
         balancePatterns = fresh.balancePatterns;
         balPatterns = fresh.balPatterns;
+        sidebarMoneyPattern = fresh.sidebarMoneyPattern;
         swordRemainingPatterns = fresh.swordRemainingPatterns;
         zoneRemainingPatterns = fresh.zoneRemainingPatterns;
         upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
         upgradeFailPatterns = fresh.upgradeFailPatterns;
         upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
         playerRadarWhitelist = fresh.playerRadarWhitelist;
-        configVersion = 2;
+        configVersion = 3;
         return true;
     }
 
@@ -488,6 +492,9 @@ public class YCBotChallengeConfig {
         }
         if (movingTargetPolicy == null) movingTargetPolicy = "ignore";
         if (balCommand == null || balCommand.isBlank()) balCommand = "/bal";
+        if (sidebarMoneyPattern == null || sidebarMoneyPattern.isBlank()) {
+            sidebarMoneyPattern = "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})/";
+        }
         // 0.6.x shipped aimAgility 0.4 with a much slower duration law; migrate the exact
         // old default to the new one so existing configs get the faster flicks.
         if (aimAgility == 0.4) aimAgility = 1.0;
