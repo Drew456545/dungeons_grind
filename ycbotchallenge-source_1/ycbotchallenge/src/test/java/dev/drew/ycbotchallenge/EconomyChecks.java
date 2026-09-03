@@ -441,13 +441,29 @@ public final class EconomyChecks {
         n += eq("rage unlocked at 50 is upgradable", r50.upgradable(), true);
 
         // Policy: first upgradable affordable in slot order; maxed/locked skipped; attempted skipped.
+        // Affordability uses the ITEM's price currency (0.9.11 spent essence against the souls balance).
         List<EnchantLore.Item> grid = List.of(g, r, m);
-        n += eq("choose magnet at 8M", EnchantLore.chooseEnchant(grid, 8e6, java.util.Set.of()) == m, true);
-        n += eq("choose none at 5M", EnchantLore.chooseEnchant(grid, 5e6, java.util.Set.of()) == null, true);
+        java.util.Map<String, Double> rich = java.util.Map.of("souls", 8e6, "essence", 100.0);
+        java.util.Map<String, Double> poor = java.util.Map.of("souls", 5e6, "essence", 1e12);
+        n += eq("choose magnet at 8M souls", EnchantLore.chooseEnchant(grid, rich, "souls", java.util.Set.of()) == m, true);
+        n += eq("choose none at 5M souls (essence irrelevant)",
+            EnchantLore.chooseEnchant(grid, poor, "souls", java.util.Set.of()) == null, true);
         n += eq("choose skips attempted",
-            EnchantLore.chooseEnchant(grid, 8e6, java.util.Set.of("Soul Magnet Enchant")) == null, true);
+            EnchantLore.chooseEnchant(grid, rich, "souls", java.util.Set.of("Soul Magnet Enchant")) == null, true);
         n += eq("choose rage once unlocked",
-            EnchantLore.chooseEnchant(List.of(g, r50, m), 25e6, java.util.Set.of()) == r50, true);
+            EnchantLore.chooseEnchant(List.of(g, r50, m), java.util.Map.of("souls", 25e6), "souls", java.util.Set.of()) == r50, true);
+        // Essence-priced item on whatever tab: judged against essence.
+        EnchantLore.Item rocket = lore.parse("Rocket Enchant", List.of("ACTIVATION CHANCE: 100.000%",
+            "| Level: 2,977 / 5,000", "| Price: 307,700 Essence", "[CLICK HERE TO UPGRADE THIS ENCHANT]"));
+        n += eq("rocket currency", rocket.currency(), "essence");
+        n += eq("rocket unaffordable with 187K essence even with 589M souls",
+            EnchantLore.chooseEnchant(List.of(rocket), java.util.Map.of("souls", 589e6, "essence", 187e3), "souls", java.util.Set.of()) == null, true);
+        n += eq("rocket affordable with 29M essence",
+            EnchantLore.chooseEnchant(List.of(rocket), java.util.Map.of("souls", 0.0, "essence", 29e6), "souls", java.util.Set.of()) == rocket, true);
+        // The showing tab comes from the items' price currency (the server remembers the last tab).
+        n += eq("showing essence", EnchantLore.majorityCurrency(List.of(rocket, rocket, m)), "essence");
+        n += eq("showing souls", EnchantLore.majorityCurrency(List.of(m, g, r)), "souls");
+        n += eq("showing unknown", EnchantLore.majorityCurrency(List.of()) == null, true);
 
         EnchantLore.Item mu = lore.parse("Max Upgrade", maxUp);
         n += eq("max upgrade item", mu.maxUpgrade(), true);
@@ -459,6 +475,12 @@ public final class EconomyChecks {
         n += eq("souls tab", lore.parse("SOULS", List.of()).tab(), "souls");
         n += eq("essence tab small caps", lore.parse("ᴇꜱꜱᴇɴᴄᴇ", List.of()).tab(), "essence");
         n += eq("enchant is not a tab", m.tab() == null, true);
+        n += eq("tab name singular", lore.tabOfName("Soul Enchants"), "souls");
+        n += eq("tab name shards", lore.tabOfName("§b§lSHARDS"), "shards");
+        n += eq("tab name shard singular", lore.tabOfName("Shard Upgrades"), "shards");
+        n += eq("tab name essence colored", lore.tabOfName("§dEssence"), "essence");
+        n += eq("tab name: enchant name is not a tab word", lore.tabOfName("Essence Greed Enchant") == null, false);
+        n += eq("tab name: icon", lore.tabOfName("Max Upgrade") == null, true);
         n += eq("upgrade title", lore.isUpgradeTitle("Soul Magnet Upgrade"), true);
         n += eq("upgrade title colored", lore.isUpgradeTitle("§aSoul Magnet Upgrade"), true);
         n += eq("enchanter title (glyph, formatting only) is not upgrade", lore.isUpgradeTitle("§f§r§f§r"), false);

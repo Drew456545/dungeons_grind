@@ -76,9 +76,34 @@ public final class EnchantScreens {
         return out;
     }
 
+    /** Tab buttons live in the top row (slots 0–8); nothing else is ever a tab. */
     public static Integer tabSlot(ScreenHandler handler, String tab, EnchantLore lore) {
-        for (SlotItem si : items(handler, lore)) if (tab.equals(si.item().tab())) return si.slot();
+        for (SlotItem si : items(handler, lore)) {
+            if (si.slot() < 9 && tab.equals(lore.tabOfName(si.item().name()))) return si.slot();
+        }
         return null;
+    }
+
+    /** Tab names found in the top row, in slot order. */
+    public static List<String> tabsPresent(ScreenHandler handler, EnchantLore lore) {
+        List<String> out = new ArrayList<>();
+        for (SlotItem si : items(handler, lore)) {
+            if (si.slot() >= 9) break;
+            String t = lore.tabOfName(si.item().name());
+            if (t != null) out.add(t);
+        }
+        return out;
+    }
+
+    /** Evidence: every non-enchant item as "slot:name" (tab buttons and icons), for pattern tuning from the JSONL. */
+    public static List<String> menuItems(ScreenHandler handler, EnchantLore lore) {
+        List<String> out = new ArrayList<>();
+        for (SlotItem si : items(handler, lore)) {
+            if (si.item().isEnchant()) continue;
+            String first = si.item().lore().isEmpty() ? "" : " | " + si.item().lore().get(0);
+            out.add(si.slot() + ":" + si.item().name() + first);
+        }
+        return out;
     }
 
     public static SlotItem maxUpgradeItem(ScreenHandler handler, EnchantLore lore) {

@@ -389,7 +389,7 @@ public class YCBotChallengeConfig {
     /** No visit rolls for a random window after a zone advance, so visits never land a fixed beat after arriving. */
     public int enchantPostZoneQuietMinMs = 30_000;
     public int enchantPostZoneQuietMaxMs = 90_000;
-    /** A between-kills visit stays short: at most this many purchases (mid-cook visits use enchantMaxBuysPerVisit). */
+    /** Legacy (0.9.11); inert. */
     public int enchantMaxBuysBetweenKills = 2;
     /** A visit needs at least one tab currency to have grown this much since the last visit. */
     public double enchantMinBalanceGrowthPct = 0.10;
@@ -404,8 +404,9 @@ public class YCBotChallengeConfig {
     public int enchantTabSettleMaxMs = 900;
     public int enchantBuySettleMinMs = 1_200;
     public int enchantBuySettleMaxMs = 2_500;
-    /** Hard cap on one visit; the menu is closed when it elapses. */
-    public int enchantMaxMenuMs = 40_000;
+    /** Safety cap on one visit; the menu is closed when it elapses. A full three-tab visit with several buys takes 30–90s. */
+    public int enchantMaxMenuMs = 180_000;
+    /** Legacy (0.9.9–0.9.11 purchase caps); inert — every affordable enchant on every tab is bought, at human pace. */
     public int enchantMaxBuysPerVisit = 6;
     /** Open the menu via the interaction manager instead of a synthetic use-key press (fallback). */
     public boolean enchantOpenViaInteract = false;
@@ -633,7 +634,7 @@ public class YCBotChallengeConfig {
     public int cookGlanceAfterMs = 10_000;
     public int cookGlanceMinMs = 10_000;
     public int cookGlanceMaxMs = 25_000;
-    /** Skip clicking the enchanter's first tab with this chance (it opens there already). */
+    /** Legacy (0.9.10); inert — the showing tab is now detected from the items and never clicked when already selected. */
     public double enchantSkipFirstTabChance = 0.5;
     /** "ignore" = ghost filter untouched; "sometimes" = attack movers with movingTargetAttackChance. */
     public String movingTargetPolicy = "ignore";
@@ -668,7 +669,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 15;
+    public static final int CURRENT_CONFIG_VERSION = 16;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -822,6 +823,11 @@ public class YCBotChallengeConfig {
             enchantCuriosityChance = fresh.enchantCuriosityChance;
             changed = true;
         }
+        if (configVersion < 16) {
+            // v16: no purchase caps — all three tabs, every affordable enchant; longer safety cap.
+            if (enchantMaxMenuMs == 40_000) enchantMaxMenuMs = fresh.enchantMaxMenuMs;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -937,7 +943,7 @@ public class YCBotChallengeConfig {
         if (enchantLookMaxMs < enchantLookMinMs) enchantLookMaxMs = enchantLookMinMs;
         if (enchantTabSettleMaxMs < enchantTabSettleMinMs) enchantTabSettleMaxMs = enchantTabSettleMinMs;
         if (enchantBuySettleMaxMs < enchantBuySettleMinMs) enchantBuySettleMaxMs = enchantBuySettleMinMs;
-        if (enchantMaxMenuMs < 5_000) enchantMaxMenuMs = 40_000;
+        if (enchantMaxMenuMs < 5_000) enchantMaxMenuMs = 180_000;
         if (enchantMaxBuysPerVisit < 1) enchantMaxBuysPerVisit = 6;
         if (enchantMaxConsecutiveAborts < 1) enchantMaxConsecutiveAborts = 3;
         if (guiRecognizeGraceMs < 0) guiRecognizeGraceMs = 300;

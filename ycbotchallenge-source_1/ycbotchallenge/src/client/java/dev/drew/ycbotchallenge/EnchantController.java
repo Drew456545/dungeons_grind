@@ -57,14 +57,17 @@ public class EnchantController {
     private boolean useHeld;
     private int consecutiveAborts;
     private boolean suspended;
-    private boolean firstTabDecided;
-    private boolean firstTabSkipped;
+    /** Per-tab state: whether we looked at what is showing, whether we clicked the button, purchases so far. */
+    private boolean tabChecked;
+    private boolean tabClicked;
+    private int buysThisTab;
+    /** "lull" (between kills) or "cook" (mid-fight) — only cook visits end with the mob. */
+    private String visitVia = "lull";
     // Hazard trigger state.
     private int lastKillSeen = -1;
     private int lastZoneSeqSeen = -1;
     private long quietUntil = 0;
     private long lastQuietSkipLogAt = 0;
-    private int maxBuysThisVisit = 6;
     /** Cheapest upgradable price seen per tab on the last scan — the affordability pull. */
     private final Map<String, Double> cheapestByTab = new HashMap<>();
 
@@ -115,7 +118,8 @@ public class EnchantController {
         if (phase == Phase.IDLE) return maybeStart(client, combat, now);
 
         combat.releaseKeys(client);
-        if (!wrapUp && killEnding(combat)) {
+        // Only a mid-cook visit ends with the mob; a between-kills visit has nothing cooking.
+        if (!wrapUp && "cook".equals(visitVia) && killEnding(combat)) {
             wrapUp = true;
             log("enchant_wrap_up", "phase", phase.name().toLowerCase(Locale.ROOT), "buys", buys);
         }
@@ -131,7 +135,8 @@ public class EnchantController {
                     ScreenHandler h = EnchantScreens.handler(client);
                     log("enchant_menu_open", "reopened", reopened,
                         "items", EnchantScreens.items(h, lore).size(),
-                        "tabs", tabsPresent(h));
+                        "tabs", EnchantScreens.tabsPresent(h, lore),
+                        "menuItems", reopened ? null : EnchantScreens.menuItems(h, lore));
                     phase = Phase.LOOK;
                     phaseUntil = now + HumanTiming.logNormalMs(cfg.enchantLookMinMs, cfg.enchantLookMaxMs);
                 } else if (k == EnchantScreens.Kind.OTHER || k == EnchantScreens.Kind.UPGRADE) {
@@ -153,25 +158,25 @@ public class EnchantController {
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
                 currentTab = lore.tabs().get(tabIndex);
-                // The enchanter opens on the first tab already; clicking it every visit is a tell.
-                if (tabIndex == 0 && !firstTabDecided) {
-                    firstTabDecided = true;
-                    if (ThreadLocalRandom.current().nextDouble() < cfg.enchantSkipFirstTabChance) {
-                        firstTabSkipped = true;
-                        attempted.clear();
-                        scansThisTab = 0;
-                        log("enchant_tab", "tab", currentTab, "clicked", false);
-                        phase = Phase.SCAN;
-                        return true;
-                    }
+                // The server remembers the last tab, so first look at what is showing: a
+                // person does not click a tab that is already selected. SCAN detects the
+                // tab from the items' price currency and comes back here to click if needed.
+                if (!tabClicked && !tabChecked) {
+                    tabChecked = true;
+                    attempted.clear();
+                    scansThisTab = 0;
+                    phase = Phase.SCAN;
+                    return true;
                 }
                 Integer slot = EnchantScreens.tabSlot(h, currentTab, lore);
                 if (slot == null) {
-                    log("enchant_skip", "reason", "tab-missing", "tab", currentTab);
-                    tabIndex++;
+                    log("enchant_skip", "reason", "tab-missing", "tab", currentTab,
+                        "tabsPresent", EnchantScreens.tabsPresent(h, lore));
+                    nextTab();
                     return true;
                 }
                 EnchantScreens.click(client, h, slot);
+                tabClicked = true;
                 Double bal = stats.currency(currentTab);
                 log("enchant_tab", "tab", currentTab, "slot", slot, "balance", bal != null ? Amounts.format(bal) : null);
                 attempted.clear();
@@ -184,22 +189,29 @@ public class EnchantController {
                 phase = Phase.SCAN;
             }
             case SCAN -> {
-                if (wrapUp || buys >= maxBuysThisVisit) { phase = Phase.CLOSE; return true; }
+                if (wrapUp) { phase = Phase.CLOSE; return true; }
                 if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.ENCHANTER) {
                     onEnchanterGone(client, now);
                     return true;
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
                 List<EnchantScreens.SlotItem> slots = EnchantScreens.enchantItems(h, lore);
-                if (firstTabSkipped && slots.isEmpty()) {
-                    // Not on the first tab after all — click it.
-                    firstTabSkipped = false;
-                    phase = Phase.TAB_CLICK;
-                    return true;
-                }
                 List<EnchantLore.Item> items = new ArrayList<>();
                 for (EnchantScreens.SlotItem si : slots) items.add(si.item());
-                Double bal = stats.currency(currentTab);
+                // Which tab is actually showing? Trust the items, never the assumption.
+                String showing = EnchantLore.majorityCurrency(items);
+                if (showing == null || !showing.equals(currentTab)) {
+                    if (tabClicked) {
+                        log("enchant_skip", "reason", "tab-mismatch", "tab", currentTab, "showing", showing);
+                        nextTab();
+                    } else {
+                        log("enchant_tab_showing", "want", currentTab, "showing", showing);
+                        phase = Phase.TAB_CLICK; // tabChecked is set, so this click happens
+                    }
+                    return true;
+                }
+                Map<String, Double> balances = balancesMap();
+                Double bal = balances.get(currentTab);
                 Double cheapest = null;
                 for (EnchantLore.Item it : items) {
                     if (it.upgradable() && (cheapest == null || it.price() < cheapest)) cheapest = it.price();
@@ -208,15 +220,15 @@ public class EnchantController {
                 if (scansThisTab++ == 0) {
                     List<String> summary = new ArrayList<>();
                     for (EnchantLore.Item it : items) summary.add(it.summary());
-                    log("enchant_scan", "tab", currentTab, "balance", bal != null ? Amounts.format(bal) : null,
+                    log("enchant_scan", "tab", currentTab, "clicked", tabClicked,
+                        "balance", bal != null ? Amounts.format(bal) : null,
                         "count", items.size(), "items", summary);
                 }
-                EnchantLore.Item choice = EnchantLore.chooseEnchant(items, bal, attempted);
+                EnchantLore.Item choice = EnchantLore.chooseEnchant(items, balances, currentTab, attempted);
                 if (choice == null) {
                     log("enchant_skip", "reason", "none-affordable", "tab", currentTab,
-                        "balance", bal != null ? Amounts.format(bal) : null);
-                    tabIndex++;
-                    phase = Phase.TAB_CLICK;
+                        "balance", bal != null ? Amounts.format(bal) : null, "buysThisTab", buysThisTab);
+                    nextTab();
                     return true;
                 }
                 picked = choice;
@@ -263,7 +275,6 @@ public class EnchantController {
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
                 EnchantScreens.SlotItem mi = EnchantScreens.maxUpgradeItem(h, lore);
-                Double bal = stats.currency(currentTab);
                 if (mi == null) {
                     log("enchant_skip", "reason", "no-max-item", "name", picked != null ? picked.name() : null);
                     EnchantScreens.closeGui(client);
@@ -275,12 +286,17 @@ public class EnchantController {
                 maxSlot = mi.slot();
                 Integer levels = maxItem.maxLevels();
                 Double price = maxItem.maxPrice();
+                // The hopper's own price line names the currency (0.9.11 spent essence while
+                // checking the souls balance because it trusted the assumed tab).
+                String cur = maxItem.currency() != null ? maxItem.currency()
+                    : (picked != null && picked.currency() != null ? picked.currency() : currentTab);
+                Double bal = stats.currency(cur);
                 boolean affordable = levels != null && levels >= 1
                     && (price == null || bal == null || price <= bal + 1e-6);
                 if (!affordable) {
                     log("enchant_skip", "reason", "max-unaffordable", "name", picked != null ? picked.name() : null,
                         "levels", levels, "price", price != null ? Amounts.format(price) : null,
-                        "balance", bal != null ? Amounts.format(bal) : null);
+                        "currency", cur, "balance", bal != null ? Amounts.format(bal) : null);
                     EnchantScreens.closeGui(client);
                     phase = Phase.RETURN_WAIT;
                     phaseUntil = now + 1500;
@@ -298,10 +314,12 @@ public class EnchantController {
                 }
                 EnchantScreens.click(client, EnchantScreens.handler(client), maxSlot);
                 buys++;
+                buysThisTab++;
                 Double price = maxItem != null ? maxItem.maxPrice() : null;
-                String cur = maxItem != null && maxItem.currency() != null ? maxItem.currency() : currentTab;
+                String cur = maxItem != null && maxItem.currency() != null ? maxItem.currency()
+                    : (picked != null && picked.currency() != null ? picked.currency() : currentTab);
                 if (price != null) spent.merge(cur, price, Double::sum);
-                Double bal = stats.currency(currentTab);
+                Double bal = stats.currency(cur);
                 log("enchant_upgrade", "tab", currentTab, "name", picked != null ? picked.name() : null,
                     "fromLevel", picked != null ? picked.level() : null,
                     "levels", maxItem != null ? maxItem.maxLevels() : null,
@@ -318,7 +336,7 @@ public class EnchantController {
                     phase = Phase.RETURN_WAIT;
                     phaseUntil = now + 1500;
                 } else if (k == EnchantScreens.Kind.ENCHANTER) {
-                    phase = (wrapUp || buys >= maxBuysThisVisit) ? Phase.CLOSE : Phase.SCAN;
+                    phase = wrapUp ? Phase.CLOSE : Phase.SCAN;
                 } else {
                     onEnchanterGone(client, now);
                 }
@@ -326,7 +344,7 @@ public class EnchantController {
             case RETURN_WAIT -> {
                 EnchantScreens.Kind k = EnchantScreens.classify(client, lore);
                 if (k == EnchantScreens.Kind.ENCHANTER) {
-                    phase = (wrapUp || buys >= maxBuysThisVisit) ? Phase.CLOSE : Phase.SCAN;
+                    phase = wrapUp ? Phase.CLOSE : Phase.SCAN;
                 } else if (now >= phaseUntil) {
                     onEnchanterGone(client, now);
                 }
@@ -362,7 +380,6 @@ public class EnchantController {
         }
         String via;
         double bonus;
-        int maxBuys;
         Double eta = combat.currentEtaMs;
         if (combat.isCooking()) {
             long cookAt = combat.cookStartMs();
@@ -372,13 +389,11 @@ public class EnchantController {
             decidedCookAt = cookAt; // one roll per cook, whatever it is
             via = "cook";
             bonus = cfg.enchantHazardCookBonus;
-            maxBuys = cfg.enchantMaxBuysPerVisit;
         } else {
             if (combat.kills == lastKillSeen) return false;
             lastKillSeen = combat.kills; // one roll per lull
             via = "lull";
             bonus = 1.0;
-            maxBuys = cfg.enchantMaxBuysBetweenKills;
         }
         if (now < quietUntil) {
             if (now - lastQuietSkipLogAt > 30_000) {
@@ -403,7 +418,6 @@ public class EnchantController {
             log("enchant_skip", "reason", "no-sword", "via", via);
             return false;
         }
-        maxBuysThisVisit = Math.max(1, maxBuys);
         begin(client, now, via, eta, hazard, pull, curiosity);
         return true;
     }
@@ -430,19 +444,21 @@ public class EnchantController {
         wrapUp = false;
         picked = null;
         maxItem = null;
-        firstTabDecided = false;
-        firstTabSkipped = false;
+        visitVia = via;
+        buysThisTab = 0;
         log("sword_lore", "lines", EnchantScreens.mainHandLore(client));
         log("enchant_visit_start", "via", via, "etaMs", eta != null ? Math.round(eta) : null,
             "sinceLastVisitMs", now - lastVisitAt, "hazard", Math.round(hazard * 1000) / 1000.0,
             "pull", Math.round(pull * 100) / 100.0, "curiosity", curiosity,
-            "maxBuys", maxBuysThisVisit, "balances", balancesNow());
+            "balances", balancesNow());
         openMenu(client, now);
     }
 
     private void openMenu(MinecraftClient client, long now) {
         EnchantScreens.pressUse(client, cfg.enchantOpenViaInteract);
         useHeld = false; // press counter only — the key is never held
+        tabChecked = false; // a (re)opened menu shows whatever tab was last used — look first
+        tabClicked = false;
         phase = Phase.OPEN_WAIT;
         phaseUntil = now + cfg.enchantOpenTimeoutMs;
     }
@@ -460,7 +476,7 @@ public class EnchantController {
             phaseUntil = now + 1500;
             return;
         }
-        boolean workLeft = !wrapUp && buys < maxBuysThisVisit && tabIndex < lore.tabs().size();
+        boolean workLeft = !wrapUp && tabIndex < lore.tabs().size();
         if (!reopened && workLeft && now - visitStartedAt < cfg.enchantMaxMenuMs) {
             reopened = true;
             log("enchant_reopen", "buys", buys, "tab", currentTab);
@@ -497,10 +513,24 @@ public class EnchantController {
         return out;
     }
 
-    private List<String> tabsPresent(ScreenHandler h) {
-        List<String> out = new ArrayList<>();
-        for (EnchantScreens.SlotItem si : EnchantScreens.items(h, lore)) if (si.item().tab() != null) out.add(si.item().tab());
+    private Map<String, Double> balancesMap() {
+        Map<String, Double> out = new HashMap<>();
+        for (String tab : lore.tabs()) {
+            Double v = stats.currency(tab);
+            if (v != null) out.put(tab, v);
+        }
         return out;
+    }
+
+    /** Move on to the next tab: fresh per-tab state, no click yet. */
+    private void nextTab() {
+        tabIndex++;
+        tabClicked = false;
+        tabChecked = false;
+        buysThisTab = 0;
+        attempted.clear();
+        scansThisTab = 0;
+        phase = Phase.TAB_CLICK;
     }
 
     private void finish(MinecraftClient client, long now, String reason) {

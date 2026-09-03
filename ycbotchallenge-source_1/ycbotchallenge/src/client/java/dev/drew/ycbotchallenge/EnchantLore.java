@@ -104,14 +104,42 @@ public final class EnchantLore {
         }
         String lname = name.toLowerCase(Locale.ROOT);
         boolean maxUpgrade = lname.contains(maxUpgradeName);
-        String tab = null;
-        if (level == null && price == null && !maxUpgrade) {
-            for (String t : tabs) {
-                if (lname.equals(t) || lname.startsWith(t + " ") || lname.endsWith(" " + t)) { tab = t; break; }
-            }
-        }
+        String tab = (level == null && price == null && !maxUpgrade) ? tabOfName(name) : null;
         return new Item(name, lore, level, maxLevel, price, currency, locked, signature, tab,
             maxUpgrade, maxLevels, maxUpgrade ? price : null);
+    }
+
+    /**
+     * Which tab a button's name denotes: the tab word or its singular as a whole word
+     * ("SOULS", "Soul Enchants", "ꜱʜᴀʀᴅꜱ"). Callers restrict this to the button row —
+     * the 0.9.11 name-prefix rule matched essence-named icons elsewhere and missed
+     * "Soul"/"Shard" singulars, so every button read as essence and shards was "missing".
+     */
+    public String tabOfName(String rawName) {
+        if (rawName == null) return null;
+        String lname = SidebarParser.strip(rawName).toLowerCase(Locale.ROOT);
+        if (lname.isEmpty()) return null;
+        for (String t : tabs) {
+            String singular = t.endsWith("s") ? t.substring(0, t.length() - 1) : t;
+            for (String w : new String[] {t, singular}) {
+                if (w.isEmpty()) continue;
+                if (Pattern.compile("(^|[^a-z])" + Pattern.quote(w) + "([^a-z]|$)").matcher(lname).find()) return t;
+            }
+        }
+        return null;
+    }
+
+    /** The tab actually showing, from the scanned items' price currency (the server remembers your last tab). */
+    public static String majorityCurrency(List<Item> items) {
+        if (items == null) return null;
+        java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+        for (Item it : items) if (it.currency() != null) counts.merge(it.currency(), 1, Integer::sum);
+        String best = null;
+        int bestN = 0;
+        for (java.util.Map.Entry<String, Integer> e : counts.entrySet()) {
+            if (e.getValue() > bestN) { best = e.getKey(); bestN = e.getValue(); }
+        }
+        return best;
     }
 
     /**
@@ -120,12 +148,16 @@ public final class EnchantLore {
      * No optimisation by design — "just hit max upgrade on the first unlocked
      * non maxed out enchant".
      */
-    public static Item chooseEnchant(List<Item> inSlotOrder, Double balance, Set<String> skipNames) {
-        if (inSlotOrder == null || balance == null) return null;
+    public static Item chooseEnchant(List<Item> inSlotOrder, java.util.Map<String, Double> balances,
+                                     String fallbackCurrency, Set<String> skipNames) {
+        if (inSlotOrder == null || balances == null) return null;
         for (Item it : inSlotOrder) {
             if (!it.upgradable()) continue;
             if (skipNames != null && skipNames.contains(it.name())) continue;
-            if (it.price() <= balance + 1e-6) return it;
+            // The item's own price line names the currency; never assume the tab's.
+            String cur = it.currency() != null ? it.currency() : fallbackCurrency;
+            Double balance = cur != null ? balances.get(cur) : null;
+            if (balance != null && it.price() <= balance + 1e-6) return it;
         }
         return null;
     }
