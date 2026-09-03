@@ -1,6 +1,7 @@
 package dev.drew.ycbotchallenge;
 
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -59,6 +60,7 @@ public final class EconomyChecks {
         n += instantKills();
         n += patience();
         n += rebirthProbe();
+        n += suffixLearning();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -89,15 +91,20 @@ public final class EconomyChecks {
         n += eq("235 SHARDS not suffix", Amounts.parse("235 SHARDS"), 235.0, 1e-6);
         n += eq("format B", Amounts.format(131.56e9), "131.56B");
         // Server suffix order K M B T Q QQ: the server's quintillion is "QQ" (2026-09-03 18:43,
-        // rebirth GUI: "You need $20.xQQ Money to Rebirth." after a 2.66Q balance). Qa is an alias.
+        // rebirth GUI: "You need $20.xQQ Money to Rebirth." after a 2.66Q balance). 0.9.25:
+        // nothing above QQ is built in — Qa/Qi/Sx are unknown until the sidebar teaches them.
         n += eq("2Q", Amounts.parse("2Q"), 2e15, 1e6);
         n += eq("20.5QQ", Amounts.parse("20.5QQ"), 20.5e18, 1e9);
         n += eq("$20.5QQ", Amounts.parse("$20.5QQ"), 20.5e18, 1e9);
-        n += eq("1.5Qa alias", Amounts.parse("1.5Qa"), 1.5e18, 1e9);
-        n += eq("3Qi", Amounts.parse("3Qi"), 3e21, 1e12);
-        n += eq("4Sx", Amounts.parse("4Sx"), 4e24, 1e15);
+        n += eq("Qa not built in", Amounts.knownSuffix("Qa"), false);
+        n += eq("Qi not built in", Amounts.knownSuffix("Qi"), false);
+        n += eq("Sx not built in", Amounts.knownSuffix("Sx"), false);
         n += eq("format Q", Amounts.format(1.25e15), "1.25Q");
         n += eq("format QQ", Amounts.format(1.5e18), "1.5QQ");
+        n += eq("format above top rung", Amounts.format(2.5e21), "2500QQ");
+        n += eq("mantissa of 903.74T", Amounts.mantissaOf("903.74T"), 903.74, 1e-9);
+        n += eq("mantissa of $20.5QQ", Amounts.mantissaOf("$20.5QQ"), 20.5, 1e-9);
+        n += eq("mantissa of none", Amounts.mantissaOf("Zone Boss") == null, true);
         n += eq("suffix of 1.25Qa", Amounts.suffixOf("1.25Qa"), "Qa");
         n += eq("suffix of 20.5QQ", Amounts.suffixOf("20.5QQ"), "QQ");
         n += eq("QQ known", Amounts.knownSuffix("QQ"), true);
@@ -893,6 +900,130 @@ public final class EconomyChecks {
         n += eq("old signal does not", Economy.rebirthConfirmed(send - 60_000, send), false);
         n += eq("no signal does not", Economy.rebirthConfirmed(0, send), false);
         n += eq("no send does not", Economy.rebirthConfirmed(send + 1200, 0), false);
+        return n;
+    }
+
+    /**
+     * 0.9.25 self-healing suffixes. Numbers from the logs: the 18:43 crossing 903.74T → 1.1Q
+     * (one poll apart, income ~1.27Q/min), the 2.66Q balance against the "$20.xQQ" rebirth
+     * gap, the rebirth collapse 2.66Q → 0.00, and the 1.1Q → 903.74T purchase drop.
+     */
+    private static int suffixLearning() {
+        int n = 0;
+        Amounts.resetLearned();
+        Amounts.configure(Map.of());
+        int gap = 5000;
+        double jump = 20.0;
+
+        // The real crossing: the next rung, confirmed because T is.
+        Amounts.Crossing c = Amounts.crossing("903.74T", 903.74e12, true, "1.1Q", 1000, gap, jump);
+        n += eq("T->Q fit", c.reason(), "fit");
+        n += eq("T->Q scale", c.learned() != null ? Double.valueOf(c.learned().scale) : null, 1e15, 1e6);
+        n += eq("T->Q confirmed", c.learned() != null && c.learned().confirmed, true);
+        n += eq("T->Q via", c.learned() != null ? c.learned().via : null, "crossing");
+        n += eq("T->Q basis", c.learned() != null ? c.learned().basis : null, "T");
+        n += eq("T->Q ratio", c.ratio(), 1.1e15 / 903.74e12, 1e-6);
+        // The same shape on a label nobody has seen.
+        c = Amounts.crossing("903.74QQ", 903.74e18, true, "1.1QQQ", 1000, gap, jump);
+        n += eq("QQ->QQQ fit", c.reason(), "fit");
+        n += eq("QQ->QQQ scale", c.learned() != null ? Double.valueOf(c.learned().scale) : null, 1e21, 1e12);
+        // Not crossings: a rebirth collapse, a purchase drop, the same rung.
+        n += eq("collapse to 0.00", Amounts.crossing("2.66Q", 2.66e15, true, "0.00", 1000, gap, jump).reason(), "no-suffix");
+        n += eq("collapse to 12.5K", Amounts.crossing("2.66Q", 2.66e15, true, "12.5K", 1000, gap, jump).reason(), "out-of-band");
+        n += eq("purchase drop", Amounts.crossing("1.1Q", 1.1e15, true, "903.74T", 1000, gap, jump).reason(), "out-of-band");
+        n += eq("same suffix", Amounts.crossing("2.66Q", 2.66e15, true, "2.70Q", 1000, gap, jump).reason(), "same-suffix");
+        // Guards: mantissa, two-rung skip, stale previous poll, no previous poll.
+        n += eq("mantissa 1500", Amounts.crossing("903.74T", 903.74e12, true, "1500Q", 1000, gap, jump).reason(), "mantissa");
+        n += eq("mantissa 0.5", Amounts.crossing("903.74T", 903.74e12, true, "0.5Q", 1000, gap, jump).reason(), "mantissa");
+        n += eq("two rungs", Amounts.crossing("903.74T", 903.74e12, true, "25Q", 1000, gap, jump).reason(), "out-of-band");
+        n += eq("stale prev", Amounts.crossing("903.74T", 903.74e12, true, "1.1Q", 60_000, gap, jump).reason(), "stale");
+        n += eq("no prev", Amounts.crossing(null, null, true, "1.1Q", 1000, gap, jump).reason(), "no-prev");
+        // Chained off a provisional basis: still a fit, still provisional.
+        c = Amounts.crossing("903.74QQ", 903.74e18, false, "1.1QQQ", 1000, gap, jump);
+        n += eq("chained fit", c.reason(), "fit");
+        n += eq("chained not confirmed", c.learned() != null && !c.learned().confirmed, true);
+        n += eq("chained via", c.learned() != null ? c.learned().via : null, "chained");
+
+        // Rung guess from a fail line at a 2.66Q balance: the rung above QQ, provisional.
+        Amounts.Learned g = Amounts.rungGuess("QQQ", "$20.5QQQ");
+        n += eq("rung scale", Double.valueOf(g.scale), 1e21, 1e12);
+        n += eq("rung basis", g.basis, "QQ");
+        n += eq("rung provisional", g.confirmed, false);
+        n += eq("rung via", g.via, "rung");
+        n += eq("QQQ unknown before learn", Amounts.knownSuffix("QQQ"), false);
+        n += eq("learn returns no old", Amounts.learn("QQQ", g) == null, true);
+        n += eq("parse $20.5QQQ", Amounts.parse("$20.5QQQ"), 20.5e21, 1e12);
+        n += eq("QQQ provisional", Amounts.provisional("QQQ"), true);
+        n += eq("QQQ confidence", Amounts.confidence("QQQ"), "provisional");
+        n += eq("QQQ not confirmed", Amounts.confirmed("QQQ"), false);
+        n += eq("QQ still confirmed", Amounts.confirmed("QQ"), true);
+        n += eq("format 20.5QQQ", Amounts.format(20.5e21), "20.5QQQ");
+        n += eq("format QQ unchanged", Amounts.format(1.5e18), "1.5QQ");
+        n += eq("highest is QQQ", Amounts.highestKnown().suffix(), "QQQ");
+        // The balance later steps onto QQQ: the crossing confirms the guess (same scale).
+        c = Amounts.crossing("999.5QQ", 999.5e18, true, "1.02QQQ", 1200, gap, jump);
+        n += eq("confirm fit", c.reason(), "fit");
+        Amounts.Learned old = Amounts.learn("QQQ", c.learned());
+        n += eq("confirm: old was provisional", old != null && !old.confirmed, true);
+        n += eq("confirm: same scale", old != null ? Double.valueOf(old.scale) : null, c.learned().scale, 1e9);
+        n += eq("QQQ learned now", Amounts.confidence("QQQ"), "learned");
+
+        // Correction: "Sx" named first (guessed one rung above QQQ = 1e24 here), but the
+        // board later shows QQQ → Sx as 1e24 ... vs a guess made when only QQ was known (1e21).
+        Amounts.resetLearned();
+        Amounts.Learned sxGuess = Amounts.rungGuess("Sx", "$4.2Sx");
+        n += eq("Sx guessed above QQ", Double.valueOf(sxGuess.scale), 1e21, 1e9);
+        Amounts.learn("Sx", sxGuess);
+        n += eq("Sx parses on the guess", Amounts.parse("1.1Sx"), 1.1e21, 1e9);
+        c = Amounts.crossing("999.9QQ", 999.9e18, true, "1.05QQQ", 900, gap, jump);
+        Amounts.learn("QQQ", c.learned());
+        c = Amounts.crossing("980QQQ", 980e21, true, "1.1Sx", 900, gap, jump);
+        n += eq("QQQ->Sx fit", c.reason(), "fit");
+        n += eq("QQQ->Sx scale", c.learned() != null ? Double.valueOf(c.learned().scale) : null, 1e24, 1e15);
+        old = Amounts.learn("Sx", c.learned());
+        n += eq("correction detected", old != null && Math.abs(old.scale - c.learned().scale) > 1e12, true);
+        n += eq("Sx learned", Amounts.confidence("Sx"), "learned");
+        n += eq("Sx keeps the server spelling", Amounts.format(1.1e24), "1.1Sx");
+        n += eq("QQQ label", Amounts.format(2.2e21), "2.2QQQ");
+        n += eq("highest is Sx", Amounts.highestKnown().suffix(), "Sx");
+
+        // Config wins over everything and is never provisional.
+        Amounts.configure(Map.of("QQQ", 5e20));
+        n += eq("config scale", Amounts.scaleFor("QQQ"), 5e20, 1e9);
+        n += eq("config confidence", Amounts.confidence("QQQ"), "config");
+        n += eq("config confirmed", Amounts.confirmed("QQQ"), true);
+        Amounts.configure(Map.of());
+        Amounts.resetLearned();
+        n += eq("reset: QQQ unknown", Amounts.knownSuffix("QQQ"), false);
+        n += eq("reset: highest QQ", Amounts.highestKnown().suffix(), "QQ");
+
+        // Persistence round trip on a temp file.
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-suffixes", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            SuffixStore s = new SuffixStore(tmp);
+            n += eq("empty suffix store", s.all().isEmpty(), true);
+            s.put("qqq", Amounts.rungGuess("QQQ", "$20.5QQQ"));
+            Amounts.Learned sx = Amounts.crossing("980QQQ", 980e21, true, "1.1Sx", 900, gap, jump).learned();
+            s.put("Sx", sx);
+            SuffixStore r = new SuffixStore(tmp);
+            n += eq("QQQ persisted", r.get("QQQ") != null, true);
+            n += eq("QQQ scale", r.get("qqq") != null ? Double.valueOf(r.get("qqq").scale) : null, 1e21, 1e12);
+            n += eq("QQQ provisional", r.get("QQQ") != null && !r.get("QQQ").confirmed, true);
+            n += eq("QQQ via", r.get("QQQ") != null ? r.get("QQQ").via : null, "rung");
+            n += eq("Sx confirmed", r.get("SX") != null && r.get("SX").confirmed, true);
+            n += eq("Sx basis", r.get("SX") != null ? r.get("SX").basis : null, "QQQ");
+            n += eq("Sx raw", r.get("SX") != null ? r.get("SX").raw : null, "1.1Sx");
+            r.remove("QQQ");
+            SuffixStore r2 = new SuffixStore(tmp);
+            n += eq("QQQ removed", r2.get("QQQ") == null, true);
+            n += eq("Sx survives", r2.get("Sx") != null, true);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL suffixStore: " + ex);
+            n++;
+        }
+        Amounts.resetLearned();
         return n;
     }
 

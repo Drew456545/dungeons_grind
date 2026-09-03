@@ -48,6 +48,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         Amounts.configure(config.suffixScales);
         stats = new StatsTracker(config);
         stats.setStateStore(new StateStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-state.json")));
+        stats.setSuffixStore(new SuffixStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-suffixes.json")));
         combat = new CombatController(config, stats);
         upgrades = new UpgradeController(config, stats);
         enchants = new EnchantController(config, stats);

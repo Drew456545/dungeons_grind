@@ -788,8 +788,27 @@ public class YCBotChallengeConfig {
     public double zoneMinReadiness = 0.5;
     /** Rolling window (kills) for the median time-to-kill. */
     public int ttkWindowKills = 8;
-    /** Extra amount suffixes merged over the built-in K..Dc table, e.g. {"UTG": 1e36}. */
+    /**
+     * Manual amount suffixes, e.g. {"Sx": 1e21}. They win over everything the bot learned
+     * and over the built-in K M B T Q QQ. Since 0.9.25 nothing above QQ is built in: the
+     * ladder is learned from the sidebar (see suffixLearningEnabled). List the conventional
+     * short scale here (Qi 1e21, Sx 1e24, Sp 1e27, Oc 1e30, No 1e33, Dc 1e36) only if you
+     * would rather guess it than learn it.
+     */
     public Map<String, Double> suffixScales = Map.of();
+    /**
+     * Self-healing suffixes (0.9.25). The money row is read every second, so the moment
+     * it steps from a known suffix onto a new one (903.74T → 1.1Q) the new scale is
+     * provable: the next 1000x rung, if the value sits within [1x, suffixCrossingMaxJump]
+     * of the previous poll (one kill lump can land between polls). Learned rungs persist
+     * in config/ycbotchallenge-suffixes.json (delete it to relearn). A suffix a chat line
+     * names before the board showed it ("$20.5QQQ" at a 2.66Q balance) gets the rung
+     * above the highest known scale, provisionally, until the balance crosses into it.
+     * false = 0.9.24 behavior (an unknown suffix resolves the send as a fail, nothing learned).
+     */
+    public boolean suffixLearningEnabled = true;
+    /** A rung crossing is accepted only when the new value is at most this many times the previous poll. */
+    public double suffixCrossingMaxJump = 20.0;
 
     // --- Ninja humanization (single behavior set; ninja=false restores the old mechanical one) ---
 
@@ -902,7 +921,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 28;
+    public static final int CURRENT_CONFIG_VERSION = 29;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1139,6 +1158,12 @@ public class YCBotChallengeConfig {
             // a rebirth (rebirthSignalWaitMs, rebirthProbeMaxRetries take their defaults).
             changed = true;
         }
+        if (configVersion < 29) {
+            // v29: the suffix ladder is learned from sidebar rung crossings
+            // (suffixLearningEnabled, suffixCrossingMaxJump take their defaults);
+            // Qa/Qi/Sx/Sp/Oc/No/Dc left the built-in table.
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1202,6 +1227,7 @@ public class YCBotChallengeConfig {
         if (buyNoticeDelayMaxMs < buyNoticeDelayMinMs) buyNoticeDelayMaxMs = buyNoticeDelayMinMs;
         if (expectedTeleportAfterZoneMs < 0) expectedTeleportAfterZoneMs = 8000;
         if (suffixScales == null) suffixScales = Map.of();
+        if (suffixCrossingMaxJump < 1.05) suffixCrossingMaxJump = 20.0;
         if (rarityHpScale == null) rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
         // migrate: 0.7.5 shipped an empty whitelist; fill it with the zone NPC's plate lines
         if (playerRadarWhitelist == null || playerRadarWhitelist.isEmpty()) {

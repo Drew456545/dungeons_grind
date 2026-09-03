@@ -364,6 +364,102 @@ public class StatsTracker {
 
     public void setStateStore(StateStore store) { this.stateStore = store; }
 
+    // --- learned money suffixes (0.9.25) ---
+
+    private SuffixStore suffixStore;
+    /** A rung crossing is judged against the previous poll only while it is this fresh. */
+    private static final int SUFFIX_CROSSING_MAX_GAP_MS = 5000;
+
+    /** Load the suffixes the sidebar taught us in earlier sessions (config overrides stay on top). */
+    public void setSuffixStore(SuffixStore store) {
+        this.suffixStore = store;
+        Map<String, Amounts.Learned> all = store != null ? store.all() : Map.of();
+        Amounts.loadLearned(all);
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Amounts.Learned> e : all.entrySet()) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(e.getKey()).append('=').append(e.getValue().scale).append(e.getValue().confirmed ? "" : "/prov");
+        }
+        log("suffix_state_loaded", "count", all.size(), "suffixes", sb.length() > 0 ? sb.toString() : null);
+    }
+
+    /**
+     * Every change of the money row's suffix is judged as a rung crossing
+     * ({@link Amounts#crossing}) and logged (suffix_crossing) — on the known rungs too
+     * (T→Q, Q→QQ once per rebirth cycle), so the rule proves itself on the live board.
+     * Only an unconfirmed suffix is ever changed by it: a fit learns, confirms or
+     * corrects; no fit on a suffix the table lacks takes the rung guess so money()
+     * never goes stale.
+     */
+    private void noteMoneySuffix(String raw) {
+        String sfx = Amounts.suffixOf(raw);
+        String prevRaw = liveRaw.get(moneyKey());
+        String prevSfx = Amounts.suffixOf(prevRaw);
+        if (sfx.isEmpty() || sfx.equalsIgnoreCase(prevSfx)) return;
+        long age = lastSidebarMoneyAt == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - lastSidebarMoneyAt;
+        Amounts.Crossing c = Amounts.crossing(prevRaw, liveBals.get(moneyKey()), Amounts.confirmed(prevSfx),
+            raw, age, SUFFIX_CROSSING_MAX_GAP_MS, cfg.suffixCrossingMaxJump);
+        boolean fit = c.learned() != null;
+        log("suffix_crossing", "from", prevSfx.isEmpty() ? null : prevSfx, "to", sfx, "raw", raw, "prevRaw", prevRaw,
+            "verdict", fit ? "fit" : "rejected", "reason", c.reason(),
+            "ratio", Math.round(c.ratio() * 1000.0) / 1000.0,
+            "scale", fit ? c.learned().scale : null, "known", Amounts.confidence(sfx));
+        if (!cfg.suffixLearningEnabled || Amounts.confirmed(sfx)) return;
+        if (fit) {
+            applyLearned(sfx, c.learned(), "sidebar", c.reason());
+        } else if (!Amounts.knownSuffix(sfx)) {
+            boolean stale = age > SUFFIX_CROSSING_MAX_GAP_MS;
+            applyLearned(sfx, Amounts.rungGuess(sfx, raw), stale ? "sidebar-stale" : "sidebar", c.reason());
+        }
+    }
+
+    /** The one place a suffix scale is learned, confirmed or corrected; persists and logs. */
+    private void applyLearned(String sfx, Amounts.Learned e, String source, String reason) {
+        String key = sfx.toUpperCase(Locale.ROOT);
+        Amounts.Learned old = Amounts.learn(key, e);
+        if (old == null) {
+            if ("rung".equals(e.via)) {
+                log("suffix_guess", "suffix", key, "scale", e.scale, "via", e.via, "basis", e.basis,
+                    "raw", e.raw, "source", source, "reason", reason);
+            } else {
+                log("suffix_learned", "suffix", key, "scale", e.scale, "via", e.via, "confirmed", e.confirmed,
+                    "basis", e.basis, "raw", e.raw, "prevRaw", e.prevRaw);
+            }
+        } else if (Math.abs(old.scale - e.scale) <= e.scale * 1e-9) {
+            if (!old.confirmed && e.confirmed) {
+                log("suffix_confirmed", "suffix", key, "scale", e.scale, "raw", e.raw, "prevRaw", e.prevRaw);
+            }
+        } else {
+            // The earlier scale was a guess (a confirmed suffix never reaches here): every
+            // provisional rung above it was built on it, and every learned price expressed
+            // on it is wrong by the same factor. Forget both; prices relearn from the next fail line.
+            List<String> forgotten = new ArrayList<>();
+            for (Map.Entry<String, Amounts.Learned> le : Amounts.learned().entrySet()) {
+                if (le.getKey().equals(key) || le.getValue().confirmed || le.getValue().scale <= old.scale) continue;
+                Amounts.forget(le.getKey());
+                if (suffixStore != null) suffixStore.remove(le.getKey());
+                forgotten.add(le.getKey());
+            }
+            List<String> dropped = dropPricesAbove(old.scale);
+            log("suffix_corrected", "suffix", key, "oldScale", old.scale, "scale", e.scale, "via", e.via,
+                "raw", e.raw, "prevRaw", e.prevRaw, "forgotten", forgotten, "dropped", dropped);
+        }
+        if (suffixStore != null) suffixStore.put(key, e);
+    }
+
+    /** Learned prices at or above a corrected rung were computed on the wrong scale: forget them. */
+    private List<String> dropPricesAbove(double scale) {
+        List<String> dropped = new ArrayList<>();
+        if (swordTarget != null && swordTarget >= scale) { swordTarget = null; swordGap = null; swordPriceSeenAt = 0; dropped.add("swordTarget"); }
+        if (zoneTarget != null && zoneTarget >= scale) { zoneTarget = null; zoneGap = null; zonePriceSeenAt = 0; dropped.add("zoneTarget"); }
+        if (rebirthTarget != null && rebirthTarget >= scale) { rebirthTarget = null; rebirthGap = null; rebirthPriceSeenAt = 0; dropped.add("rebirthTarget"); }
+        if (swordLastPrice != null && swordLastPrice >= scale) { swordLastPrice = null; dropped.add("swordFloor"); }
+        if (zoneLastPrice != null && zoneLastPrice >= scale) { zoneLastPrice = null; dropped.add("zoneFloor"); }
+        if (rebirthLastPrice != null && rebirthLastPrice >= scale) { rebirthLastPrice = null; dropped.add("rebirthFloor"); }
+        if (!dropped.isEmpty()) markStateDirty();
+        return dropped;
+    }
+
     /** Bot enabled as this username: load what the server already taught us for this account. */
     public void attachUser(String username) {
         stateUser = username;
@@ -584,6 +680,7 @@ public class StatsTracker {
                     if (mm.group(g) != null) { raw = mm.group(g); break; }
                 }
                 if (raw == null) continue;
+                noteMoneySuffix(raw);
                 Double v = Amounts.parse(raw);
                 if (v == null) continue;
                 applyCurrency(moneyKey(), raw, v, line);
@@ -623,10 +720,11 @@ public class StatsTracker {
         // Suffix evidence: the first "Qa" (or anything new) is logged next to the row it
         // followed, so a wrong scale in the table shows up as a 1000x jump in the log.
         String sfx = Amounts.suffixOf(raw).toUpperCase(Locale.ROOT);
+        boolean prov = Amounts.provisional(sfx);
         if (!sfx.isEmpty() && suffixesSeen.add(sfx)) {
             log("amount_suffix", "currency", key, "suffix", sfx, "raw", raw, "parsed", Amounts.format(value),
                 "prevRaw", prevRaw, "prevParsed", prev != null ? Amounts.format(prev) : null,
-                "scale", Amounts.scaleFor(sfx));
+                "scale", Amounts.scaleFor(sfx), "confidence", Amounts.confidence(sfx), "provisional", prov ? true : null);
         }
         if (key.equals(moneyKey())) {
             long nowMs = System.currentTimeMillis();
@@ -638,7 +736,7 @@ public class StatsTracker {
             // lands near zero: a value still above moneyCollapseMaxValue is a suffix
             // read 1000x too small, not a rebirth.
             if (prev != null && prev >= 1e9 && value <= Math.max(1e6, prev * 0.01)
-                && value < cfg.moneyCollapseMaxValue && nowMs - lastSpendAt > 10_000) {
+                && value < cfg.moneyCollapseMaxValue && nowMs - lastSpendAt > 10_000 && !prov) {
                 rebirthReset("money-collapse");
             }
             // Server auto-rebirth: the balance reaching the known cost means the teleport
@@ -647,13 +745,14 @@ public class StatsTracker {
                 armTeleport(cfg.expectedTeleportAfterRebirthMs);
             } else if (prev != null && prev >= 1e9 && value <= prev * 0.01 && value >= cfg.moneyCollapseMaxValue) {
                 log("suffix_scale_suspect", "raw", raw, "prevRaw", prevRaw, "parsed", Amounts.format(value),
-                    "prevParsed", Amounts.format(prev));
+                    "prevParsed", Amounts.format(prev), "confidence", Amounts.confidence(sfx));
             }
         }
         boolean changed = prev == null || Math.abs(prev - value) > 1e-6;
         if (changed) {
             if (key.equals(moneyKey())) noteBalance(value);
-            log("balance", "currency", key, "raw", raw, "parsed", Amounts.format(value), "line", line);
+            log("balance", "currency", key, "raw", raw, "parsed", Amounts.format(value), "line", line,
+                "provisional", prov ? true : null);
         }
     }
 
@@ -1145,16 +1244,26 @@ public class StatsTracker {
         boolean failShape = anyMatch(upgradeFailRes, text);
         Double gap = ChatClassifier.needAmount(text, needAmountRe);
         if (gap == null) {
-            // The line names an amount we cannot scale ("$20.5QQ" before 0.9.24 knew QQ):
-            // keep the evidence and still resolve the send as a fail, never a timeout.
+            // The line names an amount on a suffix the table lacks ("$20.5QQ" before 0.9.24
+            // knew QQ). 0.9.25: take it as the rung above the highest known scale,
+            // provisionally (suffix_guess) — the balance must climb through that rung before
+            // it can afford the price, and that crossing confirms or corrects the guess. If
+            // it still cannot be scaled, keep the evidence and resolve the send as a fail.
             String tok = ChatClassifier.needAmountToken(text, needAmountRe);
-            if (tok != null && !Amounts.knownSuffix(Amounts.suffixOf(tok))) {
+            String tokSfx = tok != null ? Amounts.suffixOf(tok) : "";
+            if (tok != null && !Amounts.knownSuffix(tokSfx)) {
                 String kind = ChatClassifier.kindOf(text, lastUpgradeKind);
-                log("amount_unknown", "kind", kind, "token", tok, "suffix", Amounts.suffixOf(tok), "raw", text);
-                if (kind != null) {
-                    upgradeChatFrag = null;
-                    onFailUnknownAmount(kind, text, now);
-                    return true;
+                if (cfg.suffixLearningEnabled && !tokSfx.isEmpty()) {
+                    applyLearned(tokSfx, Amounts.rungGuess(tokSfx, tok), "fail-line", kind);
+                    gap = ChatClassifier.needAmount(text, needAmountRe);
+                }
+                if (gap == null) {
+                    log("amount_unknown", "kind", kind, "token", tok, "suffix", tokSfx, "raw", text);
+                    if (kind != null) {
+                        upgradeChatFrag = null;
+                        onFailUnknownAmount(kind, text, now);
+                        return true;
+                    }
                 }
             }
         }
@@ -1208,6 +1317,7 @@ public class StatsTracker {
         }
         markStateDirty();
         log("upgrade_chat", "kind", kind,
+            "provisional", Amounts.provisional(Amounts.suffixOf(ChatClassifier.needAmountToken(raw, needAmountRe))) ? true : null,
             "gap", Amounts.format(gap),
             "target", price != null ? Amounts.format(price) : null,
             "balance", money() != null ? Amounts.format(money()) : null,
