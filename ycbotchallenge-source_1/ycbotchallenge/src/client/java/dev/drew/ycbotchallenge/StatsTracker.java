@@ -149,6 +149,8 @@ public class StatsTracker {
     private final List<Pattern> giveawayAnnounceRes = new ArrayList<>();
     private final List<Pattern> giveawayJoinedRes = new ArrayList<>();
     private final List<Pattern> giveawayWonRes = new ArrayList<>();
+    /** "[!] You have successfully rebirthed." / "Rebirth Milestone Completed" (15:23 log). */
+    private final List<Pattern> rebirthChatRes = new ArrayList<>();
     public volatile int giveawaySeq = 0;
     public volatile long giveawaySeenAt = 0;
     public volatile String giveawayPrize = null;
@@ -192,6 +194,7 @@ public class StatsTracker {
         if (cfg.giveawayAnnouncePatterns != null) for (String p : cfg.giveawayAnnouncePatterns) giveawayAnnounceRes.add(compileLoose(p));
         if (cfg.giveawayJoinedPatterns != null) for (String p : cfg.giveawayJoinedPatterns) giveawayJoinedRes.add(compileLoose(p));
         if (cfg.giveawayWonPatterns != null) for (String p : cfg.giveawayWonPatterns) giveawayWonRes.add(compileLoose(p));
+        if (cfg.rebirthChatPatterns != null) for (String p : cfg.rebirthChatPatterns) rebirthChatRes.add(compileLoose(p));
         if (cfg.upgradeFailPatterns != null)
             for (String p : cfg.upgradeFailPatterns) upgradeFailRes.add(compileLoose(p));
         if (cfg.upgradeMaxedPatterns != null)
@@ -614,6 +617,11 @@ public class StatsTracker {
             if (prev != null && prev >= 1e9 && value <= Math.max(1e6, prev * 0.01)
                 && value < cfg.moneyCollapseMaxValue && nowMs - lastSpendAt > 10_000) {
                 rebirthReset("money-collapse");
+            }
+            // Server auto-rebirth: the balance reaching the known cost means the teleport
+            // that follows is a rebirth, not a staff pull.
+            if (cfg.serverAutoRebirth && rebirthTarget != null && value >= rebirthTarget) {
+                armTeleport(cfg.expectedTeleportAfterRebirthMs);
             } else if (prev != null && prev >= 1e9 && value <= prev * 0.01 && value >= cfg.moneyCollapseMaxValue) {
                 log("suffix_scale_suspect", "raw", raw, "prevRaw", prevRaw, "parsed", Amounts.format(value),
                     "prevParsed", Amounts.format(prev));
@@ -666,6 +674,13 @@ public class StatsTracker {
      * economy so the loop re-discovers post-rebirth prices from scratch.
      */
     private void rebirthReset(String via) {
+        // One rebirth arrives as up to three signals (chat line, money collapse, sidebar
+        // counter) within seconds; the first one does the reset.
+        long nowMs = System.currentTimeMillis();
+        if (lastRebirthAt != 0 && nowMs - lastRebirthAt < 15_000) {
+            log("economy_reset_dedup", "via", via, "sinceMs", nowMs - lastRebirthAt);
+            return;
+        }
         // The rebirth cost only grows, so the price we just paid (or last learned) is a
         // floor for the next one — kept so the controller retries the GUI at a sane point
         // instead of re-probing /rebirth seconds after rebirthing.
@@ -989,6 +1004,20 @@ public class StatsTracker {
                 log("upgrade_response_raw", "raw", text, "overlay", true);
             }
             return;
+        }
+        // The server's own rebirth line ("[!] You have successfully rebirthed." carries a
+        // [!] prefix, so only the » player separator is excluded). It arms the teleport
+        // exemption and resets the economy (deduped against the money collapse / counter).
+        if (text.indexOf('\u00BB') < 0) {
+            for (Pattern p : rebirthChatRes) {
+                if (p.matcher(text).find()) {
+                    log("rebirth_chat", "raw", text);
+                    armTeleport(cfg.expectedTeleportAfterRebirthMs);
+                    rebirthReset("chat");
+                    known = true;
+                    break;
+                }
+            }
         }
         // Giveaway outcomes (server lines only).
         if (!ChatClassifier.isPlayerOrBroadcast(text)) {

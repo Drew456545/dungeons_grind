@@ -645,6 +645,16 @@ public final class EconomyChecks {
         n += eq("unknown points buys anyway", rl.choose(menu, null).name(), "Enchant Proc Upgrade");
         n += eq("order index", rl.orderIndex(damage), 1);
         n += eq("outside order never clicked", rl.choose(List.of(rl.parse("Mystery Box", List.of("?"))), 9) == null, true);
+        // Rebirth chat lines (verbatim 15:23 log) match the default patterns; player chat about rebirths does not.
+        boolean hit = false;
+        for (String p : CFG.rebirthChatPatterns) if (Pattern.compile(Pattern.quote(p), Pattern.CASE_INSENSITIVE).matcher("[!] You have successfully rebirthed.").find()) hit = true;
+        n += eq("rebirth chat line matches", hit, true);
+        hit = false;
+        for (String p : CFG.rebirthChatPatterns) if (Pattern.compile(Pattern.quote(p), Pattern.CASE_INSENSITIVE).matcher("Rebirth Milestone Completed").find()) hit = true;
+        n += eq("milestone line matches", hit, true);
+        hit = false;
+        for (String p : CFG.rebirthChatPatterns) if (Pattern.compile(Pattern.quote(p), Pattern.CASE_INSENSITIVE).matcher("[✧R193✧] snusie » when u rebirth next").find()) hit = true;
+        n += eq("player rebirth talk does not", hit, false);
         // Giveaway packet (verbatim 2026-09-03 15:52 log).
         List<Pattern> ann = List.of(Pattern.compile(Pattern.quote("new giveaway"), Pattern.CASE_INSENSITIVE));
         n += eq("giveaway prize", ChatClassifier.giveawayPrize(List.of("NEW GIVEAWAY (30s to enter)", "Current Lootbox", "Click to Enter!"), ann), "Current Lootbox");

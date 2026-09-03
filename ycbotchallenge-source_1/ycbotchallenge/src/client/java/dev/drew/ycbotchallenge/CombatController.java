@@ -66,6 +66,9 @@ public class CombatController {
     private long lastRadarAt = 0;
     /** Once a teleport happens, the player radar arms for the rest of the session. */
     private boolean teleportSeen = false;
+    /** An unexplained teleport waiting for a rebirth signal (0 = none); see teleportExplainGraceMs. */
+    private long pendingTeleportAt = 0;
+    private double pendingTeleportBlocks = 0;
     /** Radar memory: entity id -> {x, z, lastMoveMs, firstSeenMs, lastSeenMs}. */
     private final Map<Integer, double[]> radarMotion = new HashMap<>();
     private int clicksThisTarget = 0;
@@ -266,6 +269,7 @@ public class CombatController {
         currentDps = null;
         currentEtaMs = null;
         ghosts.clear();
+        pendingTeleportAt = 0;
         motion.clear();
         radarMotion.clear();
         lastTickPos = null;
@@ -318,6 +322,37 @@ public class CombatController {
 
         // Stop protocol: teleport = pulled for a check; another player in range = staff
         // spectating (this gamemode is solo while grinding, so anyone else is a red flag).
+        if (cfg.stopProtocolEnabled && pendingTeleportAt != 0) {
+            // Holding still after an unexplained teleport. The server's auto-rebirth
+            // teleports us with no command of ours to arm it (17:03 log: 28.23Q → teleport
+            // 32 blocks → money 0 at +0.4s → counter 4 at +4.4s, and the stop protocol had
+            // already fired). A rebirth signal inside the grace explains it; nothing does not.
+            releaseKeys(client);
+            boolean armed = stats.isTeleportExpected(now);
+            boolean rebirthSignal = stats.lastRebirthAt != 0 && stats.lastRebirthAt >= pendingTeleportAt - 3000;
+            if (armed || rebirthSignal) {
+                String why = armed ? stats.consumeTeleportReason() : "rebirth";
+                stats.clearTeleportExpected();
+                if (logger != null) {
+                    logger.log("teleport_explained", "blocks", Math.round(pendingTeleportBlocks), "reason", why,
+                        "afterMs", now - pendingTeleportAt, "via", armed ? "armed" : "rebirth-signal");
+                }
+                pendingTeleportAt = 0;
+                stats.onZoneAdvance("teleport");
+                lastPredictedTtkMs = null;
+                beginSettle(now, why);
+                lastTickPos = null;
+                return;
+            }
+            if (now - pendingTeleportAt >= cfg.teleportExplainGraceMs) {
+                pendingTeleportAt = 0;
+                teleportSeen = true; // unexpected teleport: arms the player radar for the rest of the session
+                stopRequest = "teleport (" + Math.round(pendingTeleportBlocks) + " blocks)";
+                return;
+            }
+            lastTickPos = null;
+            return;
+        }
         if (cfg.stopProtocolEnabled) {
             Vec3d pos = client.player.getEntityPos();
             if (lastTickPos != null) {
@@ -334,6 +369,14 @@ public class CombatController {
                         beginSettle(now, why);
                         lastTickPos = null;
                         releaseKeys(client);
+                        return;
+                    }
+                    if (cfg.teleportExplainGraceMs > 0) {
+                        pendingTeleportAt = now;
+                        pendingTeleportBlocks = jumped;
+                        lastTickPos = null;
+                        releaseKeys(client);
+                        if (logger != null) logger.log("teleport_pending", "blocks", Math.round(jumped), "graceMs", cfg.teleportExplainGraceMs);
                         return;
                     }
                     teleportSeen = true; // unexpected teleport: arms the player radar for the rest of the session

@@ -684,6 +684,15 @@ public class YCBotChallengeConfig {
     public int expectedTeleportAfterZoneMs = 8000;
     /** Same exemption after a successful rebirth diamond click (GUI closes and teleports). */
     public int expectedTeleportAfterRebirthMs = 8000;
+    /**
+     * An unexplained teleport holds still this long waiting for a rebirth signal before
+     * the stop protocol fires (0.9.20). The server's auto-rebirth teleports with no
+     * command of ours to arm it; its chat line, the money collapse (+0.4s) and the
+     * sidebar counter (+4.4s) all land inside this window. 0 = stop instantly as before.
+     */
+    public int teleportExplainGraceMs = 6000;
+    /** Server lines that mean a rebirth just happened (verbatim 15:23 log; "[!]" prefixed, so matched before the broadcast guard). */
+    public List<String> rebirthChatPatterns = List.of("you have successfully rebirthed", "rebirth milestone completed");
 
     // --- Economy: sidebar balance + event-driven scheduling (the /bal probe was removed in 0.9.7) ---
 
@@ -847,7 +856,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 23;
+    public static final int CURRENT_CONFIG_VERSION = 24;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1051,6 +1060,11 @@ public class YCBotChallengeConfig {
             // v23: Qa = 1e18 (server order K M B T Q Qa Qi ...), stray own-GUI closer.
             changed = true;
         }
+        if (configVersion < 24) {
+            // v24: auto-rebirth teleports explained by the rebirth signals instead of stopping.
+            rebirthChatPatterns = fresh.rebirthChatPatterns;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1243,6 +1257,8 @@ public class YCBotChallengeConfig {
         if (strayGuiCloseMs > 0 && strayGuiCloseMs < 1000) strayGuiCloseMs = 1000;
         if (moneyCollapseMaxValue <= 0) moneyCollapseMaxValue = 1e12;
         if (expectedTeleportAfterRebirthMs < 0) expectedTeleportAfterRebirthMs = 8000;
+        if (teleportExplainGraceMs < 0) teleportExplainGraceMs = 0;
+        if (rebirthChatPatterns == null) rebirthChatPatterns = fresh.rebirthChatPatterns;
         if (moneyCurrency == null || moneyCurrency.isBlank() || moneyCurrency.equalsIgnoreCase("chicken")) {
             moneyCurrency = "money";
         }
