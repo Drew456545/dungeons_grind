@@ -123,9 +123,20 @@ public class CombatController {
     private Integer targetLevel = null;
     private String targetMob = null;
 
+    /** Nameplates never targeted (ignoreMobPatterns); entity ids already logged as ignored. */
+    private final java.util.List<Pattern> ignoreRes = new java.util.ArrayList<>();
+    private final java.util.Set<Integer> ignoredLogged = new java.util.HashSet<>();
+
     public CombatController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
         this.stats = stats;
+        if (cfg.ignoreMobPatterns != null) {
+            for (String p : cfg.ignoreMobPatterns) {
+                if (p == null || p.isBlank()) continue;
+                boolean re = p.length() > 2 && p.startsWith("/") && p.endsWith("/");
+                ignoreRes.add(Pattern.compile(re ? p.substring(1, p.length() - 1) : Pattern.quote(p), Pattern.CASE_INSENSITIVE));
+            }
+        }
     }
 
     public void setLogger(EventLogger logger) { this.logger = logger; }
@@ -999,6 +1010,16 @@ public class CombatController {
         if (e == client.player || e instanceof PlayerEntity) return false;
         if (e instanceof ArmorStandEntity || e instanceof DisplayEntity) return false;
         if (!le.isAlive() || le.isRemoved()) return false;
+        if (!ignoreRes.isEmpty()) {
+            Text plate = le.getCustomName();
+            if (plate != null && Economy.ignoredMob(plate.getString(), ignoreRes)) {
+                if (ignoredLogged.add(e.getId()) && logger != null) {
+                    logger.log("target_ignored", "nameplate", plate.getString(), "entityId", e.getId());
+                }
+                if (ignoredLogged.size() > 4096) ignoredLogged.clear();
+                return false;
+            }
+        }
         if (!inZone(e.getEntityPos())) return false;
         if (cfg.stationaryOnly) {
             if (ghosts.contains(e.getId()) && !mayAttackMoving()) return false;

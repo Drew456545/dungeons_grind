@@ -208,6 +208,19 @@ public final class Economy {
     }
 
     /** True once {@code settleMs} have passed since a spend (or there was no spend). */
+    /**
+     * A nameplate matching any ignore pattern is never a target: the zone's
+     * "[AFKMOB] LVL7 Donkey ❤∞" is the same species as the real mobs and
+     * stands still, so nothing but its tag (and its infinite HP) tells it apart.
+     */
+    public static boolean ignoredMob(String nameplate, java.util.List<java.util.regex.Pattern> ignoreRes) {
+        if (nameplate == null || ignoreRes == null) return false;
+        for (java.util.regex.Pattern p : ignoreRes) {
+            if (p.matcher(nameplate).find()) return true;
+        }
+        return false;
+    }
+
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);

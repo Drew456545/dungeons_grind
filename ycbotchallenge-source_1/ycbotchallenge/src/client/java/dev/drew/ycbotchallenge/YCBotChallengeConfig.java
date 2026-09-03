@@ -157,6 +157,13 @@ public class YCBotChallengeConfig {
      * immediately and a rescan happens on the next tick.
      */
     public boolean stationaryOnly = true;
+    /**
+     * Nameplates that are never targeted (plain substrings or /regex/, case-insensitive).
+     * The zone's AFK mob ("[AFKMOB] LVL7 Donkey ❤∞", infinite HP, right-click to
+     * upgrade) is the same species as the real mobs and stands still, so only its
+     * tag tells it apart; locking onto it wasted whole cook cycles (0.9.14).
+     */
+    public List<String> ignoreMobPatterns = List.of("[afkmob]", "❤∞");
     public double ghostMotionBlocks = 0.5;
     /** Watch a mob stand still for this many ticks before it becomes targetable. */
     public int minObservationTicks = 3;
@@ -726,7 +733,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 17;
+    public static final int CURRENT_CONFIG_VERSION = 18;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -893,6 +900,11 @@ public class YCBotChallengeConfig {
             if (captchaMapScale == 4) captchaMapScale = fresh.captchaMapScale;
             changed = true;
         }
+        if (configVersion < 18) {
+            // v18: never target the zone's [AFKMOB] upgrade mob.
+            ignoreMobPatterns = fresh.ignoreMobPatterns;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -920,6 +932,7 @@ public class YCBotChallengeConfig {
         if (captchaSolvedPatterns == null) captchaSolvedPatterns = fresh.captchaSolvedPatterns;
         if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
         if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;
+        if (ignoreMobPatterns == null) ignoreMobPatterns = fresh.ignoreMobPatterns;
         if (captchaMapScale < 1) captchaMapScale = fresh.captchaMapScale;
         if (captchaMapScale > 8) captchaMapScale = 8;
         if (captchaScreenMaxPx < 256) captchaScreenMaxPx = fresh.captchaScreenMaxPx;

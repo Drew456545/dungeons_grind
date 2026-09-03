@@ -53,6 +53,7 @@ public final class EconomyChecks {
         n += realism();
         n += stateStore();
         n += captcha();
+        n += ignoredMobs();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -569,6 +570,21 @@ public final class EconomyChecks {
             System.err.println("FAIL stateStore: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /** 0.9.14: the zone's AFK upgrade mob is never a target (nameplate from the 2026-09-03 screenshot). */
+    private static int ignoredMobs() {
+        int n = 0;
+        List<Pattern> res = new java.util.ArrayList<>();
+        for (String p : CFG.ignoreMobPatterns) res.add(Pattern.compile(Pattern.quote(p), Pattern.CASE_INSENSITIVE));
+        n += eq("afk mob ignored", Economy.ignoredMob("[AFKMOB] LVL7 Donkey ❤∞", res), true);
+        n += eq("afk tag alone", Economy.ignoredMob("[AfkMob] Donkey", res), true);
+        n += eq("infinite hp alone", Economy.ignoredMob("[EPIC] LVL7 Donkey ❤∞", res), true);
+        n += eq("real mob targeted", Economy.ignoredMob("[EPIC] LVL4 Pig ❤8.48M", res), false);
+        n += eq("rare mob targeted", Economy.ignoredMob("[RARE] LVL6 Cow ❤41.4M", res), false);
+        n += eq("no nameplate", Economy.ignoredMob(null, res), false);
+        n += eq("no patterns", Economy.ignoredMob("[AFKMOB] LVL7 Donkey", List.of()), false);
         return n;
     }
 
