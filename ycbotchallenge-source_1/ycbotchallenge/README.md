@@ -113,18 +113,28 @@ Evidence-based details: the enchanter's title is formatting-only (a font glyph d
 
 ## Captcha auto-solve (local Qwen3-VL)
 
-When a captcha is detected (chat line matching `captchaChatPatterns`, or a server-opened container GUI), the bot pauses combat and — with `captchaAutoSolve: true` (default) — solves it with the local model instead of waiting for you:
+EnchantedMC's captcha is a **filled map put in your hand** (2026-09-02: it landed in hotbar slot 9 and was selected): the map shows a short random string in colored pixel letters over noise specks, and you type it in chat, **case-sensitive**, within ~30 s. No chat line announces it, so 0.9.13 watches the hands and hotbar (`CaptchaDetector`): a map appearing in a slot that had none fires after `captchaSignalConfirmMs` (`captcha_detected source=held-map|hotbar-map`), and that map id is muted until it is gone. Maps already there at enable time are snapshotted (`hotbar_snapshot`) and never count; `captchaMapAnySlot: false` limits it to the hands. The old triggers stay: a chat line matching `captchaChatPatterns` (never overlay text) or a server-opened container GUI. Soft hints (`captchaChatHintPatterns`, logged `captcha_hint`) only make a map confirm instantly; they never trigger alone.
 
-1. waits `captchaSettleMs` for the map to render,
-2. captures it: a filled map in either hand → pixel-perfect 128×128 render from map data (upscaled ×`captchaMapScale`); else the nearest item-frame map within `captchaMapSearchRadius`; else a full framebuffer screenshot (`captchaCaptureMode` forces `"map"` or `"screen"`),
-3. POSTs it to `captchaVlmEndpoint` (vLLM serving `Qwen/Qwen3-VL-4B-Instruct-FP8` — see the vllm-captcha setup scripts; from Windows, WSL2's `localhost:8000` just works),
-4. asks the model for a **ranked top-3** reading (best guess + two alternatives, warned about merged/doubled glyphs like `rr`),
-5. sends the best guess to chat via `captchaAnswerTemplate` (`"{answer}"`; use `"/captcha {answer}"` if the server wants a command),
-6. on a `captchaRetryPatterns` rejection it fires the **next candidate instantly** (no re-capture — Sonar reuses the same image and gives 3 tries, so the top-3 maps onto them one-for-one); resumes when a `captchaSolvedPatterns` line arrives or after `captchaVerifyWaitMs` of silence; only when all candidates are exhausted does it re-capture, retry up to `captchaMaxAttempts`, then fall back to the pause-for-human behavior.
+With `captchaAutoSolve: true` (default) the bot then:
 
-Everything is logged (`captcha_detected`, `captcha_captured`, `captcha_answer`, `captcha_solved`/`captcha_failed`), so downtime-per-captcha shows up in the analyzer. Set `captchaAutoSolve: false` to get the old hard pause back.
+1. waits `captchaSettleMs`, then reads the map's **own 128×128 pixels** from any hand/hotbar slot (or the nearest item-frame map within `captchaMapSearchRadius`), waiting up to `captchaMapDataWaitMs` for the map-data packet; else takes a HUD-less framebuffer screenshot downscaled to `captchaScreenMaxPx` (`captchaCaptureMode` forces `"map"` or `"screen"`). Every capture is dumped to `ycbotchallenge-logs/captcha-<time>-<mode>.png` (`captchaDebugPng`) as the fixture for prompt tuning;
+2. POSTs it to `captchaVlmEndpoint` (vLLM in WSL2 serving `Qwen/Qwen3-VL-4B-Instruct-FP8`; Windows `localhost:8000` reaches it once the server listens) with `captchaMapPrompt`, which asks for a **JSON array of single characters** and says the string is not a word; the answer is assembled in code (`ChatClassifier.parseAnswerArray`), case kept (`captchaPreserveCase`);
+3. pauses `captchaAnswerDelayMin/MaxMs` (reading it), then **types the answer through the chat screen** like every other send (`ChatTyper`: per-key log-normal delays, `typoChancePerChar` typo + backspace), `captcha_answer typed=true`;
+4. resumes when a `captchaSolvedPatterns` line arrives or after `captchaVerifyWaitMs` of silence. On a `captchaRetryPatterns` rejection the second (and last, `captchaMaxAnswers`) guess is the reading with the case of one look-alike letter flipped (`captchaCaseAmbiguous`), built in code with no second model call; a second rejection stops and pauses for you (`captcha_pause reason=answers-exhausted`). Never spam.
 
-Defaults are tuned to Sonar (what the hackathon runs): detection matches its "enter the text in chat" prompt (it never says "captcha"); the answer is 3–4 lowercase chars from `abcdefhjkmnoprstuxyz`, sent as plain chat; a wrong try prints "wrong answer" (matched for retry — and since Sonar re-uses the same image per try, retries feed rejected guesses back to the model with a bit of temperature); success sends *no* message, so silence for `captchaVerifyWaitMs` counts as solved. Sonar's budget is ~30s and 3 tries — the defaults fit comfortably. Note Sonar verifies in a login limbo: the mid-session case (re-verification while grinding) is what the auto-solver handles; the login-time captcha happens before you'd toggle the bot anyway.
+**Image size matters more than the prompt.** Bench 2026-09-03 on the `pnGe` capture with the local 4B model (0.1–0.4 s per call): the JSON-array prompt read it right on every input from 192 px to 1024 px wide (6/6 samples at temperature 0.7), while the native 1605 px screenshot and a 128 px map upscaled ×4 with nearest neighbour misread (`pinge`, `prGe`) and ×6 was garbage; ×2 nearest or ×4 bilinear read right. Hence `captchaMapScale` 2 (migrated from 4) with `captchaMapSmooth` for anything larger, and the screenshot cap. Word-shaped prompts (`ANSWER: <word>`) returned `pinc`/`pInGe`, and a per-letter colour enumeration inserted a phantom `i` every time: ask for characters, not words.
+
+**VLM health.** On enable and every `captchaVlmHealthIntervalMs` the bot GETs `captchaVlmHealthUrl` (`vlm_health online models latencyMs`); while it is down the HUD shows `captcha VLM: offline` in red and a captcha pauses at once (`captcha_pause reason=vlm-offline`) instead of retrying against a dead port. If the server serves exactly one model under another id it is used (`captchaVlmModelAuto`, `vlm_model_auto`). Start vLLM before the bot; check with:
+
+```bash
+curl http://127.0.0.1:8000/v1/models
+```
+
+Drew's serve line (WSL2, 3080 Ti): `vllm serve Qwen/Qwen3-VL-4B-Instruct-FP8 --host 0.0.0.0 --port 8000 --max-model-len 4096 --gpu-memory-utilization 0.75 --max-num-seqs 2 --limit-mm-per-prompt '{"image": 1, "video": 0}'`. A cloud OpenAI-compatible endpoint needs only `captchaVlmEndpoint`/`captchaVlmModel`; the key is read from the `YCBOT_VLM_KEY` environment variable (never the config file).
+
+Events: `captcha_detected`, `hotbar_snapshot`, `captcha_captured` (mode, where, px, png), `captcha_candidates` (raw reply), `captcha_answer` (typed, typos), `captcha_solved` / `captcha_failed` / `captcha_pause` (reason), `captcha_hint`, `chat_raw` (unclassified server lines, ≤ `chatRawPerMinute`), `vlm_health`, `vlm_model_auto`. Set `captchaAutoSolve: false` for the old hard pause.
+
+The Sonar defaults (chat-triggered captcha, 3–4 lowercase letters, `ANSWER`/`ALT` lines with `captchaPrompt` and `captchaRetryPrompt`) are kept for chat/GUI-triggered captchas with no map in reach.
 
 ## How it detects progression
 

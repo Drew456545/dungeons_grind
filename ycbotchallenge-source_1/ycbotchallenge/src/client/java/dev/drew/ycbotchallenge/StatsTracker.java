@@ -138,6 +138,11 @@ public class StatsTracker {
 
     /** Set when a captcha chat line is seen; consumed (and cleared) by the main tick. */
     public volatile String captchaMessage = null;
+    /** Last soft captcha hint line (captchaChatHintPatterns); the map detector confirms at once within 10s of it. */
+    public volatile long captchaHintAt = 0;
+    private final List<Pattern> captchaHintRes = new ArrayList<>();
+    /** Evidence net for unclassified server lines (chat_raw). */
+    private final RawChatNet rawNet;
 
     /** Rolling per-kill durations (tag -> death), ms. */
     public final ArrayDeque<Long> killDurations = new ArrayDeque<>();
@@ -167,6 +172,10 @@ public class StatsTracker {
         for (String p : cfg.ascensionChatPatterns) ascensionRes.add(compileLoose(p));
         for (String p : cfg.prestigeChatPatterns) prestigeRes.add(compileLoose(p));
         for (String p : cfg.captchaChatPatterns) captchaRes.add(compileLoose(p));
+        if (cfg.captchaChatHintPatterns != null) {
+            for (String p : cfg.captchaChatHintPatterns) captchaHintRes.add(compileLoose(p));
+        }
+        rawNet = new RawChatNet(cfg.chatRawPerMinute);
         if (cfg.upgradeFailPatterns != null)
             for (String p : cfg.upgradeFailPatterns) upgradeFailRes.add(compileLoose(p));
         if (cfg.upgradeMaxedPatterns != null)
@@ -677,9 +686,9 @@ public class StatsTracker {
         Integer levelSeen = null;
         for (ClientBossBar bar : bars.values()) {
             String title = bar.getName().getString();
-            // "Soul Harvest 2x Souls (12m, 9s)" -> key off text before the timer parens
-            int paren = title.lastIndexOf('(');
-            String key = (paren > 0 ? title.substring(0, paren) : title).trim();
+            // Identity only: no HP ("LVL4 Pig ❤8.48M") and no countdown ("Event: 12m 10s",
+            // "(12m, 9s)"), else every tick starts and ends a "boost".
+            String key = ChatClassifier.bossBarKey(title);
             if (!key.isEmpty()) current.add(key);
             Matcher lm = BOSS_LEVEL.matcher(bossBarPrefix(title));
             if (lm.find()) {
@@ -872,10 +881,23 @@ public class StatsTracker {
     private void onChatLine(String text, boolean overlay) {
         if (text.isEmpty()) return;
         long now = System.currentTimeMillis();
-        for (Pattern p : captchaRes) {
-            if (p.matcher(text).find()) {
-                captchaMessage = text;
-                break;
+        boolean ours = text.startsWith("[YCBotChallenge]");
+        // Action-bar text is never the captcha prompt (and repeats every tick).
+        if (!overlay && !ours) {
+            for (Pattern p : captchaRes) {
+                if (p.matcher(text).find()) {
+                    captchaMessage = text;
+                    break;
+                }
+            }
+            if (!ChatClassifier.isPlayerOrBroadcast(text)) {
+                for (Pattern p : captchaHintRes) {
+                    if (p.matcher(text).find()) {
+                        captchaHintAt = now;
+                        log("captcha_hint", "raw", text);
+                        break;
+                    }
+                }
             }
         }
         boolean known = false;
@@ -937,6 +959,10 @@ public class StatsTracker {
         // so the patterns can be tuned from evidence instead of guessing.
         if (!known && nearSend) {
             log("upgrade_response_raw", "raw", text);
+        } else if (!known && !ours && !ChatClassifier.isPlayerOrBroadcast(text) && rawNet.admit(text, now)) {
+            // Evidence net: server lines nothing classified (a captcha prompt, a warning,
+            // a new reward line) are kept, rate-limited, so the next unknown has a fixture.
+            log("chat_raw", "raw", text);
         }
     }
 

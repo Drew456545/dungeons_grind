@@ -59,6 +59,7 @@ public class HudOverlay {
             String en = enchants != null ? enchants.hudLine() : null;
             if (en != null) lines.add("§d" + en + "§r");
         }
+        if (on && captcha != null && captcha.vlmHudLine() != null) lines.add(captcha.vlmHudLine());
         String bals = stats.hudBalancesLine();
         if (bals != null) lines.add(bals);
         lines.add("kills " + combat.kills + "  §7(" + String.format("%.1f", stats.killsPerMinute(60_000)) + "/min · "

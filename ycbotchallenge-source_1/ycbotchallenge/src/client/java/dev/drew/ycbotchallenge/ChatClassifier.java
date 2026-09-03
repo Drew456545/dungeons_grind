@@ -102,6 +102,80 @@ public final class ChatClassifier {
         return SidebarParser.strip(title).toLowerCase(Locale.ROOT).contains("rebirth");
     }
 
+    /**
+     * Boss-bar identity without its live parts: the heart HP of a mob bar
+     * ("[EPIC] LVL4 Pig ❤8.48M" → "[EPIC] LVL4 Pig") and the countdown of an
+     * event bar ("2x Essence Event: 12m 10s", "Soul Harvest 2x Souls (12m, 9s)").
+     * Keying boosts on this stops every HP tick and timer tick logging a
+     * boost_start/boost_end pair (1500 pairs in one 0.9.12 session).
+     */
+    private static final Pattern BAR_TIMER = Pattern.compile("(?i)\\s*:?\\s*(?:\\d+\\s*[hms]\\b[\\s,]*)+$");
+    private static final Pattern BAR_PARENS = Pattern.compile("\\s*\\([^)]*\\)\\s*$");
+
+    public static String bossBarKey(String title) {
+        if (title == null) return "";
+        String s = title;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == 0x2764 || c == 0x2665) { s = s.substring(0, i); break; }
+        }
+        s = BAR_PARENS.matcher(s).replaceAll("");
+        s = BAR_TIMER.matcher(s).replaceAll("");
+        return s.replaceAll("\\s+", " ").trim();
+    }
+
+    /**
+     * The captcha reading from a map-prompt reply: the JSON array after ANSWER:
+     * (or the first array anywhere), one character per element, joined. Bench
+     * 2026-09-03: asking for characters as an array is what stops Qwen3-VL-4B
+     * turning "pnGe" into a word. Null when there is no array or it is empty.
+     */
+    private static final Pattern ANSWER_ARRAY = Pattern.compile("\\[([^\\]]*)\\]");
+    private static final Pattern ARRAY_ITEM = Pattern.compile("\"([^\"]*)\"|'([^']*)'|([^,\\s\"']+)");
+
+    public static String parseAnswerArray(String content, boolean preserveCase) {
+        if (content == null) return null;
+        int at = content.toUpperCase(Locale.ROOT).indexOf("ANSWER");
+        Matcher m = ANSWER_ARRAY.matcher(content);
+        boolean found = at >= 0 && m.find(at);
+        if (!found) found = m.find(0);
+        if (!found) return null;
+        StringBuilder sb = new StringBuilder();
+        Matcher it = ARRAY_ITEM.matcher(m.group(1));
+        while (it.find()) {
+            String s = it.group(1) != null ? it.group(1) : it.group(2) != null ? it.group(2) : it.group(3);
+            if (s == null) continue;
+            for (char c : s.toCharArray()) {
+                if (!Character.isWhitespace(c)) sb.append(c);
+            }
+        }
+        if (sb.length() == 0) return null;
+        String out = sb.toString();
+        return preserveCase ? out : out.toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Second guess for a case-sensitive captcha: flip the case of the first letter
+     * whose upper and lower glyphs look alike ({@code ambiguous}), else the first
+     * letter. Null when the answer has no letters.
+     */
+    public static String caseFlipAlt(String answer, String ambiguous) {
+        if (answer == null || answer.isEmpty()) return null;
+        String amb = ambiguous == null ? "" : ambiguous.toLowerCase(Locale.ROOT);
+        int idx = -1;
+        for (int i = 0; i < answer.length() && idx < 0; i++) {
+            char c = answer.charAt(i);
+            if (Character.isLetter(c) && amb.indexOf(Character.toLowerCase(c)) >= 0) idx = i;
+        }
+        for (int i = 0; i < answer.length() && idx < 0; i++) {
+            if (Character.isLetter(answer.charAt(i))) idx = i;
+        }
+        if (idx < 0) return null;
+        char c = answer.charAt(idx);
+        char f = Character.isUpperCase(c) ? Character.toLowerCase(c) : Character.toUpperCase(c);
+        return answer.substring(0, idx) + f + answer.substring(idx + 1);
+    }
+
     /** Reward Summary header seconds, e.g. "Reward Summary: (60s)" → 60. */
     public static Integer summaryWindowSeconds(String stripped, Pattern headerRe) {
         if (stripped == null || headerRe == null) return null;

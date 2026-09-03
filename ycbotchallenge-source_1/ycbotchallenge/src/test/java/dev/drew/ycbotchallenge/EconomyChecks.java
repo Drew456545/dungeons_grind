@@ -52,6 +52,7 @@ public final class EconomyChecks {
         n += rebirth();
         n += realism();
         n += stateStore();
+        n += captcha();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -566,6 +567,66 @@ public final class EconomyChecks {
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
             System.err.println("FAIL stateStore: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    /** 0.9.13 held-map captcha: pure parsing, second guess, boss-bar identity, evidence net, slot diff, image cap. */
+    private static int captcha() {
+        int n = 0;
+        // Map-prompt reply (bench 2026-09-03): the JSON array after ANSWER:, case kept.
+        n += eq("answer array", ChatClassifier.parseAnswerArray("ANSWER: [\"p\",\"n\",\"G\",\"e\"]", true), "pnGe");
+        n += eq("answer array lowercased", ChatClassifier.parseAnswerArray("ANSWER: [\"p\",\"n\",\"G\",\"e\"]", false), "pnge");
+        n += eq("bare array", ChatClassifier.parseAnswerArray("[\"p\",\"n\",\"G\",\"e\"]", true), "pnGe");
+        n += eq("array after prose", ChatClassifier.parseAnswerArray(
+            "The letters are:\nANSWER: [\"D\", \"o\", \"m\"]\nALT: [\"D\",\"O\",\"m\"]", true), "Dom");
+        n += eq("unquoted items", ChatClassifier.parseAnswerArray("ANSWER: [p, n, G, e]", true), "pnGe");
+        n += eq("no array", ChatClassifier.parseAnswerArray("ANSWER: pnGe", true) == null, true);
+        n += eq("empty array", ChatClassifier.parseAnswerArray("ANSWER: []", true) == null, true);
+        n += eq("null reply", ChatClassifier.parseAnswerArray(null, true) == null, true);
+        // Second guess: flip the first look-alike letter, else the first letter.
+        n += eq("alt flips ambiguous", ChatClassifier.caseFlipAlt("abcd", "cosuvwxz"), "abCd");
+        n += eq("alt flips first letter", ChatClassifier.caseFlipAlt("pnGe", "cosuvwxz"), "PnGe");
+        n += eq("alt lowers", ChatClassifier.caseFlipAlt("SnGe", "cosuvwxz"), "snGe");
+        n += eq("alt digits only", ChatClassifier.caseFlipAlt("1234", "cosuvwxz") == null, true);
+        // Boss-bar identity without HP / timers (titles as logged in the 0.9.12 session).
+        n += eq("bar key: mob hp", ChatClassifier.bossBarKey("[EPIC] LVL4 Pig ❤8.48M"), "[EPIC] LVL4 Pig");
+        n += eq("bar key: timer colon", ChatClassifier.bossBarKey("2x Essence Event: 12m 10s"), "2x Essence Event");
+        n += eq("bar key: timer parens", ChatClassifier.bossBarKey("Soul Harvest 2x Souls (12m, 9s)"), "Soul Harvest 2x Souls");
+        n += eq("bar key: seconds only", ChatClassifier.bossBarKey("2x Essence Event: 59s"), "2x Essence Event");
+        n += eq("bar key: plain", ChatClassifier.bossBarKey("[RARE] LVL6 Cow"), "[RARE] LVL6 Cow");
+        // Raw chat net: 3/min, repeats dropped.
+        RawChatNet net = new RawChatNet(3);
+        n += eq("net admits", net.admit("a", 0), true);
+        n += eq("net dedups", net.admit("a", 1000), false);
+        n += eq("net admits b", net.admit("b", 1000), true);
+        n += eq("net admits c", net.admit("c", 1000), true);
+        n += eq("net caps", net.admit("d", 1000), false);
+        n += eq("net new minute", net.admit("d", 61_000), true);
+        n += eq("net off", new RawChatNet(0).admit("x", 0), false);
+        // Map-slot diff: the first newly-mapped slot; hand slots always, hotbar only with anySlot.
+        boolean[] known = new boolean[11];
+        int[] cur = new int[11];
+        java.util.Arrays.fill(cur, -1);
+        n += eq("no maps", CaptchaDetector.newMapSlot(known, cur, null, true), -1);
+        cur[8] = 42;
+        n += eq("hotbar 9 new", CaptchaDetector.newMapSlot(known, cur, null, true), 8);
+        n += eq("hotbar ignored without anySlot", CaptchaDetector.newMapSlot(known, cur, null, false), -1);
+        cur[9] = 42;
+        n += eq("held wins without anySlot", CaptchaDetector.newMapSlot(known, cur, null, false), 9);
+        n += eq("muted id skipped", CaptchaDetector.newMapSlot(known, cur, 42, true), -1);
+        known[8] = true;
+        n += eq("known slot skipped", CaptchaDetector.newMapSlot(known, cur, null, true), 9);
+        // Screenshot cap: 2000 px wide -> 1024 (model hallucinates above ~1024); small images untouched.
+        try {
+            java.awt.image.BufferedImage big = new java.awt.image.BufferedImage(2000, 1000, java.awt.image.BufferedImage.TYPE_INT_RGB);
+            byte[] png = CaptchaImages.encodePng(big);
+            n += eq("downscaled width", CaptchaImages.pngWidth(CaptchaImages.downscalePng(png, 1024)), 1024);
+            n += eq("small untouched", CaptchaImages.downscalePng(png, 4096) == png, true);
+            n += eq("map x2 nearest", CaptchaImages.scale(new java.awt.image.BufferedImage(128, 128, java.awt.image.BufferedImage.TYPE_INT_RGB), 256, false).getWidth(), 256);
+        } catch (Exception ex) {
+            System.err.println("FAIL images: " + ex);
             n++;
         }
         return n;

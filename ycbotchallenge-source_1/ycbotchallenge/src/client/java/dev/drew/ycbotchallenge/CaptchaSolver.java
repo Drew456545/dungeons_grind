@@ -2,10 +2,10 @@ package dev.drew.ycbotchallenge;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -13,16 +13,17 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import javax.imageio.ImageIO;
 import net.minecraft.block.MapColor;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.texture.NativeImage;
 import net.minecraft.client.util.ScreenshotRecorder;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.MapIdComponent;
@@ -34,19 +35,20 @@ import net.minecraft.item.map.MapState;
 import net.minecraft.text.Text;
 
 /**
- * Auto-solves the organizers' map captcha with a local Qwen3-VL served by vLLM.
+ * Auto-solves the map captcha with a local Qwen3-VL served by vLLM.
  *
- * Flow: detect (chat/gui, from the existing pause path) -> settle -> capture
- * (held map pixels > item-frame map pixels > framebuffer screenshot) -> POST to
- * the local OpenAI-compatible endpoint -> parse "ANSWER: xxx" -> send to chat
- * -> watch for a success/retry message -> resume the grind (or retry, then
- * fall back to the old pause-for-human behavior).
+ * Flow: detect (held/hotbar map, chat line or server GUI) -> settle -> capture
+ * (the map's own 128x128 pixels from any hand/hotbar slot or a nearby item
+ * frame; else a HUD-less, downscaled screenshot) -> POST to the local
+ * OpenAI-compatible endpoint -> parse the answer -> type it in chat like a
+ * person -> watch for a success/retry message -> resume the grind (a second,
+ * case-flipped guess on rejection; then hand over to the human).
  *
  * All Minecraft state is touched on the client tick thread; only the HTTP
- * round-trip and PNG encoding happen off-thread.
+ * round-trips and PNG encoding happen off-thread.
  */
 public class CaptchaSolver {
-    private enum Phase { IDLE, SETTLING, CAPTURING, SOLVING, TYPING, AWAITING_RESULT }
+    private enum Phase { IDLE, SETTLING, HUD_HIDE, CAPTURING, SOLVING, TYPING, TYPING_RUN, AWAITING_RESULT }
 
     /** What the client should do when solving ends. */
     public interface Callbacks {
@@ -54,47 +56,68 @@ public class CaptchaSolver {
         void onFailed(MinecraftClient client, String reason, String detail);
     }
 
-    /** Matches "ANSWER: xxx" and "ALT: yyy" lines — the model returns a ranked top-3. */
+    /** Sonar path: "ANSWER: xxx" and "ALT: yyy" lines. */
     private static final Pattern ANSWER_RE =
         Pattern.compile("(?:ANSWER|ALT)\\s*\\d*\\s*:\\s*([^\\s]+)", Pattern.CASE_INSENSITIVE);
     private static final Gson GSON = new Gson();
+
+    private record MapHit(MapState state, boolean stackFound, String where) {}
+    private record Health(boolean online, List<String> models, long latencyMs, String error) {}
 
     private final YCBotChallengeConfig cfg;
     private final Callbacks callbacks;
     private final HttpClient http;
     private final List<Pattern> solvedRes = new ArrayList<>();
     private final List<Pattern> retryRes = new ArrayList<>();
+    private final ChatTyper typer;
+    private final Path debugDir;
     private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
     private long phaseDeadline = 0;
+    private long settleStart = 0;
     private int attempt = 0;
-    /** Answers actually sent to chat for the current captcha — hard-capped, never spam. */
+    /** Answers actually sent to chat for the current captcha: hard-capped, never spam. */
     private int answersSent = 0;
     private String source = null;
+    /** "map" (rendered from map data) or "screen" (framebuffer). */
+    private String captureMode = null;
+    private String captureWhere = null;
+    /** Whether the last model call used the map prompt (JSON letters, case kept). */
+    private boolean mapPromptUsed = false;
+    /** HUD visibility to restore after a screenshot (null = nothing to restore). */
+    private Boolean hudRestore = null;
 
     // written by background threads / message handler, consumed on the tick thread
     private final AtomicReference<byte[]> capturedPng = new AtomicReference<>();
     private final AtomicReference<String> captureError = new AtomicReference<>();
     private final AtomicReference<List<String>> vlmCandidates = new AtomicReference<>();
+    private final AtomicReference<String> vlmRaw = new AtomicReference<>();
     private final AtomicReference<String> vlmError = new AtomicReference<>();
+    private final AtomicBoolean vlmConnectFailed = new AtomicBoolean(false);
+    private final AtomicReference<Health> healthResult = new AtomicReference<>();
     /** Ranked guesses from the last model call; rejected ones are consumed in order. */
     private final List<String> candidates = new ArrayList<>();
-    /** The captcha image we're working on — kept so a rejection can re-prompt
-     *  the model on the same image instantly (prefix-cached, ~1s) without
-     *  re-capturing. */
+    /** The captcha image we're working on, kept so a rejection can re-prompt without re-capturing. */
     private byte[] lastPng = null;
     private volatile String feedback = null; // "solved" | "retry"
     private String lastSentAnswer = null;
-    /** Guess waiting out the human-ish typing delay before being sent. */
+    /** Guess waiting out the human-ish reading pause before being typed. */
     private String pendingAnswer = null;
-    /** Sonar re-uses the same image across tries, so a deterministic retry would
-     *  repeat the identical wrong guess — remember rejects and feed them back. */
+    private String pendingOut = null;
+    /** The server re-uses the same image across tries: remember rejects and feed them back. */
     private final List<String> wrongAnswers = new ArrayList<>();
 
-    public CaptchaSolver(YCBotChallengeConfig cfg, Callbacks callbacks) {
+    // VLM health
+    private volatile boolean vlmOnline = true;
+    private boolean healthInFlight = false;
+    private long lastHealthAt = 0;
+
+    public CaptchaSolver(YCBotChallengeConfig cfg, Callbacks callbacks, Path debugDir) {
         this.cfg = cfg;
         this.callbacks = callbacks;
+        this.debugDir = debugDir;
+        this.typer = new ChatTyper(cfg);
         this.http = HttpClient.newBuilder()
             // uvicorn (vLLM's server) rejects Java's default h2c upgrade attempt
             // with 400 "Unsupported upgrade request" — force plain HTTP/1.1
@@ -116,19 +139,27 @@ public class CaptchaSolver {
 
     public boolean isActive() { return phase != Phase.IDLE; }
 
+    public boolean vlmOnline() { return vlmOnline; }
+
     public String hudLine() {
         if (phase == Phase.IDLE) return null;
         String what = switch (phase) {
             case SETTLING -> "waiting for captcha to render";
-            case CAPTURING -> "capturing";
+            case HUD_HIDE, CAPTURING -> "capturing";
             case SOLVING -> "asking Qwen";
-            case TYPING -> "typing answer...";
+            case TYPING -> "reading it...";
+            case TYPING_RUN -> "typing answer...";
             case AWAITING_RESULT -> lastSentAnswer != null
                 ? "tried '" + lastSentAnswer + "' (" + answersSent + "/" + cfg.captchaMaxAnswers + "), verifying"
                 : "answer sent, verifying";
             default -> "";
         };
         return "§bcaptcha: " + what + "§r";
+    }
+
+    /** Red HUD line while the model server is unreachable (null when fine). */
+    public String vlmHudLine() {
+        return vlmOnline ? null : "§ccaptcha VLM: offline — start vLLM§r";
     }
 
     private void log(String type, Object... kv) {
@@ -142,20 +173,37 @@ public class CaptchaSolver {
         answersSent = 0;
         feedback = null;
         lastSentAnswer = null;
+        captureMode = null;
+        captureWhere = null;
+        mapPromptUsed = false;
         wrongAnswers.clear();
         candidates.clear();
         lastPng = null;
+        pendingAnswer = null;
+        pendingOut = null;
         capturedPng.set(null);
         captureError.set(null);
         vlmCandidates.set(null);
+        vlmRaw.set(null);
         vlmError.set(null);
+        vlmConnectFailed.set(false);
+        log("captcha_detected", "source", detectSource, "detail", detail, "autoSolve", true, "vlmOnline", vlmOnline);
+        if (!vlmOnline) {
+            // No 3x20s of retries against a dead port: hand over right away.
+            phase = Phase.SETTLING;
+            fail(client, "vlm-offline", "model server unreachable at " + cfg.captchaVlmHealthUrl);
+            return;
+        }
         phase = Phase.SETTLING;
-        phaseDeadline = System.currentTimeMillis() + cfg.captchaSettleMs;
-        log("captcha_detected", "source", detectSource, "detail", detail, "autoSolve", true);
+        settleStart = System.currentTimeMillis();
+        phaseDeadline = settleStart + cfg.captchaSettleMs;
         say(client, "§e[YCBotChallenge] captcha detected — solving with local Qwen...");
     }
 
     public void cancel() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        typer.cancel(client);
+        restoreHud(client);
         phase = Phase.IDLE;
     }
 
@@ -170,34 +218,141 @@ public class CaptchaSolver {
         }
     }
 
+    // ---------------------------------------------------------------- health
+
+    /** Call every tick while the bot is enabled and no solve is running. */
+    public void tickIdle(long now) {
+        pollHealth();
+        if (now - lastHealthAt >= Math.max(10_000, cfg.captchaVlmHealthIntervalMs)) checkHealth(now);
+    }
+
+    /** Async GET of the models list; result lands in {@link #pollHealth()}. */
+    public void checkHealth(long now) {
+        if (healthInFlight) return;
+        lastHealthAt = now;
+        if (cfg.captchaVlmHealthUrl == null || cfg.captchaVlmHealthUrl.isBlank()) return;
+        healthInFlight = true;
+        long t0 = System.currentTimeMillis();
+        HttpRequest req;
+        try {
+            HttpRequest.Builder b = HttpRequest.newBuilder()
+                .uri(URI.create(cfg.captchaVlmHealthUrl))
+                .timeout(Duration.ofMillis(Math.max(500, cfg.captchaVlmHealthTimeoutMs)))
+                .GET();
+            String key = apiKey();
+            if (key != null) b.header("Authorization", "Bearer " + key);
+            req = b.build();
+        } catch (Exception e) {
+            healthResult.set(new Health(false, List.of(), 0, "bad url: " + e.getMessage()));
+            return;
+        }
+        http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((resp, err) -> {
+            long dt = System.currentTimeMillis() - t0;
+            if (err != null) {
+                healthResult.set(new Health(false, List.of(), dt, rootMessage(err)));
+                return;
+            }
+            if (resp.statusCode() != 200) {
+                healthResult.set(new Health(false, List.of(), dt, "HTTP " + resp.statusCode()));
+                return;
+            }
+            List<String> models = new ArrayList<>();
+            try {
+                JsonElement data = JsonParser.parseString(resp.body()).getAsJsonObject().get("data");
+                if (data != null && data.isJsonArray()) {
+                    for (JsonElement e : data.getAsJsonArray()) {
+                        JsonElement id = e.getAsJsonObject().get("id");
+                        if (id != null) models.add(id.getAsString());
+                    }
+                }
+            } catch (Exception ignored) { }
+            healthResult.set(new Health(true, models, dt, null));
+        });
+    }
+
+    private void pollHealth() {
+        Health h = healthResult.getAndSet(null);
+        if (h == null) return;
+        healthInFlight = false;
+        boolean was = vlmOnline;
+        vlmOnline = h.online;
+        log("vlm_health", "online", h.online, "models", h.models, "latencyMs", h.latencyMs,
+            "error", h.error, "url", cfg.captchaVlmHealthUrl, "changed", was != h.online);
+        if (h.online && cfg.captchaVlmModelAuto && h.models.size() == 1
+            && !h.models.get(0).equals(cfg.captchaVlmModel)) {
+            log("vlm_model_auto", "from", cfg.captchaVlmModel, "to", h.models.get(0));
+            cfg.captchaVlmModel = h.models.get(0);
+        }
+    }
+
+    private String apiKey() {
+        String env = System.getenv("YCBOT_VLM_KEY");
+        if (env != null && !env.isBlank()) return env.trim();
+        return null;
+    }
+
+    private static String rootMessage(Throwable t) {
+        Throwable c = t;
+        while (c.getCause() != null && c.getCause() != c) c = c.getCause();
+        return c.getClass().getSimpleName() + (c.getMessage() != null ? ": " + c.getMessage() : "");
+    }
+
+    private static boolean isConnectFailure(Throwable t) {
+        Throwable c = t;
+        while (c != null) {
+            if (c instanceof java.net.ConnectException || c instanceof java.net.http.HttpConnectTimeoutException) return true;
+            c = c.getCause() == c ? null : c.getCause();
+        }
+        return false;
+    }
+
+    // ------------------------------------------------------------------ tick
+
     /** Call every client tick while active. Keeps the player inert; drives the state machine. */
     public void tick(MinecraftClient client) {
         if (client.player == null || client.world == null) { cancel(); return; }
         long now = System.currentTimeMillis();
+        pollHealth();
         switch (phase) {
             case SETTLING -> {
-                if (now >= phaseDeadline) startCapture(client);
+                if (now >= phaseDeadline) startCapture(client, now);
+            }
+            case HUD_HIDE -> {
+                if (now >= phaseDeadline) takeScreenshot(client, now);
             }
             case CAPTURING -> {
                 String err = captureError.getAndSet(null);
-                if (err != null) { fail(client, "capture", err); return; }
+                if (err != null) { restoreHud(client); fail(client, "capture", err); return; }
                 byte[] png = capturedPng.getAndSet(null);
                 if (png != null) {
+                    restoreHud(client);
                     lastPng = png;
-                    log("captcha_captured", "bytes", png.length, "attempt", attempt);
+                    String dumped = dumpPng(png);
+                    log("captcha_captured", "mode", captureMode, "where", captureWhere, "bytes", png.length,
+                        "px", CaptchaImages.pngWidth(png), "png", dumped, "attempt", attempt);
                     startSolve(png);
                 } else if (now >= phaseDeadline) {
+                    restoreHud(client);
                     fail(client, "capture", "screenshot never arrived");
                 }
             }
             case SOLVING -> {
+                if (vlmConnectFailed.getAndSet(false)) {
+                    vlmOnline = false;
+                    String err = vlmError.getAndSet(null);
+                    log("vlm_health", "online", false, "error", err, "via", "solve", "changed", true);
+                    fail(client, "vlm-offline", err != null ? err : "connection refused");
+                    return;
+                }
                 String err = vlmError.getAndSet(null);
                 if (err != null) { retryOrFail(client, "vlm", err); return; }
                 List<String> got = vlmCandidates.getAndSet(null);
                 if (got != null) {
                     candidates.clear();
                     candidates.addAll(got); // ranked, de-duped, best first
-                    log("captcha_candidates", "candidates", candidates, "attempt", attempt);
+                    log("captcha_candidates", "candidates", candidates, "raw", vlmRaw.getAndSet(null),
+                        "prompt", mapPromptUsed ? "map" : "sonar",
+                        "preserveCase", mapPromptUsed && cfg.captchaPreserveCase, "attempt", attempt);
                     submitNextCandidate(client, now);
                 } else if (now >= phaseDeadline) {
                     retryOrFail(client, "vlm", "timed out waiting for the model");
@@ -205,12 +360,25 @@ public class CaptchaSolver {
             }
             case TYPING -> {
                 if (now >= phaseDeadline && pendingAnswer != null) {
-                    String toSend = pendingAnswer;
+                    String answer = pendingAnswer;
                     pendingAnswer = null;
-                    sendAnswer(client, toSend);
-                    feedback = null;
-                    phase = Phase.AWAITING_RESULT;
-                    phaseDeadline = now + cfg.captchaVerifyWaitMs;
+                    String out = cfg.captchaAnswerTemplate.replace("{answer}", answer);
+                    pendingOut = out;
+                    if (typedSend(client)) {
+                        typer.begin(client, out, now);
+                        phase = Phase.TYPING_RUN;
+                    } else {
+                        sendDirect(client, answer, out, "gui-open");
+                    }
+                }
+            }
+            case TYPING_RUN -> {
+                ChatTyper.State s = typer.tick(client, now);
+                if (s == ChatTyper.State.DONE) {
+                    afterSend(client, now, lastCandidate(), pendingOut, true, typer.typos(), null);
+                } else if (s == ChatTyper.State.FAILED) {
+                    log("captcha_type_failed", "reason", typer.failReason(), "attempt", attempt);
+                    sendDirect(client, lastCandidate(), pendingOut, typer.failReason());
                 }
             }
             case AWAITING_RESULT -> {
@@ -220,17 +388,20 @@ public class CaptchaSolver {
                         wrongAnswers.add(lastSentAnswer);
                     }
                     candidates.remove(lastSentAnswer);
+                    boolean altLeft = candidates.stream().anyMatch(c -> !wrongAnswers.contains(c));
                     if (answersSent >= cfg.captchaMaxAnswers) {
-                        // Hard cap — STOP. Never spam answers; hand over to the human.
-                        fail(client, "server", answersSent + " guess(es) rejected — stopping, no spam");
+                        // Hard cap: STOP. Never spam answers; hand over to the human.
+                        fail(client, "answers-exhausted", answersSent + " guess(es) rejected — stopping, no spam");
+                    } else if (mapPromptUsed && altLeft) {
+                        // The map read is unchanged; the case-flipped second guess goes next.
+                        submitNextCandidate(client, now);
                     } else if (lastPng != null) {
-                        // Re-prompt the model on the same image with the rejection
-                        // as feedback (flip 3<->4 letters, etc). Prefill is cached,
-                        // so this is ~1s — smarter than a pre-committed ALT.
+                        // Re-prompt the model on the same image with the rejection as
+                        // feedback. Prefill is cached, so this is fast.
                         attempt++;
                         log("captcha_reprompt", "rejected", wrongAnswers, "attempt", attempt);
                         startSolve(lastPng);
-                    } else if (!candidates.isEmpty()) {
+                    } else if (altLeft) {
                         submitNextCandidate(client, now);
                     } else {
                         fail(client, "server", "rejected with nothing left to try");
@@ -238,7 +409,8 @@ public class CaptchaSolver {
                 } else if ("solved".equals(fb) || now >= phaseDeadline) {
                     phase = Phase.IDLE;
                     log("captcha_solved", "attempt", attempt, "answer", lastSentAnswer,
-                        "confirmed", "solved".equals(fb));
+                        "confirmed", "solved".equals(fb), "mode", captureMode, "source", source,
+                        "answersSent", answersSent);
                     say(client, "§a[YCBotChallenge] captcha solved — resuming.");
                     callbacks.onSolved(client);
                 }
@@ -247,10 +419,21 @@ public class CaptchaSolver {
         }
     }
 
+    private String lastCandidate() {
+        return pendingOut == null ? null : candidateFor(pendingOut);
+    }
+
+    private String candidateFor(String out) {
+        for (String c : candidates) {
+            if (cfg.captchaAnswerTemplate.replace("{answer}", c).equals(out)) return c;
+        }
+        return out;
+    }
+
     /** Send the top remaining candidate, respecting the hard answer cap. */
     private void submitNextCandidate(MinecraftClient client, long now) {
         if (answersSent >= cfg.captchaMaxAnswers) {
-            fail(client, "server", "answer cap (" + cfg.captchaMaxAnswers + ") reached — stopping, no spam");
+            fail(client, "answers-exhausted", "answer cap (" + cfg.captchaMaxAnswers + ") reached — stopping, no spam");
             return;
         }
         String next = null;
@@ -264,12 +447,12 @@ public class CaptchaSolver {
             else fail(client, "server", "no candidates left after rejection — stopping, no spam");
             return;
         }
-        // Human-ish pause before "typing" the answer.
+        // A person needs a moment to read the map before typing.
         pendingAnswer = next;
         phase = Phase.TYPING;
-        long min = Math.max(0, cfg.captchaAnswerDelayMinMs);
-        long max = Math.max(min + 1, cfg.captchaAnswerDelayMaxMs);
-        phaseDeadline = now + java.util.concurrent.ThreadLocalRandom.current().nextLong(min, max);
+        int min = Math.max(0, cfg.captchaAnswerDelayMinMs);
+        int max = Math.max(min + 1, cfg.captchaAnswerDelayMaxMs);
+        phaseDeadline = now + HumanTiming.logNormalMs(min, max);
     }
 
     private void retryOrFail(MinecraftClient client, String stage, String why) {
@@ -285,63 +468,95 @@ public class CaptchaSolver {
         vlmCandidates.set(null);
         vlmError.set(null);
         phase = Phase.SETTLING;
-        phaseDeadline = System.currentTimeMillis() + cfg.captchaSettleMs;
+        settleStart = System.currentTimeMillis();
+        phaseDeadline = settleStart + cfg.captchaSettleMs;
     }
 
     private void fail(MinecraftClient client, String stage, String why) {
+        typer.cancel(client);
+        restoreHud(client);
         phase = Phase.IDLE;
-        log("captcha_failed", "stage", stage, "why", why, "attempts", attempt);
+        log("captcha_failed", "stage", stage, "why", why, "attempts", attempt, "answersSent", answersSent,
+            "source", source, "mode", captureMode);
         callbacks.onFailed(client, stage, why);
     }
 
     // ---------------------------------------------------------------- capture
 
-    private void startCapture(MinecraftClient client) {
+    private void startCapture(MinecraftClient client, long now) {
         String mode = cfg.captchaCaptureMode;
-        byte[] mapPng = null;
         if (!"screen".equals(mode)) {
-            MapState map = findCaptchaMap(client);
-            if (map != null) {
+            MapHit hit = findCaptchaMap(client);
+            if (hit.state() != null) {
                 try {
-                    mapPng = renderMapPng(map, cfg.captchaMapScale);
+                    byte[] mapPng = renderMapPng(hit.state(), cfg.captchaMapScale, cfg.captchaMapSmooth);
+                    captureMode = "map";
+                    captureWhere = hit.where();
+                    capturedPng.set(mapPng);
+                    phase = Phase.CAPTURING;
+                    phaseDeadline = now + 5000;
+                    return;
                 } catch (Exception e) {
                     YCBotChallengeClient.LOGGER.warn("Map render failed, falling back to screenshot: {}", e.toString());
                 }
+            } else if (hit.stackFound()) {
+                // The item is here but its pixels travel in a later packet.
+                if (now < settleStart + cfg.captchaSettleMs + cfg.captchaMapDataWaitMs) return;
+                log("captcha_map_data_timeout", "where", hit.where(), "waitedMs", now - settleStart);
             }
         }
-        if (mapPng != null) {
-            capturedPng.set(mapPng);
-            phase = Phase.CAPTURING;
-            phaseDeadline = System.currentTimeMillis() + 5000;
-            return;
-        }
         if ("map".equals(mode)) {
-            // explicitly map-only and no map found — treat as retryable (map may still be loading)
-            retryOrFail(client, "capture", "no filled map in hands or nearby item frames");
+            retryOrFail(client, "capture", "no filled map in hands, hotbar or nearby item frames");
             return;
         }
-        // framebuffer screenshot; consumer runs later on the render thread
+        captureMode = "screen";
+        captureWhere = "framebuffer";
+        if (cfg.captchaScreenHideHud && !client.options.hudHidden) {
+            hudRestore = Boolean.FALSE;
+            client.options.hudHidden = true;
+            phase = Phase.HUD_HIDE;
+            phaseDeadline = now + 120; // let a HUD-less frame render first
+            return;
+        }
+        takeScreenshot(client, now);
+    }
+
+    private void takeScreenshot(MinecraftClient client, long now) {
         phase = Phase.CAPTURING;
-        phaseDeadline = System.currentTimeMillis() + 5000;
+        phaseDeadline = now + 5000;
+        int maxPx = cfg.captchaScreenMaxPx;
         ScreenshotRecorder.takeScreenshot(client.getFramebuffer(), image -> {
             try (image) {
                 Path tmp = Files.createTempFile("ycbot-captcha", ".png");
                 image.writeTo(tmp);
                 byte[] bytes = Files.readAllBytes(tmp);
                 Files.deleteIfExists(tmp);
-                capturedPng.set(bytes);
+                capturedPng.set(CaptchaImages.downscalePng(bytes, maxPx));
             } catch (Exception e) {
                 captureError.set("screenshot: " + e);
             }
         });
     }
 
-    /** Held filled map (either hand) first, then the nearest item-frame map. */
-    private MapState findCaptchaMap(MinecraftClient client) {
-        MapState held = mapFromStack(client, client.player.getMainHandStack());
-        if (held == null) held = mapFromStack(client, client.player.getOffHandStack());
-        if (held != null) return held;
+    private void restoreHud(MinecraftClient client) {
+        if (hudRestore != null && client != null && client.options != null) {
+            client.options.hudHidden = hudRestore;
+        }
+        hudRestore = null;
+    }
 
+    /** Main hand, off hand, any hotbar slot, then the nearest item-frame map. */
+    private MapHit findCaptchaMap(MinecraftClient client) {
+        ItemStack main = client.player.getMainHandStack();
+        if (CaptchaDetector.mapId(main) >= 0) return new MapHit(mapFromStack(client, main), true, "main");
+        ItemStack off = client.player.getOffHandStack();
+        if (CaptchaDetector.mapId(off) >= 0) return new MapHit(mapFromStack(client, off), true, "off");
+        if (cfg.captchaMapAnySlot) {
+            for (int i = 0; i < 9; i++) {
+                ItemStack s = client.player.getInventory().getStack(i);
+                if (CaptchaDetector.mapId(s) >= 0) return new MapHit(mapFromStack(client, s), true, "hotbar" + (i + 1));
+            }
+        }
         ItemFrameEntity nearest = null;
         double best = Double.MAX_VALUE;
         for (Entity e : client.world.getEntities()) {
@@ -349,7 +564,8 @@ public class CaptchaSolver {
             double d = client.player.distanceTo(frame);
             if (d <= cfg.captchaMapSearchRadius && d < best) { best = d; nearest = frame; }
         }
-        return nearest != null ? mapFromStack(client, nearest.getHeldItemStack()) : null;
+        if (nearest != null) return new MapHit(mapFromStack(client, nearest.getHeldItemStack()), true, "frame");
+        return new MapHit(null, false, null);
     }
 
     private MapState mapFromStack(MinecraftClient client, ItemStack stack) {
@@ -359,41 +575,61 @@ public class CaptchaSolver {
         return FilledMapItem.getMapState(id, client.world);
     }
 
-    /** 128x128 map colors -> upscaled PNG (nearest neighbor keeps glyph edges crisp). */
-    static byte[] renderMapPng(MapState state, int scale) throws Exception {
-        int s = Math.max(1, scale);
-        BufferedImage img = new BufferedImage(128 * s, 128 * s, BufferedImage.TYPE_INT_RGB);
+    /**
+     * 128x128 map colors -> PNG at {@code scale}x. Nearest neighbour up to x2;
+     * beyond that bilinear when {@code smooth} (bench 2026-09-03: nearest x4 made
+     * the model read "pnGe" as "prGe", x2 and smoothed x4 read it right).
+     */
+    static byte[] renderMapPng(MapState state, int scale, boolean smooth) throws Exception {
+        BufferedImage base = new BufferedImage(128, 128, BufferedImage.TYPE_INT_RGB);
         for (int z = 0; z < 128; z++) {
             for (int x = 0; x < 128; x++) {
                 int packed = state.colors[x + z * 128] & 0xFF;
                 int abgr = MapColor.getRenderColor(packed); // vanilla packs this ABGR
                 int rgb = ((abgr & 0xFF) << 16) | (abgr & 0xFF00) | ((abgr >> 16) & 0xFF);
-                for (int dz = 0; dz < s; dz++) {
-                    for (int dx = 0; dx < s; dx++) {
-                        img.setRGB(x * s + dx, z * s + dz, rgb);
-                    }
-                }
+                base.setRGB(x, z, rgb);
             }
         }
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ImageIO.write(img, "png", out);
-        return out.toByteArray();
+        return CaptchaImages.encodePng(CaptchaImages.scale(base, 128 * Math.max(1, scale), smooth && scale > 2));
+    }
+
+    private String dumpPng(byte[] png) {
+        if (!cfg.captchaDebugPng || debugDir == null) return null;
+        try {
+            Files.createDirectories(debugDir);
+            String stamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replace(":", "-").replace(".", "-");
+            Path f = debugDir.resolve("captcha-" + stamp + "-" + captureMode + ".png");
+            Files.write(f, png);
+            return f.getFileName().toString();
+        } catch (Exception e) {
+            YCBotChallengeClient.LOGGER.warn("captcha png dump failed: {}", e.toString());
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------ solve
 
+    private boolean useMapPrompt() {
+        // Map data, or a screenshot of a held map: the JSON letter prompt. Only a
+        // chat/GUI-triggered captcha with no map at all keeps the Sonar prompt.
+        return "map".equals(captureMode) || !("chat".equals(source) || "gui".equals(source));
+    }
+
     private void startSolve(byte[] png) {
         phase = Phase.SOLVING;
         phaseDeadline = System.currentTimeMillis() + cfg.captchaTimeoutMs + 2000;
+        final boolean mapPrompt = useMapPrompt();
+        mapPromptUsed = mapPrompt;
 
         JsonObject imagePart = new JsonObject();
         imagePart.addProperty("type", "image_url");
         JsonObject imageUrl = new JsonObject();
         imageUrl.addProperty("url", "data:image/png;base64," + Base64.getEncoder().encodeToString(png));
         imagePart.add("image_url", imageUrl);
-        String prompt = cfg.captchaPrompt;
+        String prompt = mapPrompt ? cfg.captchaMapPrompt : cfg.captchaPrompt;
         if (!wrongAnswers.isEmpty()) {
-            prompt += cfg.captchaRetryPrompt.replace("{rejected}", String.join(", ", wrongAnswers));
+            String retry = mapPrompt ? cfg.captchaMapRetryPrompt : cfg.captchaRetryPrompt;
+            prompt += retry.replace("{rejected}", String.join(", ", wrongAnswers));
         }
         JsonObject textPart = new JsonObject();
         textPart.addProperty("type", "text");
@@ -411,18 +647,24 @@ public class CaptchaSolver {
         // deterministic first try; a little heat on retries so the same image
         // doesn't produce the same rejected guess again
         body.addProperty("temperature", attempt <= 1 ? 0.0 : 0.5);
-        body.addProperty("max_tokens", 256);
+        body.addProperty("max_tokens", mapPrompt ? 64 : 256);
         body.add("messages", messages);
 
-        HttpRequest req = HttpRequest.newBuilder()
+        HttpRequest.Builder b = HttpRequest.newBuilder()
             .uri(URI.create(cfg.captchaVlmEndpoint))
             .timeout(Duration.ofMillis(cfg.captchaTimeoutMs))
             .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
-            .build();
+            .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)));
+        String key = apiKey();
+        if (key != null) b.header("Authorization", "Bearer " + key);
+        HttpRequest req = b.build();
 
         http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((resp, err) -> {
-            if (err != null) { vlmError.set("request failed: " + err.getMessage()); return; }
+            if (err != null) {
+                vlmError.set("request failed: " + rootMessage(err));
+                if (isConnectFailure(err)) vlmConnectFailed.set(true);
+                return;
+            }
             if (resp.statusCode() != 200) {
                 vlmError.set("HTTP " + resp.statusCode() + ": " + truncate(resp.body(), 200));
                 return;
@@ -431,17 +673,29 @@ public class CaptchaSolver {
                 String content2 = JsonParser.parseString(resp.body()).getAsJsonObject()
                     .getAsJsonArray("choices").get(0).getAsJsonObject()
                     .getAsJsonObject("message").get("content").getAsString();
-                // Collect the ranked ANSWER/ALT guesses, de-duped, order preserved.
+                vlmRaw.set(truncate(content2, 300));
                 List<String> ranked = new ArrayList<>();
-                Matcher m = ANSWER_RE.matcher(content2);
-                while (m.find()) {
-                    String g = m.group(1).trim().toLowerCase();
-                    if (!g.isEmpty() && !ranked.contains(g)) ranked.add(g);
+                if (mapPrompt) {
+                    String answer = ChatClassifier.parseAnswerArray(content2, cfg.captchaPreserveCase);
+                    if (answer != null) {
+                        ranked.add(answer);
+                        if (cfg.captchaPreserveCase) {
+                            String alt = ChatClassifier.caseFlipAlt(answer, cfg.captchaCaseAmbiguous);
+                            if (alt != null && !alt.equals(answer)) ranked.add(alt);
+                        }
+                    }
+                } else {
+                    // Sonar path: ranked ANSWER/ALT lines, lowercase, de-duped.
+                    Matcher m = ANSWER_RE.matcher(content2);
+                    while (m.find()) {
+                        String g = m.group(1).trim().toLowerCase();
+                        if (!g.isEmpty() && !ranked.contains(g)) ranked.add(g);
+                    }
                 }
                 if (!ranked.isEmpty()) {
                     vlmCandidates.set(ranked);
                 } else {
-                    vlmError.set("no ANSWER line in: " + truncate(content2, 200));
+                    vlmError.set("no answer in: " + truncate(content2, 200));
                 }
             } catch (Exception e) {
                 vlmError.set("bad response json: " + e);
@@ -454,18 +708,33 @@ public class CaptchaSolver {
         return s.length() <= n ? s : s.substring(0, n) + "...";
     }
 
-    private void sendAnswer(MinecraftClient client, String answer) {
-        lastSentAnswer = answer;
-        answersSent++;
-        String out = cfg.captchaAnswerTemplate.replace("{answer}", answer);
-        log("captcha_answer", "answer", answer, "sent", out,
-            "answersSent", answersSent, "attempt", attempt, "source", source);
+    // ------------------------------------------------------------------- send
+
+    /** Typed through the chat screen unless a GUI is up (opening chat over a container desyncs it). */
+    private boolean typedSend(MinecraftClient client) {
+        return !"gui".equals(source) && client.currentScreen == null;
+    }
+
+    private void sendDirect(MinecraftClient client, String answer, String out, String why) {
         if (client.getNetworkHandler() == null) { fail(client, "send", "no network handler"); return; }
         if (out.startsWith("/")) {
             client.getNetworkHandler().sendChatCommand(out.substring(1));
         } else {
             client.getNetworkHandler().sendChatMessage(out);
         }
+        afterSend(client, System.currentTimeMillis(), answer, out, false, 0, why);
+    }
+
+    private void afterSend(MinecraftClient client, long now, String answer, String out, boolean typed, int typos, String directWhy) {
+        lastSentAnswer = answer;
+        answersSent++;
+        pendingOut = null;
+        log("captcha_answer", "answer", answer, "sent", out, "typed", typed, "typos", typos,
+            "directWhy", directWhy, "answersSent", answersSent, "attempt", attempt, "source", source,
+            "mode", captureMode);
+        feedback = null;
+        phase = Phase.AWAITING_RESULT;
+        phaseDeadline = now + cfg.captchaVerifyWaitMs;
     }
 
     private static void say(MinecraftClient client, String msg) {

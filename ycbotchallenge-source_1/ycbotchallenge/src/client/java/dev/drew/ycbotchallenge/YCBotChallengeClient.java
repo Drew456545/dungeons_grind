@@ -31,6 +31,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private UpgradeController upgrades;
     private EnchantController enchants;
     private CaptchaSolver captchaSolver;
+    private CaptchaDetector captchaDetector;
     private EventLogger logger;
     private KeyBinding toggleKey;
     private int tickCounter = 0;
@@ -56,11 +57,13 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 // chat line that arrived mid-solve (e.g. the server re-prompting)
                 // so we don't immediately re-trigger on the one we just solved.
                 stats.captchaMessage = null;
+                guiRetryBlockUntil = 0;
             }
             @Override public void onFailed(MinecraftClient client, String stage, String why) {
-                pauseForCaptcha(client, "autosolve-failed:" + stage, why);
+                pauseForCaptcha(client, "autosolve", stage, why);
             }
-        });
+        }, FabricLoader.getInstance().getGameDir().resolve("ycbotchallenge-logs"));
+        captchaDetector = new CaptchaDetector(config, stats);
 
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
             "key.ycbotchallenge.toggle",
@@ -114,6 +117,14 @@ public class YCBotChallengeClient implements ClientModInitializer {
             beginCaptcha(client, "chat", captchaChat);
             return;
         }
+        // The map captcha: a filled map the server just put in our hand/hotbar.
+        long nowMs = System.currentTimeMillis();
+        CaptchaDetector.Hit mapHit = captchaDetector.tick(client, nowMs);
+        if (mapHit != null) {
+            beginCaptcha(client, mapHit.source(), mapHit.detail());
+            return;
+        }
+        captchaSolver.tickIdle(nowMs);
         if (upgrades.isBusy()) {
             upgrades.tick(client, combat);
             return;
@@ -147,7 +158,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             // a screen that survives (or reappears right after) an auto-solve isn't
             // the captcha — don't loop on it, hand it to the human
             if (System.currentTimeMillis() < guiRetryBlockUntil) {
-                pauseForCaptcha(client, "gui", title);
+                pauseForCaptcha(client, "gui", "gui-persisted", title);
             } else {
                 beginCaptcha(client, "gui", title);
             }
@@ -202,7 +213,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
     private void beginCaptcha(MinecraftClient client, String source, String detail) {
         if (!config.captchaAutoSolve) {
-            pauseForCaptcha(client, source, detail);
+            pauseForCaptcha(client, source, "autosolve-off", detail);
             return;
         }
         combat.reset(client);
@@ -229,15 +240,17 @@ public class YCBotChallengeClient implements ClientModInitializer {
         LOGGER.info("stop protocol fired: {}", reason);
     }
 
-    private void pauseForCaptcha(MinecraftClient client, String source, String detail) {
-        if (logger != null) logger.log("captcha_pause", "source", source, "detail", detail);
+    private void pauseForCaptcha(MinecraftClient client, String source, String reason, String detail) {
+        if (logger != null) logger.log("captcha_pause", "source", source, "reason", reason, "detail", detail);
         setEnabled(client, false, true);
         pausedReason = "captcha";
         if (client.player != null) {
+            String hint = "vlm-offline".equals(reason) ? " The model server is offline." : "";
             client.player.sendMessage(Text.literal(
-                "§e[YCBotChallenge] paused — captcha detected (" + source + "). Solve it, then press the toggle key."), false);
+                "§e[YCBotChallenge] paused — captcha (" + source + ", " + reason + ")." + hint
+                    + " Solve it, then press the toggle key."), false);
         }
-        LOGGER.info("YCBotChallenge paused for captcha ({}): {}", source, detail);
+        LOGGER.info("YCBotChallenge paused for captcha ({}, {}): {}", source, reason, detail);
     }
 
     private void setEnabled(MinecraftClient client, boolean on, boolean silent) {
@@ -246,6 +259,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         if (on) {
             pausedReason = null;
             stats.captchaMessage = null;
+            guiRetryBlockUntil = 0;
             HumanTiming.beginSession(config);
             // Fresh start: after /spawn, a manual zone hop or an AFK gap, old kill
             // samples describe a different stage — the zone gate re-measures.
@@ -269,12 +283,16 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 upgrades.setLogger(logger);
                 enchants.setLogger(logger);
                 captchaSolver.setLogger(logger);
+                captchaDetector.setLogger(logger);
                 MouseDriver.INSTANCE.configure(config, logger);
                 logger.log("session_start",
                     "username", client.getSession() != null ? client.getSession().getUsername() : null);
                 LOGGER.info("Logging to {}", logger.getFile());
             }
             logger.log("bot_on");
+            // Maps already in the hotbar are not a captcha; only a new one is.
+            captchaDetector.onEnable(client);
+            captchaSolver.checkHealth(System.currentTimeMillis());
         } else {
             if (logger != null) logger.log("bot_off");
             if (client != null) {
@@ -301,6 +319,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             upgrades.setLogger(null);
             enchants.setLogger(null);
             captchaSolver.setLogger(null);
+            captchaDetector.setLogger(null);
             MouseDriver.INSTANCE.configure(config, null);
         }
     }

@@ -253,13 +253,70 @@ public class YCBotChallengeConfig {
      * Sonar sends NOTHING on success (it silently transfers you), so silence = solved.
      */
     public int captchaVerifyWaitMs = 5000;
-    /** Upscale factor for the 128x128 map image sent to the model. */
-    public int captchaMapScale = 4;
+    /**
+     * Upscale factor for the 128x128 map image sent to the model. Bench 2026-09-03
+     * (Qwen3-VL-4B): x1-x3 nearest read "pnGe" right, x4 nearest read "prGe" (the
+     * blocky edges become false strokes), x6 was garbage; see captchaMapSmooth.
+     */
+    public int captchaMapScale = 2;
     /** How far to look for an item-frame map holding the captcha. */
     public double captchaMapSearchRadius = 10.0;
     /** Chat lines meaning the captcha was accepted / rejected (plain substrings or /regex/). */
     public List<String> captchaSolvedPatterns = List.of("correct", "verified", "success", "thank");
     public List<String> captchaRetryPatterns = List.of("wrong answer", "incorrect", "try again", "invalid");
+
+    // ---- 0.9.13 held-map captcha. EnchantedMC hands the player a filled map whose
+    // picture is the code (typed in chat, case-sensitive). No chat line comes with
+    // it, so the map appearing in the hands/hotbar is the trigger.
+    /** Also watch the non-selected hotbar slots (the 2026-09-02 map landed in hotbar slot 9). */
+    public boolean captchaMapAnySlot = true;
+    /** A new map must persist this long before it counts as a captcha. */
+    public int captchaSignalConfirmMs = 300;
+    /** The map's pixels arrive in a later packet than the item: wait up to this for them. */
+    public int captchaMapDataWaitMs = 1500;
+    /** Draw the map bilinear-smoothed when captchaMapScale > 2 (nearest x4 misread, smoothed x4 read right). */
+    public boolean captchaMapSmooth = true;
+    /** The screenshot fallback is downscaled to this width first (the native 1605 px shot hallucinated a letter). */
+    public int captchaScreenMaxPx = 1024;
+    /** Hide the HUD (hotbar, boss bar, our overlay) for the screenshot fallback. */
+    public boolean captchaScreenHideHud = true;
+    /** Dump every captured captcha image to ycbotchallenge-logs/captcha-<time>-<mode>.png for prompt tuning. */
+    public boolean captchaDebugPng = true;
+    /**
+     * Prompt for map captchas. Bench 2026-09-03 on the "pnGe" capture: telling the
+     * model the string is NOT a word and asking for a JSON array of single
+     * characters read it right on every input up to 1024 px (6/6 samples at
+     * temperature 0.7); word-shaped prompts returned "pinc"/"pInGe", and a
+     * per-letter colour enumeration inserted a phantom "i" every time.
+     */
+    public String captchaMapPrompt =
+        "The image is a Minecraft map captcha: a short random string of large colored "
+        + "letters over a dark background with small colored noise specks. It is NOT a "
+        + "word, so do not autocorrect. Ignore the specks. Read the large letters left to "
+        + "right, keeping exact case. Reply with exactly one line:\n"
+        + "ANSWER: <the letters as a JSON array of single characters, e.g. [\"a\",\"B\"]>";
+    /** Appended to captchaMapPrompt after a rejection; {rejected} = the rejected readings. */
+    public String captchaMapRetryPrompt =
+        "\nIMPORTANT: these readings were already REJECTED as wrong: {rejected}. Look again, "
+        + "check the case of every letter and whether two letters touch, and give a different reading.";
+    /** Keep the model's letter case for map captchas (the server is case-sensitive). */
+    public boolean captchaPreserveCase = true;
+    /** Letters whose upper and lower glyphs look alike: the second guess flips the first of these (else the first letter). */
+    public String captchaCaseAmbiguous = "cosuvwxz";
+    /**
+     * Soft hints: a non-player server line containing one of these shortens the map
+     * confirm window to 0 but never triggers alone (Chat Games prints "Type the
+     * answer in chat to win!" for trivia). Logged as captcha_hint.
+     */
+    public List<String> captchaChatHintPatterns = List.of("type the", "verify", "prove you", "bot check", "captcha");
+    /** Unclassified server lines are raw-logged (chat_raw) so new wording is captured; at most this many per minute, 0 = off. */
+    public int chatRawPerMinute = 30;
+    /** VLM health: GET this on enable and every interval. A captcha while offline pauses at once instead of 3x20s retries. */
+    public String captchaVlmHealthUrl = "http://127.0.0.1:8000/v1/models";
+    public int captchaVlmHealthIntervalMs = 300_000;
+    public int captchaVlmHealthTimeoutMs = 3000;
+    /** When the server serves exactly one model under a different id, use that id. */
+    public boolean captchaVlmModelAuto = true;
     /** Stricter: pause on ANY screen opening (including chat/inventory you open yourself). */
     public boolean pauseOnAnyScreen = false;
     /** Target the majority mob type in range — skips stale leftovers from the previous stage. */
@@ -669,7 +726,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 16;
+    public static final int CURRENT_CONFIG_VERSION = 17;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -828,6 +885,14 @@ public class YCBotChallengeConfig {
             if (enchantMaxMenuMs == 40_000) enchantMaxMenuMs = fresh.enchantMaxMenuMs;
             changed = true;
         }
+        if (configVersion < 17) {
+            // v17: held-map captcha — JSON-array prompt, 256 px map render, hint patterns.
+            captchaMapPrompt = fresh.captchaMapPrompt;
+            captchaMapRetryPrompt = fresh.captchaMapRetryPrompt;
+            captchaChatHintPatterns = fresh.captchaChatHintPatterns;
+            if (captchaMapScale == 4) captchaMapScale = fresh.captchaMapScale;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -839,6 +904,37 @@ public class YCBotChallengeConfig {
         if (prestigeChatPatterns == null) prestigeChatPatterns = List.of();
         if (captchaChatPatterns == null) captchaChatPatterns = List.of();
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        // Captcha strings/lists: an older json (or a hand-edited one) may lack them.
+        if (captchaPrompt == null || captchaPrompt.isBlank()) captchaPrompt = fresh.captchaPrompt;
+        if (captchaRetryPrompt == null) captchaRetryPrompt = fresh.captchaRetryPrompt;
+        if (captchaMapPrompt == null || captchaMapPrompt.isBlank()) captchaMapPrompt = fresh.captchaMapPrompt;
+        if (captchaMapRetryPrompt == null) captchaMapRetryPrompt = fresh.captchaMapRetryPrompt;
+        if (captchaVlmEndpoint == null || captchaVlmEndpoint.isBlank()) captchaVlmEndpoint = fresh.captchaVlmEndpoint;
+        if (captchaVlmModel == null || captchaVlmModel.isBlank()) captchaVlmModel = fresh.captchaVlmModel;
+        if (captchaVlmHealthUrl == null) captchaVlmHealthUrl = fresh.captchaVlmHealthUrl;
+        if (captchaCaptureMode == null || captchaCaptureMode.isBlank()) captchaCaptureMode = fresh.captchaCaptureMode;
+        if (captchaAnswerTemplate == null || !captchaAnswerTemplate.contains("{answer}")) {
+            captchaAnswerTemplate = fresh.captchaAnswerTemplate;
+        }
+        if (captchaCaseAmbiguous == null) captchaCaseAmbiguous = fresh.captchaCaseAmbiguous;
+        if (captchaSolvedPatterns == null) captchaSolvedPatterns = fresh.captchaSolvedPatterns;
+        if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
+        if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;
+        if (captchaMapScale < 1) captchaMapScale = fresh.captchaMapScale;
+        if (captchaMapScale > 8) captchaMapScale = 8;
+        if (captchaScreenMaxPx < 256) captchaScreenMaxPx = fresh.captchaScreenMaxPx;
+        if (captchaScreenMaxPx > 4096) captchaScreenMaxPx = 4096;
+        if (captchaSignalConfirmMs < 0) captchaSignalConfirmMs = fresh.captchaSignalConfirmMs;
+        if (captchaMapDataWaitMs < 0) captchaMapDataWaitMs = fresh.captchaMapDataWaitMs;
+        if (captchaSettleMs < 0) captchaSettleMs = fresh.captchaSettleMs;
+        if (captchaTimeoutMs < 1000) captchaTimeoutMs = fresh.captchaTimeoutMs;
+        if (captchaMaxAttempts < 1) captchaMaxAttempts = fresh.captchaMaxAttempts;
+        if (captchaMaxAnswers < 1) captchaMaxAnswers = fresh.captchaMaxAnswers;
+        if (captchaAnswerDelayMaxMs < captchaAnswerDelayMinMs) captchaAnswerDelayMaxMs = captchaAnswerDelayMinMs;
+        if (captchaVerifyWaitMs < 0) captchaVerifyWaitMs = fresh.captchaVerifyWaitMs;
+        if (chatRawPerMinute < 0) chatRawPerMinute = 0;
+        if (captchaVlmHealthIntervalMs < 10_000) captchaVlmHealthIntervalMs = fresh.captchaVlmHealthIntervalMs;
+        if (captchaVlmHealthTimeoutMs < 500) captchaVlmHealthTimeoutMs = fresh.captchaVlmHealthTimeoutMs;
         if (upgradeFailPatterns == null) upgradeFailPatterns = fresh.upgradeFailPatterns;
         if (upgradeSuccessPatterns == null) upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
         if (upgradeMaxedPatterns == null) upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;

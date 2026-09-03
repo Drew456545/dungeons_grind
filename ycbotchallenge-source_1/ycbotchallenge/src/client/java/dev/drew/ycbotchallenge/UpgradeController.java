@@ -22,7 +22,7 @@ import net.minecraft.util.math.Vec3d;
  * {@code zoneMaxTtkMs}; among affordable kinds the 1.25× price ratio decides.
  */
 public class UpgradeController {
-    private enum Phase { IDLE, WAIT_STILL, PAUSE, OPEN, TYPE, SEND, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
+    private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
     private enum Kind { SWORD, ZONE, REBIRTH }
 
     private record PendingCmd(String text, Kind kind, long notBefore, boolean followUp) {}
@@ -34,9 +34,8 @@ public class UpgradeController {
     private Phase phase = Phase.IDLE;
     private long phaseUntil;
     private String pending;
-    private String typed = "";
-    private int typedChars;
-    private int typoAt = -1;
+    /** Types the command through the chat screen like a person (shared with the captcha solver). */
+    private final ChatTyper typer;
     private Kind pendingKind = Kind.SWORD;
     private boolean pendingFollowUp = false;
     private final ArrayDeque<PendingCmd> queue = new ArrayDeque<>();
@@ -78,6 +77,7 @@ public class UpgradeController {
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
         this.stats = stats;
+        this.typer = new ChatTyper(cfg);
     }
 
     public void setLogger(EventLogger logger) { this.logger = logger; }
@@ -131,11 +131,9 @@ public class UpgradeController {
             && RebirthScreens.isRebirthGui(client.currentScreen.getTitle().getString())) {
             if (client.player != null) client.player.closeHandledScreen();
         }
+        typer.cancel(client);
         phase = Phase.IDLE;
         pending = null;
-        typed = "";
-        typedChars = 0;
-        typoAt = -1;
         queue.clear();
         startupProbed = false;
         lastKillCount = 0;
@@ -263,73 +261,25 @@ public class UpgradeController {
             case PAUSE -> {
                 combat.releaseKeys(client);
                 if (now >= phaseUntil) {
-                    phase = Phase.OPEN;
-                    client.setScreen(new ChatScreen("", false));
-                    phaseUntil = now + 80;
+                    phase = Phase.TYPE;
+                    typer.begin(client, pending, now);
                 }
-            }
-            case OPEN -> {
-                combat.releaseKeys(client);
-                if (now < phaseUntil) return true;
-                if (!(client.currentScreen instanceof ChatScreen)) {
-                    abort(client, "chat-closed");
-                    return false;
-                }
-                phase = Phase.TYPE;
-                typed = "";
-                typedChars = 0;
-                typoAt = -1;
-                phaseUntil = now + HumanTiming.logNormalMs(cfg.typeKeyMinMs, cfg.typeKeyMaxMs);
             }
             case TYPE -> {
                 combat.releaseKeys(client);
-                if (!(client.currentScreen instanceof ChatScreen cs)) {
-                    abort(client, "chat-closed");
+                ChatTyper.State ts = typer.tick(client, now);
+                if (ts == ChatTyper.State.FAILED) {
+                    abort(client, typer.failReason());
                     return false;
                 }
-                if (now < phaseUntil) return true;
-                TextFieldWidget field = ((ChatScreenAccessor) cs).ycBotChallenge$getChatField();
-                if (typoAt >= 0) {
-                    typed = typed.substring(0, typed.length() - 1);
-                    if (field != null) field.setText(typed);
-                    typoAt = -1;
-                    phaseUntil = now + HumanTiming.logNormalMs(cfg.typeKeyMinMs, cfg.typeKeyMaxMs + 120);
-                    return true;
-                }
-                if (typedChars < pending.length()) {
-                    ThreadLocalRandom rng = ThreadLocalRandom.current();
-                    char c = pending.charAt(typedChars);
-                    boolean typo = cfg.ninja && typedChars > 1 && Character.isLetterOrDigit(c)
-                        && rng.nextDouble() < cfg.typoChancePerChar;
-                    if (typo) {
-                        typed += (char) ('a' + rng.nextInt(26));
-                        typoAt = typedChars;
-                    } else {
-                        typed += c;
-                    }
-                    typedChars++;
-                    if (field != null) field.setText(typed);
-                    else cs.insertText(String.valueOf(typed.charAt(typed.length() - 1)), false);
-                    phaseUntil = now + HumanTiming.logNormalMs(cfg.typeKeyMinMs, cfg.typeKeyMaxMs);
-                } else {
-                    phase = Phase.SEND;
-                    phaseUntil = now + HumanTiming.logNormalMs(80, 220);
-                }
-            }
-            case SEND -> {
-                combat.releaseKeys(client);
-                if (now < phaseUntil) return true;
-                if (!(client.currentScreen instanceof ChatScreen cs)) {
-                    abort(client, "chat-closed");
-                    return false;
-                }
+                if (ts != ChatTyper.State.DONE) return true;
                 if (logger != null) {
                     logger.log("upgrade_send", "command", pending,
                         "kind", pendingKind.name().toLowerCase(Locale.ROOT),
                         "followUp", pendingFollowUp,
-                        "swordsSinceZone", swordsSinceZone);
+                        "swordsSinceZone", swordsSinceZone,
+                        "typos", typer.typos());
                 }
-                cs.sendMessage(pending, true);
                 lastSendAt = now;
                 lastKind = pendingKind.name().toLowerCase(Locale.ROOT);
                 if (pendingKind == Kind.SWORD) lastSwordSendAt = now;
@@ -741,7 +691,7 @@ public class UpgradeController {
         phase = Phase.IDLE;
         pending = null;
         pendingFollowUp = false;
-        typoAt = -1;
+        typer.cancel(null);
     }
 
     private void abort(MinecraftClient client, String why) {
@@ -757,7 +707,7 @@ public class UpgradeController {
         phase = Phase.IDLE;
         pending = null;
         pendingFollowUp = false;
-        typoAt = -1;
+        typer.cancel(null);
     }
 
     private static void closeOurChat(MinecraftClient client) {
