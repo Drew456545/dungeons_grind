@@ -207,6 +207,27 @@ public final class ChatClassifier {
         return answer.substring(0, idx) + f + answer.substring(idx + 1);
     }
 
+    /**
+     * Second guess for a mixed letters/digits captcha (0.9.22): the server's alphabet
+     * has digits (2026-09-03 17:38: the map read "pBb", the answer was "p8b"), so the
+     * first character with a look-alike in {@code pairs} ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9")
+     * is swapped for its partner; with none, the case flip of {@link #caseFlipAlt}.
+     */
+    public static String lookalikeAlt(String answer, String pairs, String ambiguous) {
+        if (answer == null || answer.isEmpty()) return null;
+        if (pairs != null) {
+            for (String pair : pairs.split("[,\\s]+")) {
+                if (pair.length() != 2) continue;
+                for (int i = 0; i < answer.length(); i++) {
+                    char c = answer.charAt(i);
+                    if (c == pair.charAt(0)) return answer.substring(0, i) + pair.charAt(1) + answer.substring(i + 1);
+                    if (c == pair.charAt(1)) return answer.substring(0, i) + pair.charAt(0) + answer.substring(i + 1);
+                }
+            }
+        }
+        return caseFlipAlt(answer, ambiguous);
+    }
+
     /** Reward Summary header seconds, e.g. "Reward Summary: (60s)" → 60. */
     public static Integer summaryWindowSeconds(String stripped, Pattern headerRe) {
         if (stripped == null || headerRe == null) return null;

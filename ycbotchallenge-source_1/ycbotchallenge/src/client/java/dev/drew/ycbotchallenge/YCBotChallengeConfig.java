@@ -259,24 +259,27 @@ public class YCBotChallengeConfig {
      * into chat (a person needs a moment to read the map and type). Applied to
      * every answer sent, jittered between min and max.
      */
-    public int captchaAnswerDelayMinMs = 1200;
-    public int captchaAnswerDelayMaxMs = 1900;
+    public int captchaAnswerDelayMinMs = 2500;
+    public int captchaAnswerDelayMaxMs = 5000;
     /**
      * After answering: resume if no rejection message arrives within this window.
      * Sonar sends NOTHING on success (it silently transfers you), so silence = solved.
      */
-    public int captchaVerifyWaitMs = 5000;
+    public int captchaVerifyWaitMs = 12_000;
     /**
-     * Upscale factor for the 128x128 map image sent to the model. Bench 2026-09-03
-     * (Qwen3-VL-4B): x1-x3 nearest read "pnGe" right, x4 nearest read "prGe" (the
-     * blocky edges become false strokes), x6 was garbage; see captchaMapSmooth.
+     * Upscale factor for the 128x128 map image sent to the model, bilinear-smoothed
+     * above x2 (captchaMapSmooth). tools/captcha_bench.py on the two certified
+     * captchas (pnGe, p8b), 12 samples each, 2026-09-03: x4 smoothed reads both
+     * greedily (23/24 sampled); x2 nearest (the 0.9.13 default) reads p8b as pBb every
+     * time; x4 nearest and x6 are garbage. Re-run the bench before changing this.
      */
-    public int captchaMapScale = 2;
+    public int captchaMapScale = 4;
     /** How far to look for an item-frame map holding the captcha. */
     public double captchaMapSearchRadius = 10.0;
     /** Chat lines meaning the captcha was accepted / rejected (plain substrings or /regex/). */
     public List<String> captchaSolvedPatterns = List.of("correct", "verified", "success", "thank");
-    public List<String> captchaRetryPatterns = List.of("wrong answer", "incorrect", "try again", "invalid");
+    public List<String> captchaRetryPatterns = List.of("wrong answer", "incorrect", "try again", "invalid",
+        "please enter the captcha on the map");
 
     // ---- 0.9.13 held-map captcha. EnchantedMC hands the player a filled map whose
     // picture is the code (typed in chat, case-sensitive). No chat line comes with
@@ -289,6 +292,14 @@ public class YCBotChallengeConfig {
     public int captchaMapDataWaitMs = 1500;
     /** Draw the map bilinear-smoothed when captchaMapScale > 2 (nearest x4 misread, smoothed x4 read right). */
     public boolean captchaMapSmooth = true;
+    /** A second render at this scale is read as a cross-check; a different reading becomes the second guess. 0 = off. */
+    public int captchaSecondScale = 3;
+    /**
+     * Look-alike pairs for the second guess when both renders agree: the alphabet mixes
+     * letters and digits (17:38: read "pBb", answer "p8b"). First matching character is
+     * swapped for its partner; with none, the case flip (captchaCaseAmbiguous).
+     */
+    public String captchaLookalikes = "B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
     /** The screenshot fallback is downscaled to this width first (the native 1605 px shot hallucinated a letter). */
     public int captchaScreenMaxPx = 1024;
     /** Hide the HUD (hotbar, boss bar, our overlay) for the screenshot fallback. */
@@ -864,7 +875,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 25;
+    public static final int CURRENT_CONFIG_VERSION = 26;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1077,6 +1088,19 @@ public class YCBotChallengeConfig {
             // v25: instant kills credited via entity-gone / money-landed (instantKillConfirmMs).
             changed = true;
         }
+        if (configVersion < 26) {
+            // v26: captcha bench on the certified fixtures — x4 smoothed render, second-render
+            // cross-check, look-alike second guess, the server's re-prompt line as a retry
+            // signal, a longer verify window and a human reading pause.
+            if (captchaMapScale == 2) captchaMapScale = fresh.captchaMapScale;
+            captchaRetryPatterns = fresh.captchaRetryPatterns;
+            if (captchaVerifyWaitMs == 5000) captchaVerifyWaitMs = fresh.captchaVerifyWaitMs;
+            if (captchaAnswerDelayMinMs == 1200 && captchaAnswerDelayMaxMs == 1900) {
+                captchaAnswerDelayMinMs = fresh.captchaAnswerDelayMinMs;
+                captchaAnswerDelayMaxMs = fresh.captchaAnswerDelayMaxMs;
+            }
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1101,6 +1125,9 @@ public class YCBotChallengeConfig {
             captchaAnswerTemplate = fresh.captchaAnswerTemplate;
         }
         if (captchaCaseAmbiguous == null) captchaCaseAmbiguous = fresh.captchaCaseAmbiguous;
+        if (captchaLookalikes == null) captchaLookalikes = fresh.captchaLookalikes;
+        if (captchaSecondScale < 0) captchaSecondScale = 0;
+        if (captchaSecondScale > 8) captchaSecondScale = 8;
         if (captchaSolvedPatterns == null) captchaSolvedPatterns = fresh.captchaSolvedPatterns;
         if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
         if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;

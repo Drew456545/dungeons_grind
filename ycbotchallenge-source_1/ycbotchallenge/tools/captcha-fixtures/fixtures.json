@@ -1,0 +1,20 @@
+[
+  {
+    "file": "p8b-map128.png",
+    "answer": "p8b",
+    "kind": "map",
+    "source": "bot capture 2026-09-03 17:38, answer confirmed by Drew (bot read pBb at 256 px)"
+  },
+  {
+    "file": "pnGe-map128.png",
+    "answer": "pnGe",
+    "kind": "map",
+    "source": "2026-09-02 22:01 screenshot, board crop downsampled to the 128 px map grid (synthetic map)"
+  },
+  {
+    "file": "pnGe-screenshot.png",
+    "answer": "pnGe",
+    "kind": "screen",
+    "source": "2026-09-02 22:01 first-person screenshot (screen fallback input)"
+  }
+]

@@ -61,7 +61,7 @@ public class CaptchaSolver {
         Pattern.compile("(?:ANSWER|ALT)\\s*\\d*\\s*:\\s*([^\\s]+)", Pattern.CASE_INSENSITIVE);
     private static final Gson GSON = new Gson();
 
-    private record MapHit(MapState state, boolean stackFound, String where) {}
+    private record MapHit(MapState state, boolean stackFound, String where, int mapId) {}
     private record Health(boolean online, List<String> models, long latencyMs, String error) {}
 
     private final YCBotChallengeConfig cfg;
@@ -100,6 +100,15 @@ public class CaptchaSolver {
     private final List<String> candidates = new ArrayList<>();
     /** The captcha image we're working on, kept so a rejection can re-prompt without re-capturing. */
     private byte[] lastPng = null;
+    /** Second render of the same map (captchaSecondScale) read as a cross-check; null when off. */
+    private byte[] secondPng = null;
+    private final AtomicReference<String> vlmSecond = new AtomicReference<>();
+    /** The map we last answered from, its readings and how many answers went out for it: a server
+     *  re-prompt for the same map continues with the next guess instead of re-reading. */
+    private int solvedMapId = -1;
+    private final List<String> mapCandidates = new ArrayList<>();
+    private int mapAnswersSent = 0;
+    private int captureMapId = -1;
     private volatile String feedback = null; // "solved" | "retry"
     private String lastSentAnswer = null;
     /** Guess waiting out the human-ish reading pause before being typed. */
@@ -168,6 +177,34 @@ public class CaptchaSolver {
 
     /** Kick off a solve. Call only when isActive() is false. */
     public void begin(MinecraftClient client, String detectSource, String detail) {
+        log("captcha_detected", "source", detectSource, "detail", detail, "autoSolve", true, "vlmOnline", vlmOnline);
+        int heldId = heldMapId(client);
+        if (!"held-map".equals(detectSource) && !"hotbar-map".equals(detectSource)
+            && heldId >= 0 && heldId == solvedMapId && !mapCandidates.isEmpty()) {
+            // "Please enter the captcha on the map." for the map we already answered from:
+            // the picture has not changed, so re-reading it would type the same guess
+            // again (17:38 log). Continue with the next reading instead.
+            source = detectSource;
+            attempt = 1;
+            answersSent = mapAnswersSent;
+            feedback = null;
+            pendingAnswer = null;
+            pendingOut = null;
+            captureMode = "map";
+            captureWhere = "reprompt";
+            mapPromptUsed = true;
+            candidates.clear();
+            candidates.addAll(mapCandidates);
+            log("captcha_reprompted", "mapId", heldId, "answersSent", answersSent, "candidates", candidates, "wrong", wrongAnswers);
+            if (answersSent >= cfg.captchaMaxAnswers) {
+                phase = Phase.SETTLING;
+                fail(client, "answers-exhausted", "server re-prompted after " + answersSent + " answer(s) for map " + heldId);
+                return;
+            }
+            phase = Phase.SOLVING;
+            submitNextCandidate(client, System.currentTimeMillis());
+            return;
+        }
         source = detectSource;
         attempt = 1;
         answersSent = 0;
@@ -187,7 +224,10 @@ public class CaptchaSolver {
         vlmRaw.set(null);
         vlmError.set(null);
         vlmConnectFailed.set(false);
-        log("captcha_detected", "source", detectSource, "detail", detail, "autoSolve", true, "vlmOnline", vlmOnline);
+        secondPng = null;
+        vlmSecond.set(null);
+        captureMapId = -1;
+        if (heldId != solvedMapId) { solvedMapId = -1; mapCandidates.clear(); mapAnswersSent = 0; }
         if (!vlmOnline) {
             // No 3x20s of retries against a dead port: hand over right away.
             phase = Phase.SETTLING;
@@ -351,8 +391,15 @@ public class CaptchaSolver {
                     candidates.clear();
                     candidates.addAll(got); // ranked, de-duped, best first
                     log("captcha_candidates", "candidates", candidates, "raw", vlmRaw.getAndSet(null),
+                        "second", vlmSecond.getAndSet(null), "secondScale", secondPng != null ? cfg.captchaSecondScale : null,
                         "prompt", mapPromptUsed ? "map" : "sonar",
                         "preserveCase", mapPromptUsed && cfg.captchaPreserveCase, "attempt", attempt);
+                    if ("map".equals(captureMode) && captureMapId >= 0) {
+                        solvedMapId = captureMapId;
+                        mapCandidates.clear();
+                        mapCandidates.addAll(candidates);
+                        mapAnswersSent = answersSent;
+                    }
                     submitNextCandidate(client, now);
                 } else if (now >= phaseDeadline) {
                     retryOrFail(client, "vlm", "timed out waiting for the model");
@@ -490,8 +537,13 @@ public class CaptchaSolver {
             if (hit.state() != null) {
                 try {
                     byte[] mapPng = renderMapPng(hit.state(), cfg.captchaMapScale, cfg.captchaMapSmooth);
+                    // Cross-check render: the bench reads the same map differently at another
+                    // scale often enough that the disagreement is the best second guess.
+                    secondPng = cfg.captchaSecondScale > 0 && cfg.captchaSecondScale != cfg.captchaMapScale
+                        ? renderMapPng(hit.state(), cfg.captchaSecondScale, cfg.captchaMapSmooth) : null;
                     captureMode = "map";
                     captureWhere = hit.where();
+                    captureMapId = hit.mapId();
                     capturedPng.set(mapPng);
                     phase = Phase.CAPTURING;
                     phaseDeadline = now + 5000;
@@ -551,13 +603,13 @@ public class CaptchaSolver {
     /** Main hand, off hand, any hotbar slot, then the nearest item-frame map. */
     private MapHit findCaptchaMap(MinecraftClient client) {
         ItemStack main = client.player.getMainHandStack();
-        if (CaptchaDetector.mapId(main) >= 0) return new MapHit(mapFromStack(client, main), true, "main");
+        if (CaptchaDetector.mapId(main) >= 0) return new MapHit(mapFromStack(client, main), true, "main", CaptchaDetector.mapId(main));
         ItemStack off = client.player.getOffHandStack();
-        if (CaptchaDetector.mapId(off) >= 0) return new MapHit(mapFromStack(client, off), true, "off");
+        if (CaptchaDetector.mapId(off) >= 0) return new MapHit(mapFromStack(client, off), true, "off", CaptchaDetector.mapId(off));
         if (cfg.captchaMapAnySlot) {
             for (int i = 0; i < 9; i++) {
                 ItemStack s = client.player.getInventory().getStack(i);
-                if (CaptchaDetector.mapId(s) >= 0) return new MapHit(mapFromStack(client, s), true, "hotbar" + (i + 1));
+                if (CaptchaDetector.mapId(s) >= 0) return new MapHit(mapFromStack(client, s), true, "hotbar" + (i + 1), CaptchaDetector.mapId(s));
             }
         }
         ItemFrameEntity nearest = null;
@@ -567,8 +619,22 @@ public class CaptchaSolver {
             double d = client.player.distanceTo(frame);
             if (d <= cfg.captchaMapSearchRadius && d < best) { best = d; nearest = frame; }
         }
-        if (nearest != null) return new MapHit(mapFromStack(client, nearest.getHeldItemStack()), true, "frame");
-        return new MapHit(null, false, null);
+        if (nearest != null) {
+            ItemStack fs = nearest.getHeldItemStack();
+            return new MapHit(mapFromStack(client, fs), true, "frame", CaptchaDetector.mapId(fs));
+        }
+        return new MapHit(null, false, null, -1);
+    }
+
+    /** Map id in either hand or (captchaMapAnySlot) the hotbar, -1 when none. */
+    private int heldMapId(MinecraftClient client) {
+        if (client.player == null) return -1;
+        int id = CaptchaDetector.mapId(client.player.getMainHandStack());
+        if (id < 0) id = CaptchaDetector.mapId(client.player.getOffHandStack());
+        if (id < 0 && cfg.captchaMapAnySlot) {
+            for (int i = 0; i < 9 && id < 0; i++) id = CaptchaDetector.mapId(client.player.getInventory().getStack(i));
+        }
+        return id;
     }
 
     private MapState mapFromStack(MinecraftClient client, ItemStack stack) {
@@ -618,22 +684,12 @@ public class CaptchaSolver {
         return "map".equals(captureMode) || !("chat".equals(source) || "gui".equals(source));
     }
 
-    private void startSolve(byte[] png) {
-        phase = Phase.SOLVING;
-        phaseDeadline = System.currentTimeMillis() + cfg.captchaTimeoutMs + 2000;
-        final boolean mapPrompt = useMapPrompt();
-        mapPromptUsed = mapPrompt;
-
+    private HttpRequest buildRequest(byte[] png, String prompt, double temperature, int maxTokens) {
         JsonObject imagePart = new JsonObject();
         imagePart.addProperty("type", "image_url");
         JsonObject imageUrl = new JsonObject();
         imageUrl.addProperty("url", "data:image/png;base64," + Base64.getEncoder().encodeToString(png));
         imagePart.add("image_url", imageUrl);
-        String prompt = mapPrompt ? cfg.captchaMapPrompt : cfg.captchaPrompt;
-        if (!wrongAnswers.isEmpty()) {
-            String retry = mapPrompt ? cfg.captchaMapRetryPrompt : cfg.captchaRetryPrompt;
-            prompt += retry.replace("{rejected}", String.join(", ", wrongAnswers));
-        }
         JsonObject textPart = new JsonObject();
         textPart.addProperty("type", "text");
         textPart.addProperty("text", prompt);
@@ -647,12 +703,9 @@ public class CaptchaSolver {
         messages.add(msg);
         JsonObject body = new JsonObject();
         body.addProperty("model", cfg.captchaVlmModel);
-        // deterministic first try; a little heat on retries so the same image
-        // doesn't produce the same rejected guess again
-        body.addProperty("temperature", attempt <= 1 ? 0.0 : 0.5);
-        body.addProperty("max_tokens", mapPrompt ? 64 : 256);
+        body.addProperty("temperature", temperature);
+        body.addProperty("max_tokens", maxTokens);
         body.add("messages", messages);
-
         HttpRequest.Builder b = HttpRequest.newBuilder()
             .uri(URI.create(cfg.captchaVlmEndpoint))
             .timeout(Duration.ofMillis(cfg.captchaTimeoutMs))
@@ -660,8 +713,31 @@ public class CaptchaSolver {
             .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)));
         String key = apiKey();
         if (key != null) b.header("Authorization", "Bearer " + key);
-        HttpRequest req = b.build();
+        return b.build();
+    }
 
+    private static String contentOf(String responseBody) {
+        return JsonParser.parseString(responseBody).getAsJsonObject()
+            .getAsJsonArray("choices").get(0).getAsJsonObject()
+            .getAsJsonObject("message").get("content").getAsString();
+    }
+
+    private void startSolve(byte[] png) {
+        phase = Phase.SOLVING;
+        phaseDeadline = System.currentTimeMillis() + cfg.captchaTimeoutMs + 2000;
+        final boolean mapPrompt = useMapPrompt();
+        mapPromptUsed = mapPrompt;
+
+        String prompt = mapPrompt ? cfg.captchaMapPrompt : cfg.captchaPrompt;
+        if (!wrongAnswers.isEmpty()) {
+            String retry = mapPrompt ? cfg.captchaMapRetryPrompt : cfg.captchaRetryPrompt;
+            prompt += retry.replace("{rejected}", String.join(", ", wrongAnswers));
+        }
+        final String promptText = prompt;
+        // deterministic first try; a little heat on retries so the same image
+        // doesn't produce the same rejected guess again
+        HttpRequest req = buildRequest(png, promptText, attempt <= 1 ? 0.0 : 0.5, mapPrompt ? 64 : 256);
+        final byte[] second = mapPrompt && attempt <= 1 ? secondPng : null;
         http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((resp, err) -> {
             if (err != null) {
                 vlmError.set("request failed: " + rootMessage(err));
@@ -673,17 +749,28 @@ public class CaptchaSolver {
                 return;
             }
             try {
-                String content2 = JsonParser.parseString(resp.body()).getAsJsonObject()
-                    .getAsJsonArray("choices").get(0).getAsJsonObject()
-                    .getAsJsonObject("message").get("content").getAsString();
+                String content2 = contentOf(resp.body());
                 vlmRaw.set(truncate(content2, 300));
                 List<String> ranked = new ArrayList<>();
                 if (mapPrompt) {
                     String answer = ChatClassifier.parseAnswerArray(content2, cfg.captchaPreserveCase);
                     if (answer != null) {
                         ranked.add(answer);
-                        if (cfg.captchaPreserveCase) {
-                            String alt = ChatClassifier.caseFlipAlt(answer, cfg.captchaCaseAmbiguous);
+                        // Second opinion from the other render (bench 2026-09-03: x4 bilinear
+                        // read p8b where x2 read pBb); a disagreement is the second guess.
+                        if (second != null) {
+                            String other = null;
+                            try {
+                                HttpResponse<String> r2 = http.send(buildRequest(second, promptText, 0.0, 64), HttpResponse.BodyHandlers.ofString());
+                                if (r2.statusCode() == 200) other = ChatClassifier.parseAnswerArray(contentOf(r2.body()), cfg.captchaPreserveCase);
+                            } catch (Exception e) {
+                                other = null;
+                            }
+                            vlmSecond.set(other);
+                            if (other != null && !other.equals(answer)) ranked.add(other);
+                        }
+                        if (ranked.size() < 2) {
+                            String alt = ChatClassifier.lookalikeAlt(answer, cfg.captchaLookalikes, cfg.captchaCaseAmbiguous);
                             if (alt != null && !alt.equals(answer)) ranked.add(alt);
                         }
                     }
@@ -731,6 +818,7 @@ public class CaptchaSolver {
     private void afterSend(MinecraftClient client, long now, String answer, String out, boolean typed, int typos, String directWhy) {
         lastSentAnswer = answer;
         answersSent++;
+        if ("map".equals(captureMode)) mapAnswersSent = answersSent;
         pendingOut = null;
         log("captcha_answer", "answer", answer, "sent", out, "typed", typed, "typos", typos,
             "directWhy", directWhy, "answersSent", answersSent, "attempt", attempt, "source", source,

@@ -357,6 +357,8 @@ public final class EconomyChecks {
         n += eq("preferred: nothing", Economy.preferredKind(false, false) == null, true);
         // Captcha capture is map-only by default; a v19 "auto" config migrates, "screen" is kept.
         n += eq("fresh capture mode", CFG.captchaCaptureMode, "map");
+        n += eq("fresh map scale is x4", CFG.captchaMapScale, 4);
+        n += eq("re-prompt line is a retry signal", CFG.captchaRetryPatterns.contains("please enter the captcha on the map"), true);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":19,\"captchaCaptureMode\":\"auto\"}");
@@ -748,6 +750,13 @@ public final class EconomyChecks {
         n += eq("alt flips first letter", ChatClassifier.caseFlipAlt("pnGe", "cosuvwxz"), "PnGe");
         n += eq("alt lowers", ChatClassifier.caseFlipAlt("SnGe", "cosuvwxz"), "snGe");
         n += eq("alt digits only", ChatClassifier.caseFlipAlt("1234", "cosuvwxz") == null, true);
+        // Look-alike second guess (0.9.22): the 17:38 map read "pBb", the answer was "p8b".
+        n += eq("lookalike B->8", ChatClassifier.lookalikeAlt("pBb", "B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9", "cosuvwxz"), "p8b");
+        n += eq("lookalike 8->B", ChatClassifier.lookalikeAlt("p8b", "B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9", "cosuvwxz"), "pBb");
+        n += eq("lookalike G->6", ChatClassifier.lookalikeAlt("pnGe", "B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9", "cosuvwxz"), "pn6e");
+        n += eq("lookalike none -> case flip", ChatClassifier.lookalikeAlt("aef", "B8,O0", "cosuvwxz"), "Aef");
+        n += eq("lookalike null pairs", ChatClassifier.lookalikeAlt("abcd", null, "cosuvwxz"), "abCd");
+        n += eq("lookalike empty", ChatClassifier.lookalikeAlt("", "B8", "c") == null, true);
         // Boss-bar identity without HP / timers (titles as logged in the 0.9.12 session).
         n += eq("bar key: mob hp", ChatClassifier.bossBarKey("[EPIC] LVL4 Pig ❤8.48M"), "[EPIC] LVL4 Pig");
         n += eq("bar key: timer colon", ChatClassifier.bossBarKey("2x Essence Event: 12m 10s"), "2x Essence Event");
