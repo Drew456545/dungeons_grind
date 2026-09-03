@@ -1,0 +1,69 @@
+name: build-jar
+
+# Builds the Fabric mod on every push that touches the mod source, runs the
+# EconomyChecks (wired into `gradle check`), and commits the release jar into
+# dist/ so the jar is downloadable from the repo without a local JDK/Gradle.
+# The bot commit only touches dist/, which is excluded from `paths`, so it
+# cannot retrigger itself.
+
+on:
+  push:
+    paths:
+      - 'ycbotchallenge-source_1/ycbotchallenge/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ycbotchallenge-source_1/ycbotchallenge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # fabric-loom 1.13 needs Gradle 8.14+ (1.14+ would need Gradle 9).
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Economy checks + build
+        run: gradle --no-daemon --console=plain build
+
+      - name: Upload jar as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ycbotchallenge-jar
+          path: ycbotchallenge-source_1/ycbotchallenge/build/libs/ycbotchallenge-*.jar
+          if-no-files-found: error
+
+      - name: Commit jar to dist/
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          ver=$(grep '^mod_version=' ycbotchallenge-source_1/ycbotchallenge/gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          jar="ycbotchallenge-source_1/ycbotchallenge/build/libs/ycbotchallenge-${ver}.jar"
+          test -f "$jar"
+          mkdir -p dist
+          cp "$jar" "dist/ycbotchallenge-${ver}.jar"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "dist/ycbotchallenge-${ver}.jar"
+          if git diff --cached --quiet; then
+            echo "dist/ycbotchallenge-${ver}.jar unchanged"
+          else
+            git commit -m "Add Fabric ${ver} jar (CI build)"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi

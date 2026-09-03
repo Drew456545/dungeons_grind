@@ -1,8 +1,9 @@
 package dev.drew.ycbotchallenge;
 
 /**
- * Pure economy rules: fail-chat targets, sword-vs-zone by price ratio, pick among
- * affordable upgrades. No Minecraft types — unit-tested against captured strings.
+ * Pure economy rules: fail-chat targets, the hard TTK zone gate, sword-vs-zone by
+ * price ratio, pick among affordable upgrades, cooldown relaxation. No Minecraft
+ * types — unit-tested against captured strings.
  */
 public final class Economy {
     private Economy() {}
@@ -45,22 +46,44 @@ public final class Economy {
     }
 
     /**
-     * Log-lerp of median TTK from this zone's baseline down to {@code readyMs}.
-     * HUD-only; buy choice uses {@link #preferZone}.
+     * Effective TTK for the zone gate: the DPS-predicted whole-mob TTK of the mob
+     * being cooked when available (readable seconds into a fresh stage), else the
+     * rolling kill median, else unknown.
      */
-    public static double zoneReadiness(Double medianTtkMs, Double baselineMs, double readyMs) {
-        if (medianTtkMs == null || medianTtkMs <= 0) return 0;
-        double ready = readyMs > 0 ? readyMs : 2000;
-        if (medianTtkMs <= ready) return 1.0;
-        double baseline = (baselineMs != null && baselineMs > 0) ? baselineMs : medianTtkMs;
-        if (baseline <= ready * 1.2) return 1.0;
-        if (medianTtkMs >= baseline) return 0;
-        double den = Math.log(baseline) - Math.log(ready);
-        if (den <= 1e-9) return 1.0;
-        double r = (Math.log(baseline) - Math.log(medianTtkMs)) / den;
-        if (r < 0) return 0;
-        if (r > 1) return 1;
-        return r;
+    public static Double effectiveTtkMs(Double predictedMs, Double medianMs) {
+        if (predictedMs != null && predictedMs > 0) return predictedMs;
+        if (medianMs != null && medianMs > 0) return medianMs;
+        return null;
+    }
+
+    /**
+     * Hard zone gate: zone is allowed only with a KNOWN effective TTK at or under
+     * {@code maxTtkMs}, affordable or not. Unknown TTK refuses (wait for data);
+     * {@code maxTtkMs <= 0} disables the gate. This is what keeps the sword ahead
+     * of the stage — the 0.9.5 spiral went 0.25s → 90s TTK over three zone buys.
+     */
+    public static boolean zoneAllowed(Double ttkMs, int maxTtkMs) {
+        if (maxTtkMs <= 0) return true;
+        return ttkMs != null && ttkMs > 0 && ttkMs <= maxTtkMs;
+    }
+
+    /** HUD/log readiness: 1.0 while the gate is open, {@code max/ttk} above it, 0 while unknown. */
+    public static double zoneReadiness(Double ttkMs, int maxTtkMs) {
+        if (ttkMs == null || ttkMs <= 0) return 0;
+        if (maxTtkMs <= 0 || ttkMs <= maxTtkMs) return 1.0;
+        return maxTtkMs / ttkMs;
+    }
+
+    /**
+     * Per-kind send cap: the backstop {@code capMs}, collapsed to {@code floorMs}
+     * while the balance is at least {@code relaxMult} × the kind's last known price
+     * (early-rebirth snowball: a 60s hold costs a 10× balance swing).
+     */
+    public static int effectiveCooldownMs(int capMs, int floorMs, Double bal, Double lastPrice, double relaxMult) {
+        int cap = Math.max(0, capMs);
+        int floor = Math.max(0, Math.min(floorMs, cap));
+        if (relaxMult <= 0 || bal == null || lastPrice == null || lastPrice <= 0) return cap;
+        return bal >= relaxMult * lastPrice ? floor : cap;
     }
 
     /**

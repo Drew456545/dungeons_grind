@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.9.5.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.9.7.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -28,28 +28,27 @@ Drop `ycbotchallenge-0.9.5.jar` into your `mods/` folder alongside Fabric Loader
 
 ### Economy (upgrade loop)
 
-Chat-driven, zero-spam, buy-or-wait. `/swordmax` and `/zone max` are **never polled** — every send is event-driven with a plausible human reason, and each goes through the humanized typing pipeline (kill-lull gating, log-normal pauses, typos).
+Chat-driven, zero-spam, buy-or-wait. `/swordmax`, `/zone max` and `/rebirth` are **never polled** — every send is event-driven with a plausible human reason, and each goes through the humanized typing pipeline (kill-lull gating, log-normal pauses, typos).
 
-**The money book.** Exact anchors, verified against live EnchantedMC logs:
+**The balance is the sidebar.** The `5.62T ᴍᴏɴᴇʏ` row is reread every second and is the only money figure the bot uses. Money is credited per kill about a second after the boss bar vanishes (logs: kill 20:56:44.6 → row 20:56:45.5). `Reward Summary: (60s)` → ` + 17.19B Money` feeds only the income *rate* (HUD ETA). The 0.9.x money book (`/bal` seed, accrual, projection) is gone — it invented money between anchors and wrote its estimate back over the live row.
 
-- The sidebar `Your Balance 2.35T` row feeds the live balance every second (fresh board truth wins while it's parsing).
-- `/bal` once on enable seeds the book as a backup (real reply: `Your Balances:` / ` - Money: (1.09T)`; multi-line packets are split per line).
-- `Reward Summary: (60s)` → ` + 17.19B Money` accrues exact earnings every minute (overlap-clamped so re-anchoring never double-counts). Between anchors the estimate grows at the trailing summary rate, frozen 90s after the last anchor — no summaries means no income anyway.
-- A fail line while the price is known re-anchors the book exactly: balance = price − gap.
+**Fail lines are gaps, not prices.** `You need 781.04B Money to purchase the next sword upgrade` is how far short you are — it shrinks as you earn (logs: 781.04B → 732.08B → 683.12B). The absolute next-tier price is `sidebar balance at fail + gap`, self-correcting on every fail. If the balance is somehow unknown at fail time the gap itself becomes the retry floor, so a kind can never latch shut.
 
-**Fail lines are gaps, not prices.** `You need 781.04B Money to purchase the next sword upgrade` is how far short you are — it shrinks as you earn (logs: 781.04B → 732.08B → 683.12B). The absolute next-tier price is `balance at fail + gap`, self-correcting on every fail.
+**Evaluation triggers.** An evaluation is armed by a kill, by a sidebar money **increase** (`evalOnMoneyIncrease` — the kill credit itself, which also covers kills the client missed), and by a timer (`evalFallbackMs`, 30s) as the backstop. 0.9.6 was kill-only and sat on 8B→21B with a 1.24B sword for 108s because nothing died. Each eval waits for the board to settle (`postKillEvalDelayMin/MaxMs`, `upgradeSpendSettleMs`).
 
-**The buy loop.** After each kill (post-settle, `postKillEvalDelayMin/MaxMs`), if the book covers a known price, the bot waits a humanized notice delay (`buyNoticeDelayMin/MaxMs`, 2–8s) and types the command. A fail line updates the price and it goes quiet. **Silence within `successSilenceMs` (3s) means the purchase succeeded** — no reliance on success wording — then the price resets to unknown, a human-plausible `/bal` re-seed follows (1.5–4s), and the next attempt waits until the balance passes the **old** price again (`retryPriceGrowthPct` margin). Unknown prices get one seed send per kind per session. `upgradeMinIntervalMs` (60s) per kind remains as a backstop ceiling, not a heartbeat.
+**The buy loop.** If the balance covers a known price, the bot waits a humanized notice delay (`buyNoticeDelayMin/MaxMs`, 2–8s) and types the command. A fail line updates the price and it goes quiet. Success is read from the server's own line when there is one — `You have unlocked a new sword level for 1.24B!` (one per level; `/swordmax` buys every level it can, so the **last** amount is the retry floor for the next tier) and `You have purchased new stage(s)!` — else **silence within `successSilenceMs` (3s)** counts as success. After a success the price resets to unknown and the next attempt waits until the balance passes the old price again (`retryPriceGrowthPct` margin). Unknown prices get one exploratory send per kind, **sword first** — an unknown sword price beats an affordable zone. `upgradeMinIntervalMs` (60s) per kind is a backstop ceiling, collapsed to `commandCooldownMs` while the balance is `cooldownRelaxBalanceMult` (3×) over the kind's last price (right after a rebirth the balance grows 10× a minute; logs show zone skipped for "cooldown" from 8M to 220M).
 
-**Strict chat gate.** Upgrade lines classify only within `upgradeResponseWindowMs` (4s) of our own send, never on player/broadcast lines (`»` or `[rank]` prefix), and only via anchored patterns. This kills the 0.8.x failure mode where `EnchantedMC »` broadcasts matched the loose `enchanted` success pattern and fail lines were eaten as `/bal` replies. Success/maxed wording is never trusted; unrecognized lines are raw-logged (`upgrade_response_raw`) after both upgrade sends (6s) and `/bal` probes (8s), so reply formats are always captured for evidence-based tuning.
+**Strict chat gate.** Upgrade lines classify only within `upgradeResponseWindowMs` (4s) of our own send, never on player/broadcast lines (`»` or `[rank]` prefix), and only via anchored patterns. This kills the 0.8.x failure mode where `EnchantedMC »` broadcasts matched the loose `enchanted` success pattern. Unrecognized lines are raw-logged (`upgrade_response_raw`) for 6s after each send, so reply formats are always captured for evidence-based tuning.
 
-**Zone.** Same model for `/zone max` (fail gap → `zoneTarget = bal + gap`), plus the TTK readiness gate below. A successful zone advance teleports you, so the stop protocol exempts displacements for `expectedTeleportAfterZoneMs` (8s) after our own zone send. Zone changes are detected from the sidebar `Zone 1` row (colon-less) or the `All mobs have been respawned in your zone.` broadcast, and force a full targeting reset (`zone_retarget`).
+**Zone.** Same model for `/zone max` (fail gap → `zoneTarget = bal + gap`), behind the hard TTK gate below. A successful zone advance teleports you, so the stop protocol exempts displacements for `expectedTeleportAfterZoneMs` (8s) after our own zone send. EnchantedMC's sidebar has **no Zone row**, so zone changes come from our own teleport (`zone_teleport`), the mob level prefix on boss bars (`LVL2 Rabbit` → `LVL5 Goat`, logged as `boss_level`, debounced over two polls), the `All mobs have been respawned in your zone.` broadcast, or a `Zone N` row where a server has one. Any of them fires `zone_change`, clears the TTK window and forces a full targeting reset (`zone_retarget`).
 
 **Rebirth reset.** A rebirth zeroes money and resets sword/zone progression, so every learned price is stale the moment it happens. Detected two ways: the sidebar `rebirth: N` counter incrementing (or resetting, for ascensions), and a money collapse (≥1B → ~0 while we didn't just buy something). Either wipes all learned prices, gaps, maxed flags, and seed flags (`economy_reset` event) — the loop re-discovers post-rebirth prices with one fresh seed send per kind.
 
-Sword vs zone is a **log-scaled TTK readiness** `R`, not a sword-count quota. Fresh-zone mobs take ~40s; each `/swordmax` drops that. `R` lerps in log-space from this zone's TTK baseline down to `zoneReadyTtkMs` (2s). On a 40s start that crosses 50/50 around ~9s and reaches 1.0 at 2s. Weights: `swordWeight = 1-R`, `zoneWeight = R`. We only pick among **affordable** kinds; zone is refused while `R < zoneMinReadiness` (0.5) even if you already have the money. A high-sword enable whose first kills are already ~2s snaps `R` to 1 and zones as soon as it is affordable. HUD prints `ttk 8.2s  zone 48%`, the live `need` and `~ETA` to the next tier from the summary rate, and a `cd 41s` remainder when the 60s cap is holding. TTK baseline resets on zone changes, so `R` goes back to 0 on the new ~40s curve.
+**Sword vs zone: a hard TTK gate.** `/zone max` is refused — affordable or not — while the *effective TTK* is above `zoneMaxTtkMs` (10s) or unknown. Effective TTK is the DPS-predicted whole-mob time (`HP at tag / boss-bar DPS`, readable a couple of seconds into the first mob of a new stage) when available, else the rolling kill median (`ttkWindowKills`). The window is cleared on every zone change, so the previous stage's fast kills can never open the gate for the next stage. This is what stops the 0.9.5 spiral, where a readiness value pinned at 100% bought three zones against three swords and TTK went 0.25s → 3.8s → 7.2s → 75s → 90s until nothing died. Among **affordable** kinds with the gate open, zone wins when the next sword costs more than `zoneOverSwordRatio` (1.25×) the next zone. Rebirth, once its gap is known and covered, pre-empts both. HUD prints the live `need` and `~ETA` to the next tier from the summary rate, and a `cd 41s` remainder when a cap is holding; `status` events carry `zoneReady` (1.0 with the gate open, `zoneMaxTtkMs / ttk` above it).
 
-The sidebar is reread every second: the `Your Balance` money row feeds the buy path directly, other currencies (`sidebarCurrencies`) are logged, and snapshots publish every `scoreboardSnapshotMs` (5s). `debugSidebar` defaults to **true** while parsers are tuned from live evidence — every new sidebar row lands in the JSONL as `sidebar_raw`. Money values in the JSONL are suffixed strings (`75.1B`), not scientific notation. Config pattern lists auto-migrate (`configVersion` 7 replaces economy patterns with the strict evidence-based defaults and flips `debugSidebar` on).
+**Cook timeout.** `maxCookMs` (90s) abandons a tagged mob only once its boss-bar HP has also stopped dropping for `cookStallMs` (15s). Fresh-stage mobs can legitimately take that long (the Goat in the logs died at 89.8s; 0.9.6 abandoned the next one at 90.0s, one second before it died, and lost the kill credit and its 6.48B).
+
+The sidebar is reread every second: the money row feeds the buy path directly, other currencies (`sidebarCurrencies`) are logged, and snapshots publish every `scoreboardSnapshotMs` (5s). `debugSidebar` defaults to **true** while parsers are tuned from live evidence — every new sidebar row lands in the JSONL as `sidebar_raw`. Money values in the JSONL are suffixed strings (`75.1B`), not scientific notation. Config knobs auto-migrate (`configVersion` 11 forces the 0.9.7 defaults: success patterns, zone gate, eval triggers, cooldown relaxation, stall-aware cook timeout, `minKillsAfterAffordable` 0).
 
 ### Stop protocol + TTK
 
@@ -57,8 +56,11 @@ The sidebar is reread every second: the `Your Balance` money row feeds the buy p
 - **TTK** now measures connect → boss-bar-gone (server-authoritative death) instead of client-side entity removal, which ghosts were glitching. A bar that vanishes under `barVanishMinCookMs` with the entity still alive counts as a tag that didn't stick, not a kill.
 - **Rarity HP scaling**: kill durations are normalized by `rarityHpScale` (default RARE +15%, EPIC +30%, LEGENDARY +40%) before entering the TTK window, so a tanky legendary doesn't read as slow farming. Mobs with no rarity tag get 1.0 (the nameplate parser can't see a tag that isn't there).
 
-- `zoneReadyTtkMs` (default 2000) — TTK at which zone readiness `R` = 1 (log-lerped from the per-zone baseline).
-- `zoneMinReadiness` (0.5) — zone is not bought below this even if it is the only affordable upgrade.
+- `zoneMaxTtkMs` (10000) — hard zone gate: no `/zone max` while the effective TTK is above this or unknown. 0 disables.
+- `evalFallbackMs` (30000) / `evalOnMoneyIncrease` (true) — upgrade evaluation triggers beyond kills: a timer backstop and any sidebar money increase.
+- `cooldownRelaxBalanceMult` (3.0) — the 60s per-kind cap collapses to `commandCooldownMs` while balance ≥ this × the kind's last price. 0 disables.
+- `cookStallMs` (15000) — `maxCookMs` only abandons a mob whose boss-bar HP has not dropped for this long.
+- `zoneReadyTtkMs`, `zoneMinReadiness` — legacy (pre-0.9.7 readiness curve); inert.
 - `scoreboardSnapshotMs` (5000) — how often the canonical multi-currency snapshot is published.
 - `sidebarCurrencies` — names parsed from the sidebar (`money`, `souls`, `essence`, `shards`, `credits`).
 - `ttkWindowKills` (8) — rolling window for the median TTK. A per-zone baseline is snapshotted a few kills after each zone change and logged via `zone_benchmark` events.
@@ -69,10 +71,10 @@ The sidebar is reread every second: the `Your Balance` money row feeds the buy p
 - `upgradeResponseWindowMs` (4000) — replies are only attributable to our send within this window.
 - `expectedTeleportAfterZoneMs` (8000) — stop-protocol exemption after our own `/zone max`.
 - `upgradeSpendSettleMs` (2500) — ignore the sidebar this long after a buy (board lags after spending).
-- `minKillsAfterAffordable` (1) — extra kills after the balance first covers the target before typing.
-- `balCommand` / `balPatterns` — the balance probe command and its anchored reply patterns (` - Money: (1.09T)`).
-- `summaryHeaderPattern` / `summaryMoneyPattern` — the `Reward Summary: (60s)` / ` + 17.19B Money` income lines.
+- `minKillsAfterAffordable` (0) — extra kills after the balance first covers the target before typing (at a 90s TTK, 1 held 2.75B against a 2.5B stage for a minute and a half).
+- `summaryHeaderPattern` / `summaryMoneyPattern` — the `Reward Summary: (60s)` / ` + 17.19B Money` income-rate lines.
 - `upgradeFailPatterns` / `upgradeNeedAmountPattern` — anchored fail lines and the gap-amount extractor.
+- `upgradeSuccessPatterns` — anchored success lines; the sword pattern's `amount` group is the exact price paid.
 - `suffixScales` — extra amount suffixes merged over the built-in `K…Dc` table, e.g. `{"UTG": 1e36}`. Unknown suffixes warn once in the log.
 - `upgradeMaxedPatterns` — anchored response lines meaning a kind is fully upgraded (it is then never sent again).
 - `upgradePeriodMinMs/MaxMs`, `zoneEverySwordsMin/Max` — legacy; inert.
@@ -104,7 +106,7 @@ Defaults are tuned to Sonar (what the hackathon runs): detection matches its "en
 
 ## How it detects progression
 
-Rebirths: sidebar counter going up = rebirth; counter dropping = reset = ascension (plus chat-message patterns as a second signal, same for prestige). Boosts: boss bar titles, tracked as start/end and stamped into every event's context. Balances: the chat-driven money book (`/bal` seed, reward-summary accrual, fail-implied anchors) plus configured sidebar currencies snapshotted every 5s (`scoreboard_snapshot`). Log events: `scoreboard_snapshot`, `balance_probe`, `income`, `income_summary`, `upgrade_plan`, `upgrade_send`, `upgrade_chat`, `upgrade_result`, `upgrade_skip`, `upgrade_maxed`, `upgrade_response_raw`, `zone_benchmark`, `zone_teleport` (plus ninja noise: `misclick`, `target_mispick`, `sprint_hit_slip`, `distracted`, `break_start`, `aim_regime`).
+Rebirths: sidebar counter going up = rebirth; counter dropping = reset = ascension (plus chat-message patterns as a second signal, same for prestige). Boosts: boss bar titles, tracked as start/end and stamped into every event's context. Balances: the sidebar rows (`balance` on change, `scoreboard_snapshot` every 5s); the reward summary feeds only the income rate. Zone: own teleport, boss-bar mob level, respawn broadcast or a sidebar Zone row. Log events: `scoreboard_snapshot`, `balance`, `income`, `income_summary`, `upgrade_plan` / `upgrade_skip` (with `via` = kill/money/timer, `ttkMs`, `zoneGate`, `swordFloor`/`zoneFloor`), `upgrade_send`, `upgrade_chat`, `upgrade_result` (`paid`, `extraLevel` for multi-level `/swordmax`), `upgrade_maxed`, `upgrade_response_raw`, `zone_benchmark`, `zone_teleport`, `zone_change`, `boss_level`, `economy_reset`, `target_abandoned` (`sinceHpDropMs`) (plus ninja noise: `misclick`, `target_mispick`, `sprint_hit_slip`, `distracted`, `break_start`, `aim_regime`).
 
 ## Building from source
 

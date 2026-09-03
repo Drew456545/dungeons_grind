@@ -265,8 +265,13 @@ public class YCBotChallengeConfig {
     public boolean targetDominant = true;
     /** Dominant filtering only kicks in when the top mob type has at least this many alive in range. */
     public int minDominantPack = 3;
-    /** Abandon a tagged mob that still hasn't died after this long (client-side ghost / unkillable). Set ~2x your average time-to-kill. */
+    /**
+     * Abandon a tagged mob that still hasn't died after this long — but only once its
+     * boss-bar HP has also stopped dropping for {@link #cookStallMs}. A slow, legit kill
+     * on a fresh stage keeps cooking (the 90s Goat); a ghost / unkillable mob does not.
+     */
     public int maxCookMs = 90000;
+    public int cookStallMs = 15000;
     public boolean hud = true;
     public int hudX = 4;
     public int hudY = 4;
@@ -329,9 +334,11 @@ public class YCBotChallengeConfig {
      * Once the money balance is known to cover the next upgrade cost, wait for at
      * least this many more kills before interrupting combat to type the command —
      * a player finishes a mob, then does the buy in the lull rather than snapping
-     * to chat the instant money crosses the threshold.
+     * to chat the instant money crosses the threshold. Default 0 since 0.9.7: the
+     * post-kill window already provides the lull, and at a 90s TTK one extra kill
+     * held 2.75B against a 2.5B stage for a minute and a half.
      */
-    public int minKillsAfterAffordable = 1;
+    public int minKillsAfterAffordable = 0;
     /** Sidebar key used for afford checks (chicken / money / souls...). */
     public String moneyCurrency = "money";
     /**
@@ -348,11 +355,14 @@ public class YCBotChallengeConfig {
     public String upgradeNeedAmountPattern =
         "/(?i)you need\\s+\\$?\\(?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\)?\\s*money\\b/";
     /**
-     * Sword success chat (verified): "You have unlocked a new sword level for 6.43M!".
-     * Zone has no success wording — silence / teleport is the signal.
+     * Success chat, verified in logs. Sword prints one line PER LEVEL bought with the
+     * exact price ("You have unlocked a new sword level for 6.43M!"); the amount group
+     * feeds the retry floor. Zone prints "You have purchased new stage(s)!" (no amount,
+     * possibly several stages). Silence after the response window remains the fallback.
      */
     public List<String> upgradeSuccessPatterns = List.of(
-        "/(?i)you have unlocked a new sword level for\\s+(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/"
+        "/(?i)you have unlocked a new sword level for\\s+(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
+        "/(?i)^you have purchased new stage/"
     );
     /** Response lines meaning the kind is fully upgraded (window-gated, anchored). */
     public List<String> upgradeMaxedPatterns = List.of(
@@ -379,21 +389,8 @@ public class YCBotChallengeConfig {
     /** Same exemption after a successful rebirth diamond click (GUI closes and teleports). */
     public int expectedTeleportAfterRebirthMs = 8000;
 
-    // --- Economy: /bal seed + income-driven scheduling ---
+    // --- Economy: sidebar balance + event-driven scheduling (the /bal probe was removed in 0.9.7) ---
 
-    /** On bot enable, type rebirthCommand once to seed the rebirth gap. Never /bal. */
-    public boolean startupProbes = false;
-    public String balCommand = "/bal";
-    /**
-     * Reply lines for balCommand, anchored to the real formats (verified in logs):
-     * the "Your Balances:" block renders " - Money: (1.09T)" — parenthesized amount.
-     * Only accepted within 8s of a /bal send, and never from broadcast lines.
-     */
-    public List<String> balPatterns = List.of(
-        "/(?i)^\\s*-?\\s*money\\s*:\\s*\\(\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*\\)/",
-        "/(?i)^\\s*-?\\s*money\\s*:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*$/",
-        "/(?i)^\\s*(?:your\\s+)?balance\\s*:?\\s*\\$?\\(?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\)?\\s*$/"
-    );
     /**
      * Sidebar money line: "75.1B Money" (value-first), "MONEY: 75.1B" (label-first),
      * or the real EnchantedMC row "Your Balance 2.35T". First non-null group wins.
@@ -408,19 +405,37 @@ public class YCBotChallengeConfig {
      * This is a ceiling, not a heartbeat: unaffordable evals do not send.
      */
     public int upgradeMinIntervalMs = 60_000;
+    /**
+     * The 60s cap collapses to commandCooldownMs while the balance is at least this
+     * many times the kind's last known price: right after a rebirth the balance grows
+     * 10× a minute and a 60s hold on /zone max is a real loss (logs: 8M→220M while
+     * "cooldown"). 0 disables the relaxation.
+     */
+    public double cooldownRelaxBalanceMult = 3.0;
     /** After a buy, wait this long before trusting the sidebar (it lags ~1–2s after spends). */
     public int upgradeSpendSettleMs = 2500;
     /** After a kill, wait this long for the sidebar balance to update before evaluating affordability. */
     public int postKillEvalDelayMinMs = 1500;
     public int postKillEvalDelayMaxMs = 3000;
+    /**
+     * Upgrade evaluation is event-driven: a kill, a sidebar money increase
+     * (evalOnMoneyIncrease — the kill credit lands ~1s after the boss bar vanishes and
+     * also catches kills the client missed), and this timer as the backstop so a stalled
+     * stage with a fat balance is never left unevaluated. 0 disables the timer.
+     */
+    public int evalFallbackMs = 30_000;
+    public boolean evalOnMoneyIncrease = true;
     /** Legacy; TTK readiness no longer requires a sword buy this zone. */
     public int zoneMinSwordBuysThisZone = 0;
-    /** Median TTK at this value => zone readiness R=1 (log-lerped from the per-zone baseline). */
-    public int zoneReadyTtkMs = 2000;
     /**
-     * Minimum zone readiness before /zone max is allowed, even if it is the only
-     * affordable upgrade. 0.5 ≈ the log-lerp midpoint (~9s on a 40s baseline).
+     * Hard zone gate: /zone max is refused — affordable or not — while the effective
+     * TTK (DPS-predicted for the mob being cooked, else the rolling kill median) is
+     * above this, or unknown. Keeps the sword ahead of the stage: the 0.9.5 spiral went
+     * 0.25s → 90s TTK across three zone buys and then starved. 0 disables the gate.
      */
+    public int zoneMaxTtkMs = 10_000;
+    /** Legacy (pre-0.9.7 log-lerp readiness); inert. */
+    public int zoneReadyTtkMs = 2000;
     public double zoneMinReadiness = 0.5;
     /** Rolling window (kills) for the median time-to-kill. */
     public int ttkWindowKills = 8;
@@ -498,7 +513,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 10;
+    public static final int CURRENT_CONFIG_VERSION = 11;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -548,7 +563,6 @@ public class YCBotChallengeConfig {
             // v6: evidence-based strict patterns replace the loose guessed ones
             // (the old ones matched "EnchantedMC »" broadcasts and ate fail lines
             // as /bal replies — see the 0.9.0 README economy section).
-            balPatterns = fresh.balPatterns;
             upgradeFailPatterns = fresh.upgradeFailPatterns;
             upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
             zonePattern = fresh.zonePattern;
@@ -565,7 +579,6 @@ public class YCBotChallengeConfig {
             // v8: force every evidence-based economy pattern — covers configs whose
             // configVersion was missing from the JSON (Gson field initializers made
             // it look current, silently skipping the v6/v7 migrations).
-            balPatterns = fresh.balPatterns;
             sidebarMoneyPattern = fresh.sidebarMoneyPattern;
             upgradeFailPatterns = fresh.upgradeFailPatterns;
             upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
@@ -588,10 +601,22 @@ public class YCBotChallengeConfig {
             upgradeNeedAmountPattern = fresh.upgradeNeedAmountPattern;
             upgradeFailPatterns = fresh.upgradeFailPatterns;
             upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
-            startupProbes = false;
             zoneOverSwordRatio = fresh.zoneOverSwordRatio;
             rebirthCommand = fresh.rebirthCommand;
             commandCooldownMs = fresh.commandCooldownMs;
+            changed = true;
+        }
+        if (configVersion < 11) {
+            // v11: hard TTK zone gate, event-driven eval (money / timer), stall-aware
+            // cook timeout, success-line bookkeeping (zone "purchased new stage(s)"),
+            // relaxed cooldown, no extra-kill wait; the /bal machinery is gone.
+            upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
+            zoneMaxTtkMs = fresh.zoneMaxTtkMs;
+            evalFallbackMs = fresh.evalFallbackMs;
+            evalOnMoneyIncrease = fresh.evalOnMoneyIncrease;
+            cooldownRelaxBalanceMult = fresh.cooldownRelaxBalanceMult;
+            cookStallMs = fresh.cookStallMs;
+            minKillsAfterAffordable = fresh.minKillsAfterAffordable;
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;
@@ -608,7 +633,6 @@ public class YCBotChallengeConfig {
         if (upgradeFailPatterns == null) upgradeFailPatterns = fresh.upgradeFailPatterns;
         if (upgradeSuccessPatterns == null) upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
         if (upgradeMaxedPatterns == null) upgradeMaxedPatterns = fresh.upgradeMaxedPatterns;
-        if (balPatterns == null) balPatterns = fresh.balPatterns;
         if (upgradeNeedAmountPattern == null || upgradeNeedAmountPattern.isBlank()) {
             upgradeNeedAmountPattern = fresh.upgradeNeedAmountPattern;
         }
@@ -629,7 +653,6 @@ public class YCBotChallengeConfig {
             playerRadarWhitelist = List.of("ZONE VISIBILITY", "CLICK HERE");
         }
         if (movingTargetPolicy == null) movingTargetPolicy = "ignore";
-        if (balCommand == null || balCommand.isBlank()) balCommand = "/bal";
         if (sidebarMoneyPattern == null || sidebarMoneyPattern.isBlank()) {
             sidebarMoneyPattern = "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})/";
         }
@@ -652,6 +675,11 @@ public class YCBotChallengeConfig {
         if (scoreboardSnapshotMs < 500) scoreboardSnapshotMs = 5000;
         if (zoneMinReadiness < 0 || zoneMinReadiness > 1) zoneMinReadiness = 0.5;
         if (upgradeMinIntervalMs < 0) upgradeMinIntervalMs = 60_000;
+        if (cooldownRelaxBalanceMult < 0) cooldownRelaxBalanceMult = 0;
+        if (zoneMaxTtkMs < 0) zoneMaxTtkMs = 10_000;
+        if (evalFallbackMs < 0) evalFallbackMs = 30_000;
+        if (cookStallMs < 0) cookStallMs = 15_000;
+        if (minKillsAfterAffordable < 0) minKillsAfterAffordable = 0;
         if (upgradeSpendSettleMs < 0) upgradeSpendSettleMs = 2500;
         if (postKillEvalDelayMaxMs < postKillEvalDelayMinMs) {
             postKillEvalDelayMaxMs = Math.max(postKillEvalDelayMinMs, 3000);

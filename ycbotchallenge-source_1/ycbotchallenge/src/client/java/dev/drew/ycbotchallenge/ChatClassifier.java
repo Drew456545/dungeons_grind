@@ -30,6 +30,22 @@ public final class ChatClassifier {
         return SidebarParser.strip(raw);
     }
 
+    /**
+     * Heart HP from a mob boss-bar title. Low stages print plain numbers
+     * ("[EPIC] LVL1 Chicken ❤346"); higher ones use amount suffixes
+     * ("LVL5 Goat ❤82.04M"), which a digits-only parser read as 82 — and as
+     * 999 → 8 across a K→M boundary, so the DPS slope went negative.
+     */
+    private static final Pattern BOSS_HP = Pattern.compile(
+        "[❤♥]️?\\s*([\\d,]+(?:\\.\\d+)?\\s*[A-Za-z]{0,4})");
+
+    public static Double bossBarHp(String title) {
+        if (title == null || title.isEmpty()) return null;
+        Matcher m = BOSS_HP.matcher(title);
+        if (!m.find()) return null;
+        return Amounts.parse(m.group(1));
+    }
+
     /** The remaining-gap amount from a fail line: "You need 781.04B Money ...". */
     public static Double needAmount(String stripped, Pattern needAmountRe) {
         return amountGroup(stripped, needAmountRe);
@@ -40,10 +56,14 @@ public final class ChatClassifier {
         return amountGroup(stripped, moneyRe);
     }
 
-    /** /bal reply balance from the anchored pattern list. */
-    public static Double balReply(String stripped, List<Pattern> balRes) {
-        if (stripped == null || balRes == null) return null;
-        for (Pattern p : balRes) {
+    /**
+     * Amount paid from a success line, e.g. "You have unlocked a new sword level for
+     * 1.24B!" → 1.24e9. Null when the matching pattern carries no amount (the zone
+     * "You have purchased new stage(s)!" line).
+     */
+    public static Double successAmount(String stripped, List<Pattern> successRes) {
+        if (stripped == null || successRes == null) return null;
+        for (Pattern p : successRes) {
             Double v = amountGroup(stripped, p);
             if (v != null) return v;
         }

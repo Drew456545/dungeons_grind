@@ -75,6 +75,12 @@ public class CombatController {
     public Double currentHp = null;
     public Double currentDps = null;
     public Double currentEtaMs = null;
+    /** Boss-bar HP when the tag connected; with the DPS slope this predicts the whole-mob TTK. */
+    private Double tagHp = null;
+    /** Predicted TTK (tag HP / DPS) of the most recent cook — survives the kill for the upgrade eval. */
+    public Double lastPredictedTtkMs = null;
+    private Double lastHpSeen = null;
+    private long lastHpDropAt = 0;
 
     private float approachYawOffset = 0f;
     /** Signed yaw error to the movement target (deg, + = target to the right). */
@@ -239,6 +245,8 @@ public class CombatController {
                         // arm the radar (zones legitimately contain stationary NPCs).
                         stats.clearTeleportExpected();
                         if (logger != null) logger.log("zone_teleport", "blocks", Math.round(jumped));
+                        stats.onZoneAdvance("teleport");
+                        lastPredictedTtkMs = null;
                         lastTickPos = null;
                         releaseKeys(client);
                         return;
@@ -376,11 +384,15 @@ public class CombatController {
             return;
         }
 
-        // connected mob that never dies = client-side ghost or unkillable — abandon it
-        if (target != null && connected && now - tagAt > cfg.maxCookMs) {
+        // connected mob that never dies = client-side ghost or unkillable — abandon it.
+        // A mob whose boss-bar HP is still dropping is neither: the 90s Goat in the logs
+        // was abandoned 1s before it died, forfeiting the kill credit and its 6.48B.
+        boolean hpStalled = lastHpDropAt == 0 || now - lastHpDropAt > cfg.cookStallMs;
+        if (target != null && connected && now - tagAt > cfg.maxCookMs && hpStalled) {
             if (logger != null) {
                 logger.log("target_abandoned", "reason", "cook-timeout",
-                    "mob", targetMob, "rarity", targetRarity, "afterMs", now - tagAt);
+                    "mob", targetMob, "rarity", targetRarity, "afterMs", now - tagAt,
+                    "sinceHpDropMs", lastHpDropAt == 0 ? null : now - lastHpDropAt);
             }
             target = null;
             connected = false;
@@ -445,6 +457,9 @@ public class CombatController {
         if (clicksThisTarget >= 1 && stats.bossBarMatches(targetMob)) {
             connected = true;
             tagAt = now;
+            tagHp = stats.currentHpFor(targetMob);
+            lastHpSeen = tagHp;
+            lastHpDropAt = now;
             cookLeash = rng.nextDouble(cfg.cookLeashMinBlocks, Math.max(cfg.cookLeashMinBlocks + 0.01, cfg.cookLeashMaxBlocks));
             rollTrackStyle(client);
             lookIssued = false;
@@ -521,6 +536,15 @@ public class CombatController {
             currentEtaMs = currentHp / currentDps * 1000.0;
         } else {
             currentEtaMs = null;
+        }
+        // Whole-mob TTK prediction (HP at tag / DPS): the zone gate reads it a couple of
+        // seconds into the first mob of a new stage instead of waiting for three kills.
+        if (tagHp != null && currentDps != null && currentDps > 0) {
+            lastPredictedTtkMs = tagHp / currentDps * 1000.0;
+        }
+        if (currentHp != null) {
+            if (lastHpSeen == null || currentHp < lastHpSeen - 1e-9) lastHpDropAt = now;
+            lastHpSeen = currentHp;
         }
 
         boolean handoffDue = currentEtaMs != null && currentEtaMs <= cfg.handoffLeadMs;

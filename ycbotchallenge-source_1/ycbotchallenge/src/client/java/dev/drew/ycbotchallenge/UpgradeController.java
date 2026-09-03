@@ -16,9 +16,10 @@ import net.minecraft.util.math.Vec3d;
  * Stationary, typed {@code /swordmax} / {@code /zone max} / {@code /rebirth}.
  *
  * Sidebar money is truth (no {@code /bal}). Rebirth is seeded from the chat gap
- * {@code You need $29.99T Money to Rebirth.} Buys use the same post-kill human
- * window as the other upgrades; if rebirth is covered, sword/zone are skipped.
- * Sword vs zone is a 1.25× price ratio, not TTK.
+ * {@code You need $29.99T Money to Rebirth.} Evaluations fire on a kill, on a
+ * sidebar money increase, or on a timer; if rebirth is covered, sword/zone are
+ * skipped. Zone is refused outright while the effective TTK is above
+ * {@code zoneMaxTtkMs}; among affordable kinds the 1.25× price ratio decides.
  */
 public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, OPEN, TYPE, SEND, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
@@ -53,6 +54,10 @@ public class UpgradeController {
     private int lastZoneSeq = -1;
     private int swordAffordableAtKill = -1;
     private int zoneAffordableAtKill = -1;
+    private long lastEvalAt = 0;
+    private Double lastSeenMoney = null;
+    private String evalReason = null;
+    private Double evalTtkMs = null;
 
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -88,7 +93,7 @@ public class UpgradeController {
                 sb.append(last != null ? "  price ? (retry ≥ " + Amounts.format(last) + ")" : "  price ?");
             }
             long last = lastSendFor(kind);
-            int cap = "rebirth".equals(kind) ? 0 : Math.max(0, cfg.upgradeMinIntervalMs);
+            int cap = capFor(kind);
             long remainMs = last <= 0 || cap <= 0 ? 0 : (last + cap) - System.currentTimeMillis();
             if (remainMs > 0) sb.append("  cd ").append((remainMs + 999) / 1000).append("s");
         }
@@ -124,6 +129,10 @@ public class UpgradeController {
         lastZoneSeq = -1;
         swordAffordableAtKill = -1;
         zoneAffordableAtKill = -1;
+        lastEvalAt = 0;
+        lastSeenMoney = null;
+        evalReason = null;
+        evalTtkMs = null;
     }
 
     /**
@@ -166,8 +175,7 @@ public class UpgradeController {
                 if (now < decisionAt) return false;
                 String kind = decision;
                 if (!commandReady(now)) return false;
-                int cap = "rebirth".equals(kind) ? 0 : cfg.upgradeMinIntervalMs;
-                if (!Economy.cooldownElapsed(now, lastSendFor(kind), cap, false)) return false;
+                if (!Economy.cooldownElapsed(now, lastSendFor(kind), capFor(kind), false)) return false;
                 if (!combat.wantsUpgradeWindow && !combat.isStationary(client)) {
                     return false;
                 }
@@ -175,24 +183,45 @@ public class UpgradeController {
                 begin(client, combat, now, new PendingCmd(commandOf(kind), kindOf(kind), 0, false));
                 return true;
             }
-            if (combat.kills != lastKillCount) {
+            // Eval triggers: a kill (its money lands ~1s later), a sidebar money increase
+            // (the kill credit itself — also catches kills the client missed), and a timer
+            // so a stalled stage with a fat balance is never left unevaluated (0.9.6 sat on
+            // 8B→21B with a 1.24B sword for 108s because nothing died).
+            if (lastEvalAt == 0) lastEvalAt = now;
+            Double balNow = stats.money();
+            boolean killed = combat.kills != lastKillCount;
+            boolean moneyUp = cfg.evalOnMoneyIncrease && balNow != null && lastSeenMoney != null
+                && balNow > lastSeenMoney + 1e-6;
+            boolean stale = cfg.evalFallbackMs > 0 && now - lastEvalAt >= cfg.evalFallbackMs;
+            if (balNow != null) lastSeenMoney = balNow;
+            if (killed || moneyUp || stale) {
                 lastKillCount = combat.kills;
-                evalAt = now + HumanTiming.logNormalMs(cfg.postKillEvalDelayMinMs, cfg.postKillEvalDelayMaxMs);
+                if (evalAt == Long.MAX_VALUE) {
+                    evalAt = now + HumanTiming.logNormalMs(cfg.postKillEvalDelayMinMs, cfg.postKillEvalDelayMaxMs);
+                    evalReason = killed ? "kill" : moneyUp ? "money" : "timer";
+                }
             }
             if (evalAt == Long.MAX_VALUE || now < evalAt) return false;
-            evalAt = Long.MAX_VALUE;
             int settleMs = Math.max(cfg.upgradeSpendSettleMs, cfg.postKillEvalDelayMinMs);
-            if (!stats.sidebarSettled(now, settleMs)) return false;
+            if (!stats.sidebarSettled(now, settleMs)) {
+                evalAt = now + 500; // board still lagging a spend: re-check shortly, never drop the eval
+                return false;
+            }
+            evalAt = Long.MAX_VALUE;
+            lastEvalAt = now;
 
             stats.publishSnapshot(true);
+            evalTtkMs = stats.effectiveTtkMs(combat.lastPredictedTtkMs);
+            stats.lastEffectiveTtkMs = evalTtkMs;
             updateAffordableMarks(combat.kills);
             String kind = decideKind(combat.kills);
             if (kind == null) {
-                skipEval("unaffordable", null);
+                boolean zoneGated = !Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs)
+                    && !stats.zoneMaxed && (knownAffordable("zone") || stats.zoneTarget == null);
+                skipEval(zoneGated ? "zone-gated" : "unaffordable", null);
                 return false;
             }
-            int cap = "rebirth".equals(kind) ? 0 : cfg.upgradeMinIntervalMs;
-            if (!Economy.cooldownElapsed(now, lastSendFor(kind), cap, false)) {
+            if (!Economy.cooldownElapsed(now, lastSendFor(kind), capFor(kind), false)) {
                 skipEval("cooldown", kind);
                 return false;
             }
@@ -313,6 +342,11 @@ public class UpgradeController {
                     return settleRebirth(client, now);
                 }
                 if (now < phaseUntil && !stats.lastSendSucceeded && !stats.failSince(kindName(), lastSendAt)) {
+                    return true;
+                }
+                // A success line ends the wait, but /swordmax prints one line per level it
+                // bought — give the rest of the burst a moment to land before moving on.
+                if (stats.lastSendSucceeded && stats.lastSuccessAt > 0 && now - stats.lastSuccessAt < 600) {
                     return true;
                 }
                 String kind = kindName();
@@ -459,41 +493,56 @@ public class UpgradeController {
         Double price = targetOf(kind);
         Double bal = stats.money();
         logger.log("upgrade_plan", "kind", kind,
+            "via", evalReason,
             "target", price != null ? Amounts.format(price) : null,
             "bal", bal != null ? Amounts.format(bal) : null,
             "pct", price != null && price > 0 && bal != null
                 ? Math.round(1000.0 * bal / price) / 10.0 : null,
             "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
+            "ttkMs", evalTtkMs != null ? Math.round(evalTtkMs) : null,
+            "zoneGate", Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs) ? "open" : "closed",
             "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
-            "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null);
+            "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
+            "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,
+            "zoneFloor", stats.lastPrice("zone") != null ? Amounts.format(stats.lastPrice("zone")) : null);
+    }
+
+    private boolean zoneOpen() {
+        return !stats.zoneMaxed && Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs);
     }
 
     private String hudKind() {
         if (stats.rebirthTarget != null) return "rebirth";
-        return Economy.preferredKind(!stats.swordMaxed, !stats.zoneMaxed,
+        return Economy.preferredKind(!stats.swordMaxed, zoneOpen(),
             stats.swordTarget, stats.zoneTarget, cfg.zoneOverSwordRatio);
     }
 
+    /**
+     * Rebirth when covered; else among affordable kinds by price ratio, with zone
+     * only while the TTK gate is open; else one exploratory send — sword first
+     * (unknown sword price beats an affordable zone), zone only through the gate.
+     */
     private String decideKind(int kills) {
         if (rebirthAffordable()) return "rebirth";
+        boolean zoneOpen = zoneOpen();
         String buy = Economy.chooseBuyKind(
-            !stats.swordMaxed, !stats.zoneMaxed,
+            !stats.swordMaxed, zoneOpen,
             knownAffordable("sword"), knownAffordable("zone"),
             stats.swordTarget, stats.zoneTarget, cfg.zoneOverSwordRatio);
         if (buy != null) {
             return extraKillsOk(buy, kills) ? buy : null;
         }
-        String pref = Economy.preferredKind(!stats.swordMaxed, !stats.zoneMaxed,
+        String pref = Economy.preferredKind(!stats.swordMaxed, zoneOpen,
             stats.swordTarget, stats.zoneTarget, cfg.zoneOverSwordRatio);
-        String explore = exploreKind(pref);
-        if (explore == null && pref != null) explore = exploreKind("zone".equals(pref) ? "sword" : "zone");
+        String explore = exploreKind(pref, zoneOpen);
+        if (explore == null && pref != null) explore = exploreKind("zone".equals(pref) ? "sword" : "zone", zoneOpen);
         return explore;
     }
 
-    private String exploreKind(String kind) {
+    private String exploreKind(String kind, boolean zoneOpen) {
         if (kind == null || "rebirth".equals(kind)) return null;
         boolean zone = "zone".equals(kind);
-        if (zone ? stats.zoneMaxed : stats.swordMaxed) return null;
+        if (zone ? !zoneOpen : stats.swordMaxed) return null;
         Double price = zone ? stats.zoneTarget : stats.swordTarget;
         if (price != null) return null;
         if (!stats.seeded(kind)) return kind;
@@ -558,6 +607,18 @@ public class UpgradeController {
         return lastSwordSendAt;
     }
 
+    /**
+     * Per-kind send cap: none for rebirth; the 60s backstop otherwise, collapsed to
+     * the command cooldown while the balance dwarfs the kind's last known price
+     * (the early-rebirth snowball, where a 60s hold on /zone max cost a 10× swing).
+     */
+    private int capFor(String kind) {
+        if ("rebirth".equals(kind)) return 0;
+        Double ref = targetOf(kind) != null ? targetOf(kind) : stats.lastPrice(kind);
+        return Economy.effectiveCooldownMs(cfg.upgradeMinIntervalMs, cfg.commandCooldownMs,
+            stats.money(), ref, cfg.cooldownRelaxBalanceMult);
+    }
+
     private boolean commandReady(long now) {
         int cd = Math.max(0, cfg.commandCooldownMs);
         return lastSendAt <= 0 || now - lastSendAt >= cd;
@@ -570,10 +631,15 @@ public class UpgradeController {
         Double bal = stats.money();
         logger.log("upgrade_skip", "reason", reason,
             "kind", kind,
+            "via", evalReason,
             "target", remaining != null ? Amounts.format(remaining) : null,
             "bal", bal != null ? Amounts.format(bal) : null,
+            "ttkMs", evalTtkMs != null ? Math.round(evalTtkMs) : null,
+            "zoneGate", Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs) ? "open" : "closed",
             "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
             "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
+            "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,
+            "zoneFloor", stats.lastPrice("zone") != null ? Amounts.format(stats.lastPrice("zone")) : null,
             "rebirthTarget", stats.rebirthTarget != null ? Amounts.format(stats.rebirthTarget) : null);
     }
 

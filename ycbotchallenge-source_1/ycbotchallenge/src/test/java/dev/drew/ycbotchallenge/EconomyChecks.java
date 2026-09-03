@@ -6,8 +6,9 @@ import java.util.regex.Pattern;
 /**
  * Standalone checks for the chat-driven upgrade economy. Every fixture is a real
  * line captured from live EnchantedMC session logs (events-baseline-2026-09-02):
- * must-parse formats (fail gaps, reward summary, /bal block) and must-NOT-classify
- * server noise (enchant procs, welcomes, player shops, soul-enchant purchases).
+ * must-parse formats (fail gaps, success lines, reward summary) and must-NOT-classify
+ * server noise (enchant procs, welcomes, player shops, soul-enchant purchases), plus
+ * the pure decision rules (zone TTK gate, cooldown relaxation, retry floors).
  */
 public final class EconomyChecks {
     private EconomyChecks() {}
@@ -18,8 +19,6 @@ public final class EconomyChecks {
             + "You need 781.04B Money to purchase the next sword upgrade.";
     private static final String ZONE_FAIL =
         "You do not have enough money to purchase the next stage. You need 1.25Q Money.";
-    private static final String BAL_MONEY_PARENS = " - Money: (1.09T)";
-    private static final String BAL_SIMPLE = "Balance: 2.35T";
     private static final String SUMMARY_HEADER = "Reward Summary: (60s)";
     private static final String SUMMARY_MONEY = " + 17.19B Money";
     private static final String SUMMARY_SOULS = " + 2.69M Souls";
@@ -34,6 +33,8 @@ public final class EconomyChecks {
     private static final String REBIRTH_NEED = "You need $29.99T Money to Rebirth.";
     private static final String REBIRTH_NEED_ICON = "\ue04e You need $29.99T Money to Rebirth.";
     private static final String SWORD_UNLOCK = "You have unlocked a new sword level for 6.43M!";
+    private static final String SWORD_UNLOCK_REAL = "You have unlocked a new sword level for 1.24B!";
+    private static final String ZONE_UNLOCK = "You have purchased new stage(s)!";
 
     private static final YCBotChallengeConfig CFG = new YCBotChallengeConfig();
 
@@ -42,11 +43,10 @@ public final class EconomyChecks {
         n += amounts();
         n += sidebar();
         n += failLines();
-        n += balLines();
+        n += successLines();
         n += summaryLines();
         n += noiseRejection();
-        n += book();
-        n += readiness();
+        n += zoneGate();
         n += choose();
         n += gates();
         n += rebirth();
@@ -79,6 +79,14 @@ public final class EconomyChecks {
         n += eq("parens (1.09T)", Amounts.parse("(1.09T)"), 1.09e12, 1e6);
         n += eq("235 SHARDS not suffix", Amounts.parse("235 SHARDS"), 235.0, 1e-6);
         n += eq("format B", Amounts.format(131.56e9), "131.56B");
+
+        // Boss-bar HP (verbatim titles from the 20:52 / 22:02 logs). Higher stages use
+        // suffixes; the old digits-only parser read "82.04M" as 82 and broke the DPS slope.
+        n += eq("boss hp plain", ChatClassifier.bossBarHp("[EPIC] LVL1 Chicken ❤346"), 346.0, 1e-9);
+        n += eq("boss hp M suffix", ChatClassifier.bossBarHp("LVL5 Goat ❤82.04M"), 82.04e6, 1);
+        n += eq("boss hp rare pig", ChatClassifier.bossBarHp("[EPIC] LVL4 Pig ❤8.48M"), 8.48e6, 1);
+        n += eq("boss hp K suffix", ChatClassifier.bossBarHp("[EPIC] LVL4 Pig ❤320.48K"), 320.48e3, 1);
+        n += eq("boss hp none", ChatClassifier.bossBarHp("Soul Harvest 2x Souls (12m, 9s)") == null, true);
         return n;
     }
 
@@ -203,17 +211,24 @@ public final class EconomyChecks {
         return n;
     }
 
-    private static int balLines() {
+    private static int successLines() {
         int n = 0;
-        List<Pattern> balRes = looseAll(CFG.balPatterns);
-        n += eq("bal block money (parens)", ChatClassifier.balReply(BAL_MONEY_PARENS, balRes), 1.09e12, 1e6);
-        n += eq("bal simple", ChatClassifier.balReply(BAL_SIMPLE, balRes), 2.35e12, 1e6);
-        n += eq("bal your-balance variant", ChatClassifier.balReply("Your Balance 2.35T", balRes), 2.35e12, 1e6);
-        // The 0.8.x corruption bug: fail lines were eaten as balances.
-        n += eq("fail line is NOT a balance", ChatClassifier.balReply(SWORD_FAIL, balRes) == null, true);
-        n += eq("summary money is NOT a balance", ChatClassifier.balReply(SUMMARY_MONEY, balRes) == null, true);
-        n += eq("soul purchase is NOT a balance",
-            ChatClassifier.balReply(ChatClassifier.clean(SOUL_PURCHASE), balRes) == null, true);
+        List<Pattern> okRes = looseAll(CFG.upgradeSuccessPatterns);
+        List<Pattern> failRes = looseAll(CFG.upgradeFailPatterns);
+        // Sword: one line per level bought, exact price → retry floor for the next tier.
+        n += eq("sword unlock matches", okRes.stream().anyMatch(p -> p.matcher(SWORD_UNLOCK).find()), true);
+        n += eq("sword unlock amount", ChatClassifier.successAmount(SWORD_UNLOCK, okRes), 6.43e6, 1);
+        n += eq("sword unlock 1.24B amount", ChatClassifier.successAmount(SWORD_UNLOCK_REAL, okRes), 1.24e9, 1e3);
+        // Zone: "purchased new stage(s)" — no amount, may cover several stages.
+        n += eq("zone unlock matches", okRes.stream().anyMatch(p -> p.matcher(ZONE_UNLOCK).find()), true);
+        n += eq("zone unlock kind via 'stage'", ChatClassifier.kindOf(ZONE_UNLOCK, null), "zone");
+        n += eq("zone unlock has no amount", ChatClassifier.successAmount(ZONE_UNLOCK, okRes) == null, true);
+        n += eq("zone unlock is not a fail", failRes.stream().anyMatch(p -> p.matcher(ZONE_UNLOCK).find()), false);
+        // Nothing else reads as a success.
+        n += eq("fail line is not a success", okRes.stream().anyMatch(p -> p.matcher(SWORD_FAIL).find()), false);
+        n += eq("summary money is not a success", ChatClassifier.successAmount(SUMMARY_MONEY, okRes) == null, true);
+        n += eq("soul purchase is not a success",
+            okRes.stream().anyMatch(p -> p.matcher(ChatClassifier.clean(SOUL_PURCHASE)).find()), false);
         return n;
     }
 
@@ -238,7 +253,8 @@ public final class EconomyChecks {
         n += eq("welcome is broadcast", ChatClassifier.isPlayerOrBroadcast(WELCOME), true);
         n += eq("player shop is broadcast", ChatClassifier.isPlayerOrBroadcast(PLAYER_SHOP), true);
         n += eq("sword fail is not broadcast", ChatClassifier.isPlayerOrBroadcast(SWORD_FAIL), false);
-        n += eq("bal line is not broadcast", ChatClassifier.isPlayerOrBroadcast(BAL_MONEY_PARENS), false);
+        n += eq("sword unlock is not broadcast", ChatClassifier.isPlayerOrBroadcast(SWORD_UNLOCK), false);
+        n += eq("zone unlock is not broadcast", ChatClassifier.isPlayerOrBroadcast(ZONE_UNLOCK), false);
 
         // Even without the broadcast guard, none of these match the strict patterns.
         for (String noise : new String[] {
@@ -254,47 +270,42 @@ public final class EconomyChecks {
         return n;
     }
 
-    private static int book() {
+    private static int zoneGate() {
         int n = 0;
-        MoneyBook b = new MoneyBook();
-        n += eq("unseeded estimate null", b.estimate(0) == null, true);
+        // Effective TTK: the DPS prediction wins, then the kill median, else unknown.
+        n += eq("predicted wins", Economy.effectiveTtkMs(4_000.0, 12_000.0), 4_000.0, 1e-9);
+        n += eq("median fallback", Economy.effectiveTtkMs(null, 12_000.0), 12_000.0, 1e-9);
+        n += eq("unknown ttk", Economy.effectiveTtkMs(null, null) == null, true);
 
-        b.seed(1.09e12, 1_000_000);
-        n += eq("seed estimate", b.estimate(1_000_000), 1.09e12, 1e6);
+        // The 0.9.5 spiral (events-baseline 20:52): Rabbit 0.25s → Sheep 7.2s → Pig 75s → Goat 90s.
+        // With the 10s gate the third zone buy never happens.
+        int gate = CFG.zoneMaxTtkMs;
+        n += eq("rabbit 0.25s open", Economy.zoneAllowed(249.0, gate), true);
+        n += eq("sheep 7.2s open", Economy.zoneAllowed(7_202.0, gate), true);
+        n += eq("pig 75s closed", Economy.zoneAllowed(74_963.0, gate), false);
+        n += eq("goat 90s closed", Economy.zoneAllowed(89_823.0, gate), false);
+        n += eq("unknown TTK closed", Economy.zoneAllowed(null, gate), false);
+        n += eq("gate disabled", Economy.zoneAllowed(null, 0), true);
 
-        // Summary accrual is overlap-clamped: 60s window ending 30s after the anchor counts half.
-        b.accrue(60e9, 60_000, 1_030_000);
-        n += eq("overlap-clamped accrual", b.exact(), 1.09e12 + 30e9, 1e6);
+        // Closed gate ⇒ zone is never chosen, even as the only affordable kind (zoneOpen=false).
+        n += eq("closed gate: zone-only affordable → wait",
+            Economy.chooseBuyKind(true, false, false, true, null, 2.5e9, 1.25), null);
+        n += eq("closed gate: sword affordable → sword",
+            Economy.chooseBuyKind(true, false, true, true, 1.24e9, 2.5e9, 1.25), "sword");
+        n += eq("closed gate: HUD prefers sword",
+            Economy.preferredKind(true, false, null, null, 1.25), "sword");
 
-        // A full window after the anchor accrues fully (fraction clamped to 1).
-        b.accrue(60e9, 60_000, 1_100_000);
-        n += eq("full-window accrual", b.exact(), 1.09e12 + 30e9 + 60e9, 1e6);
+        // Readiness for HUD/status.
+        n += eq("ready at gate", Economy.zoneReadiness(10_000.0, 10_000), 1.0, 1e-9);
+        n += eq("half at 2x", Economy.zoneReadiness(20_000.0, 10_000), 0.5, 1e-9);
+        n += eq("unknown 0", Economy.zoneReadiness(null, 10_000), 0.0, 1e-9);
 
-        // Estimate projects at the trailing rate, frozen 90s past the last anchor.
-        double rate = b.ratePerMs();
-        n += eq("rate positive", rate > 0, true);
-        double projected = b.estimate(1_100_000 + 10_000);
-        n += eq("projection grows", projected > b.exact(), true);
-        double frozen = b.estimate(1_100_000 + 3_600_000);
-        n += eq("projection frozen at 90s", frozen, b.exact() + rate * 90_000, 1e3);
-
-        // Fail-implied anchor: known price 1.87104T, fail gap 683.12B → exact balance.
-        b.anchor(1.87104e12 - 683.12e9, 1_200_000);
-        n += eq("fail-implied anchor", b.exact(), 1.18792e12, 1e6);
-
-        // Debit on a confirmed buy.
-        b.debit(187.92e9, 1_300_000);
-        n += eq("debit", b.exact(), 1.0e12, 1e6);
-        return n;
-    }
-
-    private static int readiness() {
-        int n = 0;
-        n += eq("no ttk", Economy.zoneReadiness(null, 40_000.0, 2000), 0.0, 1e-9);
-        n += eq("fresh 40s", Economy.zoneReadiness(40_000.0, 40_000.0, 2000), 0.0, 1e-9);
-        n += eq("ready 2s", Economy.zoneReadiness(2_000.0, 40_000.0, 2000), 1.0, 1e-9);
-        double mid = Economy.zoneReadiness(8_944.0, 40_000.0, 2000);
-        n += eq("log midpoint ~9s", mid, 0.5, 0.03);
+        // Cooldown relaxation (events-baseline 20:52 — zone skipped for "cooldown" from 8M to 220M):
+        // the 60s cap collapses to the command cooldown once bal ≥ 3× the last known price.
+        n += eq("cap holds", Economy.effectiveCooldownMs(60_000, 1100, 24.55e6, 30e6, 3.0), 60_000);
+        n += eq("cap relaxed", Economy.effectiveCooldownMs(60_000, 1100, 220e6, 30e6, 3.0), 1100);
+        n += eq("no price keeps cap", Economy.effectiveCooldownMs(60_000, 1100, 220e6, null, 3.0), 60_000);
+        n += eq("relax disabled", Economy.effectiveCooldownMs(60_000, 1100, 220e6, 30e6, 0), 60_000);
         return n;
     }
 

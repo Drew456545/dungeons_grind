@@ -51,8 +51,9 @@ public class StatsTracker {
     private Double swordLastPrice = null;
     private Double zoneLastPrice = null;
     private Double rebirthLastPrice = null;
-    /** Chat-driven money book: /bal seed + reward-summary accrual + fail-implied anchors. */
-    private final MoneyBook book = new MoneyBook();
+    /** Trailing income rate from "Reward Summary" money lines (EMA, per ms) and the window they cover. */
+    private double summaryRatePerMs = 0;
+    private long summaryWindowMs = 60_000;
     /** Live parsed sidebar amounts (updated every poll). Canonical snapshot is published on an interval. */
     private final Map<String, Double> liveBals = new LinkedHashMap<>();
     private final Map<String, String> liveRaw = new LinkedHashMap<>();
@@ -64,9 +65,10 @@ public class StatsTracker {
     public String lastUpgradeKind = null;
     private long lastUpgradeSendAt = 0;
     private long lastSpendAt = 0;
-    private long lastBalSendAt = 0;
-    /** Balance estimate at the moment of our last upgrade send (retry floor after a seed buy). */
+    /** Sidebar balance at the moment of our last upgrade send (retry floor after a seed buy with no success amount). */
     private Double lastSendBal = null;
+    /** Last success line (chat) attributed to our send — the controller holds SETTLE briefly after it for more lines. */
+    public volatile long lastSuccessAt = 0;
     /** Last fail-line timestamps per kind — silence after a send is the success signal. */
     private volatile long lastSwordFailAt = 0;
     private volatile long lastZoneFailAt = 0;
@@ -81,16 +83,19 @@ public class StatsTracker {
     private boolean rebirthExploratorySent = false;
     /** Our own /zone max teleports us — the stop protocol ignores displacements until then. */
     private long expectTeleportUntil = 0;
-    /** Set when a fail arrives with an unknown balance; the controller re-seeds /bal once. */
-    private boolean balReseedWanted = false;
-    private long lastBalReseedAt = 0;
     private int zoneChangeSeq = 0;
+    private long lastZoneChangeAt = 0;
     private int swordBuysThisZone = 0;
+    /** Zone proxy: the LVLn prefix on mob boss bars (the EnchantedMC sidebar has no Zone row). */
+    private static final Pattern BOSS_LEVEL = Pattern.compile("(?i)\\bLVL\\.?\\s*(\\d+)");
+    private Integer bossLevel = null;
+    private Integer pendingBossLevel = null;
+    private int pendingBossLevelPolls = 0;
+    private boolean zoneFromSidebar = false;
     public final Set<String> activeBoosts = new HashSet<>();
     private final Map<String, Long> boostSince = new HashMap<>();
 
-    /** DPS estimate from the cooking mob's boss-bar HP slope. */
-    private static final Pattern BOSS_HP = Pattern.compile("[\u2764\u2665]\uFE0F?\\s*([0-9]+)");
+    /** DPS estimate from the cooking mob's boss-bar HP slope (HP parsed with suffixes via ChatClassifier.bossBarHp). */
     private final ArrayDeque<long[]> dpsSamples = new ArrayDeque<>(); // {timeMs, hp}
     private long lastDpsSampleAt = 0;
 
@@ -111,7 +116,6 @@ public class StatsTracker {
     private final List<Pattern> upgradeFailRes = new ArrayList<>();
     private final List<Pattern> upgradeMaxedRes = new ArrayList<>();
     private final List<Pattern> upgradeSuccessRes = new ArrayList<>();
-    private final List<Pattern> balRes = new ArrayList<>();
     private final Pattern needAmountRe;
     private final Pattern summaryHeaderRe;
     private final Pattern summaryMoneyRe;
@@ -153,8 +157,6 @@ public class StatsTracker {
             for (String p : cfg.upgradeMaxedPatterns) upgradeMaxedRes.add(compileLoose(p));
         if (cfg.upgradeSuccessPatterns != null)
             for (String p : cfg.upgradeSuccessPatterns) upgradeSuccessRes.add(compileLoose(p));
-        if (cfg.balPatterns != null)
-            for (String p : cfg.balPatterns) balRes.add(compileLoose(p));
         needAmountRe = compileLoose(cfg.upgradeNeedAmountPattern);
         summaryHeaderRe = compileLoose(cfg.summaryHeaderPattern);
         summaryMoneyRe = compileLoose(cfg.summaryMoneyPattern);
@@ -164,42 +166,36 @@ public class StatsTracker {
     private long lastSidebarMoneyAt = 0;
 
     /**
-     * Best current money estimate: the live sidebar row when fresh (it is the
-     * board's own truth), else the chat-driven book (exact anchor + trailing
-     * summary rate, frozen 90s past the last anchor), else the last sidebar read.
+     * Current money: the live sidebar row (the board's own truth, reread every
+     * second and credited ~1s after each kill), else the last snapshot. Null
+     * until the row has parsed once. There is no chat-side estimate any more —
+     * the 0.9.x money book projected income between anchors and wrote its own
+     * estimate back over the live row.
      */
     public Double money() {
-        long now = System.currentTimeMillis();
         String key = moneyKey();
         Double side = liveBals.get(key);
-        if (side != null && now - lastSidebarMoneyAt <= 3_000) return side;
-        Double est = book.estimate(now);
-        if (est != null) return est;
-        Double v = snapshotBals.get(key);
-        return v != null ? v : side;
+        if (side != null) return side;
+        return snapshotBals.get(key);
     }
 
     /** Earning rate: exact summary-window rate when seen, else the balance-delta slope. */
     public Double incomePerMinute() {
-        if (book.ratePerMs() > 0) return book.ratePerMs() * 60_000.0;
+        if (summaryRatePerMs > 0) return summaryRatePerMs * 60_000.0;
         return moneyPerMinute();
     }
 
-    /** Write the book's exact value through to the sidebar books so HUD/logs stay consistent. */
-    private void writeBookThrough() {
-        Double est = book.exact();
-        if (est == null) return;
-        String key = moneyKey();
-        liveBals.put(key, est);
-        liveRaw.put(key, Amounts.format(est));
-        balances.put(key, Amounts.format(est));
-        snapshotBals.put(key, est);
-        snapshotRaw.put(key, Amounts.format(est));
-        noteBalance(est);
+    /** Effective TTK for the zone gate: DPS-predicted for the mob being cooked when available, else the kill median. */
+    public Double effectiveTtkMs(Double predictedMs) {
+        return Economy.effectiveTtkMs(predictedMs, medianTtkMs());
     }
 
+    /** Last effective TTK the controller evaluated (HUD/status share this one number). */
+    public volatile Double lastEffectiveTtkMs = null;
+
+    /** HUD/log readiness: 1.0 while the zone gate is open, scaled down above zoneMaxTtkMs, 0 while unknown. */
     public double zoneReadiness() {
-        return Economy.zoneReadiness(medianTtkMs(), zoneBaselineTtkMs, cfg.zoneReadyTtkMs);
+        return Economy.zoneReadiness(lastEffectiveTtkMs, cfg.zoneMaxTtkMs);
     }
 
     /** Copy live bals into the canonical snapshot (HUD / logs / buy eval). */
@@ -344,19 +340,8 @@ public class StatsTracker {
         return sendAt > 0 && at >= sendAt;
     }
 
-    /** A fail arrived while the balance was unknown — the controller re-seeds /bal once. */
-    public boolean consumeBalReseed() {
-        boolean w = balReseedWanted;
-        balReseedWanted = false;
-        return w;
-    }
-
     public boolean sidebarSettled(long nowMs, int settleMs) {
         return Economy.sidebarSettled(nowMs, lastSpendAt, settleMs);
-    }
-
-    public void noteProbeSend() {
-        lastBalSendAt = System.currentTimeMillis();
     }
 
     private static Pattern compileLoose(String p) {
@@ -465,14 +450,10 @@ public class StatsTracker {
         Matcher m;
         if ((m = zoneRe.matcher(line)).find()) {
             String z = m.group(1).trim();
+            zoneFromSidebar = true;
             if (!z.equals(zone)) {
                 zone = z;
-                zoneChangeSeq++;
-                zoneBaselineTtkMs = null;
-                zoneKills = 0;
-                swordBuysThisZone = 0;
-                lastBenchmarkLogged = null;
-                log("zone_change", "zone", z);
+                onZoneChange("sidebar-row");
             }
         }
         if ((m = multiplierRe.matcher(line)).find()) multiplier = m.group(1).trim();
@@ -565,6 +546,12 @@ public class StatsTracker {
         rebirthExploratorySent = false;
         swordBuysThisZone = 0;
         upgradeChatFrag = null;
+        // Back to stage 1: every TTK sample belongs to the old progression.
+        killDurations.clear();
+        zoneBaselineTtkMs = null;
+        zoneKills = 0;
+        lastBenchmarkLogged = null;
+        lastEffectiveTtkMs = null;
         log("economy_reset", "via", via);
     }
 
@@ -576,13 +563,22 @@ public class StatsTracker {
             return;
         }
         Set<String> current = new HashSet<>();
+        Integer levelSeen = null;
         for (ClientBossBar bar : bars.values()) {
             String title = bar.getName().getString();
             // "Soul Harvest 2x Souls (12m, 9s)" -> key off text before the timer parens
             int paren = title.lastIndexOf('(');
             String key = (paren > 0 ? title.substring(0, paren) : title).trim();
             if (!key.isEmpty()) current.add(key);
+            Matcher lm = BOSS_LEVEL.matcher(bossBarPrefix(title));
+            if (lm.find()) {
+                try {
+                    int lvl = Integer.parseInt(lm.group(1));
+                    if (levelSeen == null || lvl > levelSeen) levelSeen = lvl;
+                } catch (NumberFormatException ignored) {}
+            }
         }
+        noteBossLevel(levelSeen);
         for (String key : current) {
             if (activeBoosts.add(key)) {
                 boostSince.put(key, System.currentTimeMillis());
@@ -598,6 +594,65 @@ public class StatsTracker {
             }
             return false;
         });
+    }
+
+    /**
+     * Mob level from the boss bar is the zone proxy (logs: LVL2 Rabbit → LVL5 Goat,
+     * one step per stage, while the sidebar never showed a Zone row). Debounced
+     * over two polls so a stale leftover from the previous stage can't flip it.
+     */
+    private void noteBossLevel(Integer lvl) {
+        if (lvl == null) return;
+        if (bossLevel == null) {
+            bossLevel = lvl;
+            if (!zoneFromSidebar) zone = "lvl" + lvl;
+            return;
+        }
+        if (lvl.equals(bossLevel)) {
+            pendingBossLevel = null;
+            pendingBossLevelPolls = 0;
+            return;
+        }
+        if (!lvl.equals(pendingBossLevel)) {
+            pendingBossLevel = lvl;
+            pendingBossLevelPolls = 0;
+        }
+        if (++pendingBossLevelPolls < 2) return;
+        int prev = bossLevel;
+        bossLevel = lvl;
+        pendingBossLevel = null;
+        pendingBossLevelPolls = 0;
+        if (!zoneFromSidebar) zone = "lvl" + lvl;
+        log("boss_level", "level", lvl, "prev", prev);
+        onZoneChange("bossbar-level");
+    }
+
+    /** Our own zone advance confirmed by the teleport — same reset as any other zone signal. */
+    public void onZoneAdvance(String via) {
+        onZoneChange(via);
+    }
+
+    /**
+     * A zone change invalidates every TTK sample: the median window is cleared so
+     * the zone gate cannot be fooled by the previous stage's fast kills, and the
+     * benchmark baseline restarts. Duplicate signals for the same advance
+     * (teleport + boss level) within 10s collapse into one.
+     */
+    private void onZoneChange(String via) {
+        long now = System.currentTimeMillis();
+        if (lastZoneChangeAt != 0 && now - lastZoneChangeAt < 10_000) {
+            log("zone_change", "via", via, "zone", zone, "dedup", true);
+            return;
+        }
+        lastZoneChangeAt = now;
+        zoneChangeSeq++;
+        zoneBaselineTtkMs = null;
+        zoneKills = 0;
+        swordBuysThisZone = 0;
+        lastBenchmarkLogged = null;
+        killDurations.clear();
+        lastEffectiveTtkMs = null;
+        log("zone_change", "via", via, "zone", zone);
     }
 
     /** Live boss bars (never null). Safe to call every tick. */
@@ -644,14 +699,9 @@ public class StatsTracker {
         for (ClientBossBar bar : bossBars(client).values()) {
             String title = bar.getName().getString();
             if (!bossBarPrefix(title).toLowerCase().contains(mobName.toLowerCase())) continue;
-            Matcher m = BOSS_HP.matcher(title);
-            if (m.find()) {
-                try {
-                    double hp = Double.parseDouble(m.group(1));
-                    // if multiple match, take the lowest (most-damaged = the one cooking)
-                    if (best == null || hp < best) best = hp;
-                } catch (NumberFormatException ignored) {}
-            }
+            Double hp = ChatClassifier.bossBarHp(title);
+            // if multiple match, take the lowest (most-damaged = the one cooking)
+            if (hp != null && (best == null || hp < best)) best = hp;
         }
         return best;
     }
@@ -704,30 +754,28 @@ public class StatsTracker {
         }
         boolean known = false;
         // Income summary lines are exact earnings — anchored, prefix-free, parse anytime.
+        // They feed only the income RATE; the balance itself is always the sidebar row.
         Integer windowS = ChatClassifier.summaryWindowSeconds(text, summaryHeaderRe);
         if (windowS != null) {
-            book.noteSummaryWindow(windowS * 1000L);
+            if (windowS > 0) summaryWindowMs = windowS * 1000L;
             known = true;
         }
         Double earned = ChatClassifier.summaryMoney(text, summaryMoneyRe);
         if (earned != null) {
-            book.accrue(earned, book.summaryWindowMs(), now);
-            writeBookThrough();
+            double sample = earned / Math.max(1, summaryWindowMs);
+            summaryRatePerMs = summaryRatePerMs <= 0 ? sample : 0.5 * summaryRatePerMs + 0.5 * sample;
+            Double bal = money();
             log("income_summary", "earned", Amounts.format(earned),
-                "windowS", book.summaryWindowMs() / 1000,
-                "balance", book.exact() != null ? Amounts.format(book.exact()) : null);
+                "windowS", summaryWindowMs / 1000,
+                "balance", bal != null ? Amounts.format(bal) : null);
             known = true;
         }
         // Upgrade responses: strict gate — only within the window after our own
         // send, never on player/broadcast lines, anchored patterns only.
         if (parseUpgradeResponse(text, now)) known = true;
-        // /bal replies: window-gated and anchored; classified AFTER upgrade lines so
-        // a fail line can never be eaten as a balance (the 0.8.x corruption bug).
-        if (!overlay && parseBalReply(text, now)) known = true;
-        // Evidence net: raw-log unrecognized lines after our own sends — upgrade
-        // commands (6s) AND /bal probes (8s), so reply formats are always captured.
-        boolean nearSend = (lastUpgradeSendAt != 0 && now - lastUpgradeSendAt <= 6_000)
-            || (lastBalSendAt != 0 && now - lastBalSendAt <= 8_000);
+        // Evidence net: raw-log unrecognized lines after our own sends (6s) so the
+        // server's actual wording is always captured for pattern tuning.
+        boolean nearSend = lastUpgradeSendAt != 0 && now - lastUpgradeSendAt <= 6_000;
         if (overlay) {
             Matcher m = actionBarRe.matcher(text);
             if (m.find()) {
@@ -740,12 +788,7 @@ public class StatsTracker {
         }
         // "All mobs have been respawned in your zone." — a zone advance happened.
         if (text.toLowerCase(Locale.ROOT).contains("mobs have been respawned in your zone")) {
-            zoneChangeSeq++;
-            zoneBaselineTtkMs = null;
-            zoneKills = 0;
-            swordBuysThisZone = 0;
-            lastBenchmarkLogged = null;
-            log("zone_change", "via", "respawn-broadcast");
+            onZoneChange("respawn-broadcast");
             known = true;
         }
         for (Pattern p : ascensionRes) {
@@ -772,27 +815,11 @@ public class StatsTracker {
     }
 
     /**
-     * A balCommand reply: exact balance anchor. Only plausible right after we asked,
-     * never from broadcast lines, anchored formats only (" - Money: (1.09T)").
-     */
-    private boolean parseBalReply(String text, long now) {
-        if (lastBalSendAt == 0 || now - lastBalSendAt > 8_000) return false;
-        if (ChatClassifier.isPlayerOrBroadcast(text)) return false;
-        Double v = ChatClassifier.balReply(text, balRes);
-        if (v == null) return false;
-        book.anchor(v, now);
-        writeBookThrough();
-        publishSnapshot(true);
-        log("balance_probe", "balance", Amounts.format(v), "raw", text);
-        return true;
-    }
-
-    /**
      * Strictly-gated upgrade responses. Fail lines carry the REMAINING GAP
-     * ("You need 781.04B Money..."), which both teaches the absolute price
-     * (bal + gap) and — when the price is already known — re-anchors the book
-     * exactly (price − gap). Success is never parsed from wording: no fail line
-     * within the window after our send means the purchase went through (see
+     * ("You need 781.04B Money..."), which teaches the absolute price (sidebar
+     * bal + gap). Success lines are parsed when the server prints them (sword:
+     * exact amount per level; zone: "purchased new stage(s)"); otherwise no fail
+     * line within the window after our send means the purchase went through (see
      * {@link #onUpgradeSuccess}, driven by the controller's settle phase).
      */
     private boolean parseUpgradeResponse(String text, long now) {
@@ -828,7 +855,9 @@ public class StatsTracker {
             String kind = ChatClassifier.kindOf(text, lastUpgradeKind);
             if (kind == null) return false;
             upgradeChatFrag = null;
-            onUpgradeSuccess(kind, now, "chat");
+            // "You have unlocked a new sword level for 1.24B!" carries the exact price;
+            // "You have purchased new stage(s)!" does not (and may cover several stages).
+            onUpgradeSuccess(kind, now, "chat", ChatClassifier.successAmount(text, upgradeSuccessRes));
             return true;
         }
 
@@ -848,28 +877,28 @@ public class StatsTracker {
     }
 
     private void onFail(String kind, double gap, String raw, long now) {
-        Double knownPrice = "zone".equals(kind) ? zoneTarget
-            : "rebirth".equals(kind) ? rebirthTarget
-            : swordTarget;
-        Double price;
-        if (knownPrice != null) {
-            book.anchor(Math.max(0, knownPrice - gap), now);
-            writeBookThrough();
-            price = knownPrice;
-        } else {
-            price = Economy.priceFromFail(gap, money());
-        }
+        // The gap is measured against the server's balance right now; sidebar bal + gap
+        // is the absolute price and self-corrects on every fail, so always re-derive it.
+        Double price = Economy.priceFromFail(gap, money());
+        // Never leave a kind latched on an unknown balance: with no price the gap
+        // itself becomes the retry floor (the price is at least the gap).
         if ("zone".equals(kind)) {
             zoneGap = gap;
-            if (price != null) { zoneTarget = price; zoneExploratorySent = false; }
+            zoneExploratorySent = false;
+            if (price != null) zoneTarget = price;
+            else zoneLastPrice = zoneLastPrice == null ? gap : Math.max(zoneLastPrice, gap);
             lastZoneFailAt = now;
         } else if ("rebirth".equals(kind)) {
             rebirthGap = gap;
-            if (price != null) { rebirthTarget = price; rebirthExploratorySent = false; }
+            rebirthExploratorySent = false;
+            if (price != null) rebirthTarget = price;
+            else rebirthLastPrice = rebirthLastPrice == null ? gap : Math.max(rebirthLastPrice, gap);
             lastRebirthFailAt = now;
         } else {
             swordGap = gap;
-            if (price != null) { swordTarget = price; swordExploratorySent = false; }
+            swordExploratorySent = false;
+            if (price != null) swordTarget = price;
+            else swordLastPrice = swordLastPrice == null ? gap : Math.max(swordLastPrice, gap);
             lastSwordFailAt = now;
         }
         log("upgrade_chat", "kind", kind,
@@ -881,34 +910,42 @@ public class StatsTracker {
     }
 
     /**
-     * Silence-success bookkeeping, driven by the controller after the response
-     * window elapses with no fail line: tentative debit of the known price (the
-     * post-buy /bal re-seed makes it exact), price reset, and a retry threshold —
-     * the old price when known, else the balance we demonstrably could afford at
-     * send time (a successful seed buy must not stall the kind forever).
+     * Success bookkeeping, from the success line when the server prints one
+     * (sword: exact amount per level; zone: "purchased new stage(s)") or from
+     * silence after the response window. The sidebar row is the balance, so
+     * there is no debit — only the settle delay before the next eval. The retry
+     * floor for the now-unknown next tier is the amount paid (the highest line of
+     * a multi-level /swordmax), else the known price, else the balance at send.
      */
     public void onUpgradeSuccess(String kind, long now) {
-        onUpgradeSuccess(kind, now, "silence");
+        onUpgradeSuccess(kind, now, "silence", null);
     }
 
-    public void onUpgradeSuccess(String kind, long now, String via) {
-        if (lastSendSucceeded) return;
+    public void onUpgradeSuccess(String kind, long now, String via, Double paid) {
+        if ("chat".equals(via)) lastSuccessAt = now;
+        boolean zone = "zone".equals(kind);
+        if (lastSendSucceeded) {
+            // Further levels from the same /swordmax: the retry floor is the last price paid.
+            if (paid != null && !"rebirth".equals(kind)) {
+                if (zone) zoneLastPrice = zoneLastPrice == null ? paid : Math.max(zoneLastPrice, paid);
+                else swordLastPrice = swordLastPrice == null ? paid : Math.max(swordLastPrice, paid);
+                lastSpendAt = now;
+                log("upgrade_result", "kind", kind, "success", true, "fail", false,
+                    "paid", Amounts.format(paid), "via", via, "extraLevel", true);
+            }
+            return;
+        }
         lastSendSucceeded = true;
         lastSpendAt = now;
         if ("rebirth".equals(kind)) {
-            Double paid = rebirthTarget != null ? rebirthTarget : lastSendBal;
+            Double cost = rebirthTarget != null ? rebirthTarget : lastSendBal;
             log("upgrade_result", "kind", kind, "success", true, "fail", false,
-                "paid", paid != null ? Amounts.format(paid) : null, "via", via);
+                "paid", cost != null ? Amounts.format(cost) : null, "via", via);
             rebirthReset("upgrade-success");
             return;
         }
-        boolean zone = "zone".equals(kind);
         Double price = zone ? zoneTarget : swordTarget;
-        if (price != null) {
-            book.debit(price, now);
-            writeBookThrough();
-        }
-        Double retryFloor = price != null ? price : lastSendBal;
+        Double retryFloor = paid != null ? paid : (price != null ? price : lastSendBal);
         if (zone) {
             zoneLastPrice = retryFloor != null ? retryFloor : zoneLastPrice;
             zoneTarget = null;
@@ -922,7 +959,8 @@ public class StatsTracker {
             swordBuysThisZone++;
         }
         log("upgrade_result", "kind", kind, "success", true, "fail", false,
-            "paid", price != null ? Amounts.format(price) : null, "via", via);
+            "paid", paid != null ? Amounts.format(paid) : (price != null ? Amounts.format(price) : null),
+            "via", via);
     }
 
     private static boolean anyMatch(List<Pattern> res, String text) {
