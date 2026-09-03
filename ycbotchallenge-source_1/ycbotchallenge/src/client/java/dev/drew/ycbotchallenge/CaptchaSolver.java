@@ -195,6 +195,8 @@ public class CaptchaSolver {
             mapPromptUsed = true;
             candidates.clear();
             candidates.addAll(mapCandidates);
+            // The re-prompt is the server's "no": the guess that went out is spent.
+            if (lastSentAnswer != null && !wrongAnswers.contains(lastSentAnswer)) wrongAnswers.add(lastSentAnswer);
             log("captcha_reprompted", "mapId", heldId, "answersSent", answersSent, "candidates", candidates, "wrong", wrongAnswers);
             if (answersSent >= cfg.captchaMaxAnswers) {
                 phase = Phase.SETTLING;
