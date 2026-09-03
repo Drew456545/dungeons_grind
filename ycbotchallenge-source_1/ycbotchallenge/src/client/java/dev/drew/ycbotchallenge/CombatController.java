@@ -1457,7 +1457,7 @@ public class CombatController {
     private LivingEntity lookedAtMob(MinecraftClient client) {
         if (client == null || client.player == null || client.world == null) return null;
         if (client.targetedEntity instanceof LivingEntity hit && !(hit instanceof PlayerEntity)
-            && !(hit instanceof ArmorStandEntity) && !(hit instanceof DisplayEntity)) {
+            && !(hit instanceof ArmorStandEntity)) {
             return hit;
         }
         Vec3d eye = client.player.getEyePos();
