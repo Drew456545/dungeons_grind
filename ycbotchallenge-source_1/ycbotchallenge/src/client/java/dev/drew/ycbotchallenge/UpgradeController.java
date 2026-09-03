@@ -361,7 +361,8 @@ public class UpgradeController {
                         "kind", pendingKind.name().toLowerCase(Locale.ROOT),
                         "followUp", pendingFollowUp,
                         "swordsSinceZone", swordsSinceZone,
-                        "typos", typer.typos());
+                        "typos", typer.typos(),
+                        "typedMismatch", typer.typedMismatch() ? true : null);
                 }
                 lastSendAt = now;
                 lastKind = pendingKind.name().toLowerCase(Locale.ROOT);

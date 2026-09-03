@@ -43,9 +43,12 @@ PROMPTS = {
 
 # name -> (scale, resample); the mod renders the 128 px map at captchaMapScale, bilinear when smooth and scale > 2
 RENDERS = {
-    "x1": (1, "nearest"), "x2near": (2, "nearest"), "x3bil": (3, "bilinear"),
-    "x4near": (4, "nearest"), "x4bil": (4, "bilinear"), "x6bil": (6, "bilinear"),
+    "x1": (1, "nearest"), "x2near": (2, "nearest"), "x3bil": (3, "bilinear"), "x3near": (3, "nearest"),
+    "x4near": (4, "nearest"), "x4bil": (4, "bilinear"), "x5bil": (5, "bilinear"), "x6bil": (6, "bilinear"),
 }
+# The mod's ballot schedule (captchaVoteRenders): read at temperature 0, then again at 0.6.
+VOTE_RENDERS = ["x4bil", "x3bil", "x2near", "x5bil", "x3near"]
+VOTE_TEMPERATURE = 0.6
 
 ARRAY_RE = re.compile(r"\[([^\]]*)\]")
 ITEM_RE = re.compile(r"\"([^\"]*)\"|'([^']*)'|([^,\s\"']+)")
@@ -92,7 +95,11 @@ def main():
     ap.add_argument("--prompt", action="append", help="restrict to these prompt names")
     ap.add_argument("--render", action="append", help="restrict to these render names")
     ap.add_argument("--kind", default="map", help="fixture kind to run: map (default) or screen")
+    ap.add_argument("--vote", action="store_true",
+                    help="replay the mod's ballot (VOTE_RENDERS at t0 then t0.6) per fixture and print the leader")
     args = ap.parse_args()
+    if args.vote:
+        return vote(args)
 
     from PIL import Image
     fixtures = [f for f in json.load(open(os.path.join(FIX, "fixtures.json"))) if f["kind"] == args.kind]
@@ -140,6 +147,34 @@ def main():
             best.sort(reverse=True)
             for ok, a, b in best[:4]:
                 print(f"  {pn:12s} {a}+{b}: {ok}/{len(fixtures)}")
+
+
+def vote(args):
+    """The mod's 0.9.26 ballot: every render read once greedily, then once at temperature; leader = most
+    votes, ties to the first-seen reading. Prints the tallies per fixture and whether the leader is right."""
+    from PIL import Image
+    fixtures = [f for f in json.load(open(os.path.join(FIX, "fixtures.json"))) if f["kind"] == "map"]
+    prompt = PROMPTS["shipped"]
+    print(f"model {MODEL} at {URL}; ballot {VOTE_RENDERS} at t0 then t{VOTE_TEMPERATURE}\n")
+    ok = 0
+    for fx in fixtures:
+        img = Image.open(os.path.join(FIX, fx["file"])).convert("RGB")
+        tallies, order, log = collections.Counter(), [], []
+        for temp in (0.0, VOTE_TEMPERATURE):
+            for rn in VOTE_RENDERS:
+                outs, _ = ask(prompt, render(img, rn), temp, 1)
+                r = parse_answer(outs[0])
+                log.append(f"{rn}@{temp:g}={r}")
+                if r:
+                    tallies[r] += 1
+                    if r not in order:
+                        order.append(r)
+        leader = max(order, key=lambda r: (tallies[r], -order.index(r))) if order else None
+        flag = "OK " if leader == fx["answer"] else "BAD"
+        ok += leader == fx["answer"]
+        print(f"{flag} {fx['answer']:5s} leader={leader} tallies={dict(tallies)}  {' '.join(log)}")
+    print(f"\n{ok}/{len(fixtures)} fixtures led by the right reading")
+    return 0 if ok == len(fixtures) else 1
 
 
 if __name__ == "__main__":

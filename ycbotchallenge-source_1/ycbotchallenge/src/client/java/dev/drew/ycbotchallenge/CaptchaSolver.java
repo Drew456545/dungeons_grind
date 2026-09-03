@@ -102,6 +102,16 @@ public class CaptchaSolver {
     private byte[] lastPng = null;
     /** Second render of the same map (captchaSecondScale) read as a cross-check; null when off. */
     private byte[] secondPng = null;
+    // 0.9.26 running ballot: the map rendered at several scales once, one background
+    // worker reading them in turn, every reading a vote (see CaptchaBallot).
+    private record NamedPng(String name, byte[] png) {}
+    private final CaptchaBallot ballot = new CaptchaBallot();
+    private final List<NamedPng> renders = new ArrayList<>();
+    private volatile int voteGeneration = 0;
+    private volatile boolean votingDone = false;
+    private final AtomicReference<String> voteError = new AtomicReference<>();
+    private boolean ballotActive = false;
+    private long answerSentAt = 0;
     private final AtomicReference<String> vlmSecond = new AtomicReference<>();
     /** The map we last answered from, its readings and how many answers went out for it: a server
      *  re-prompt for the same map continues with the next guess instead of re-reading. */
@@ -155,7 +165,7 @@ public class CaptchaSolver {
         String what = switch (phase) {
             case SETTLING -> "waiting for captcha to render";
             case HUD_HIDE, CAPTURING -> "capturing";
-            case SOLVING -> "asking Qwen";
+            case SOLVING -> ballotActive ? "asking Qwen (" + ballot.reads() + " reads)" : "asking Qwen";
             case TYPING -> "reading it...";
             case TYPING_RUN -> "typing answer...";
             case AWAITING_RESULT -> lastSentAnswer != null
@@ -179,11 +189,11 @@ public class CaptchaSolver {
     public void begin(MinecraftClient client, String detectSource, String detail) {
         log("captcha_detected", "source", detectSource, "detail", detail, "autoSolve", true, "vlmOnline", vlmOnline);
         int heldId = heldMapId(client);
-        if (!"held-map".equals(detectSource) && !"hotbar-map".equals(detectSource)
-            && heldId >= 0 && heldId == solvedMapId && !mapCandidates.isEmpty()) {
-            // "Please enter the captcha on the map." for the map we already answered from:
-            // the picture has not changed, so re-reading it would type the same guess
-            // again (17:38 log). Continue with the next reading instead.
+        if (heldId >= 0 && heldId == solvedMapId && !mapCandidates.isEmpty()) {
+            // The map we already answered from is still the captcha (a "Please enter the
+            // captcha on the map." re-prompt, or any re-detection of it): the picture has
+            // not changed, so re-reading it would type the same guess again (17:38 log).
+            // Continue with the next reading instead — whatever the trigger was (0.9.26).
             source = detectSource;
             attempt = 1;
             answersSent = mapAnswersSent;
@@ -229,6 +239,12 @@ public class CaptchaSolver {
         secondPng = null;
         vlmSecond.set(null);
         captureMapId = -1;
+        stopVoting();
+        ballot.clear();
+        renders.clear();
+        ballotActive = false;
+        answerSentAt = 0;
+        voteError.set(null);
         if (heldId != solvedMapId) { solvedMapId = -1; mapCandidates.clear(); mapAnswersSent = 0; }
         if (!vlmOnline) {
             // No 3x20s of retries against a dead port: hand over right away.
@@ -246,7 +262,13 @@ public class CaptchaSolver {
         MinecraftClient client = MinecraftClient.getInstance();
         typer.cancel(client);
         restoreHud(client);
+        stopVoting();
         phase = Phase.IDLE;
+    }
+
+    /** Invalidate the background reader: a worker whose generation is stale casts no more votes. */
+    private void stopVoting() {
+        voteGeneration++;
     }
 
     /** Wire to ClientReceiveMessageEvents.GAME (any thread). */
@@ -371,8 +393,10 @@ public class CaptchaSolver {
                     lastPng = png;
                     String dumped = dumpPng(png);
                     log("captcha_captured", "mode", captureMode, "where", captureWhere, "bytes", png.length,
-                        "px", CaptchaImages.pngWidth(png), "png", dumped, "attempt", attempt);
-                    startSolve(png);
+                        "px", CaptchaImages.pngWidth(png), "png", dumped, "attempt", attempt,
+                        "renders", renders.size());
+                    if ("map".equals(captureMode) && !renders.isEmpty() && attempt <= 1 && useMapPrompt()) startVoting();
+                    else startSolve(png);
                 } else if (now >= phaseDeadline) {
                     restoreHud(client);
                     fail(client, "capture", "screenshot never arrived");
@@ -384,6 +408,29 @@ public class CaptchaSolver {
                     String err = vlmError.getAndSet(null);
                     log("vlm_health", "online", false, "error", err, "via", "solve", "changed", true);
                     fail(client, "vlm-offline", err != null ? err : "connection refused");
+                    return;
+                }
+                if (ballotActive) {
+                    String ve = voteError.getAndSet(null);
+                    if (ve != null) log("captcha_vote_error", "error", ve, "reads", ballot.reads());
+                    if (ballot.reads() > 0) {
+                        refreshCandidates();
+                        log("captcha_candidates", "candidates", candidates, "reads", ballot.reads(),
+                            "tallies", ballot.tallies(), "prompt", "map", "preserveCase", cfg.captchaPreserveCase,
+                            "attempt", attempt, "via", "ballot");
+                        if (captureMapId >= 0) {
+                            solvedMapId = captureMapId;
+                            mapCandidates.clear();
+                            mapCandidates.addAll(candidates);
+                            mapAnswersSent = answersSent;
+                        }
+                        submitNextCandidate(client, now);
+                    } else if (votingDone) {
+                        String err = vlmError.getAndSet(null);
+                        retryOrFail(client, "vlm", err != null ? err : "no reading from any render");
+                    } else if (now >= phaseDeadline) {
+                        retryOrFail(client, "vlm", "timed out waiting for the model");
+                    }
                     return;
                 }
                 String err = vlmError.getAndSet(null);
@@ -409,7 +456,20 @@ public class CaptchaSolver {
             }
             case TYPING -> {
                 if (now >= phaseDeadline && pendingAnswer != null) {
+                    // The reading pause has passed; with the ballot running, hold a little
+                    // longer until a few votes are in (a person re-reads the map anyway).
+                    if (ballotActive && !votingDone && ballot.reads() < Math.max(1, cfg.captchaVoteMinReads)
+                        && now < phaseDeadline + Math.max(0, cfg.captchaVoteMaxWaitMs)) {
+                        return;
+                    }
                     String answer = pendingAnswer;
+                    if (ballotActive) {
+                        refreshCandidates();
+                        if (!candidates.isEmpty()) answer = candidates.get(0);
+                        log("captcha_vote", "at", "send", "reads", ballot.reads(), "tallies", ballot.tallies(),
+                            "leader", answer, "render", ballot.renderOf(answer), "wrong", wrongAnswers,
+                            "votingDone", votingDone);
+                    }
                     pendingAnswer = null;
                     String out = cfg.captchaAnswerTemplate.replace("{answer}", answer);
                     pendingOut = out;
@@ -431,10 +491,30 @@ public class CaptchaSolver {
                 }
             }
             case AWAITING_RESULT -> {
+                // The server says nothing either way (19:43 log); on a right answer the map
+                // leaves the hand (Drew), so a map still held this long after the answer is
+                // the rejection (0.9.26).
+                if (feedback == null && "map".equals(captureMode) && captureMapId >= 0 && answerSentAt > 0
+                    && cfg.captchaMapHeldRejectMs > 0 && now - answerSentAt >= cfg.captchaMapHeldRejectMs
+                    && heldMapId(client) == captureMapId) {
+                    log("captcha_map_persists", "mapId", captureMapId, "afterMs", now - answerSentAt,
+                        "answer", lastSentAnswer, "answersSent", answersSent);
+                    feedback = "retry";
+                }
                 String fb = feedback;
                 if ("retry".equals(fb)) {
                     if (lastSentAnswer != null && !wrongAnswers.contains(lastSentAnswer)) {
                         wrongAnswers.add(lastSentAnswer);
+                    }
+                    if (ballotActive) {
+                        // The rest of the ballot decides the second guess — by now it has
+                        // had the whole verify window to keep reading.
+                        refreshCandidates();
+                        log("captcha_vote", "at", "rejection", "reads", ballot.reads(), "tallies", ballot.tallies(),
+                            "leader", candidates.isEmpty() ? null : candidates.get(0), "wrong", wrongAnswers,
+                            "votingDone", votingDone);
+                        mapCandidates.clear();
+                        mapCandidates.addAll(candidates);
                     }
                     candidates.remove(lastSentAnswer);
                     boolean altLeft = candidates.stream().anyMatch(c -> !wrongAnswers.contains(c));
@@ -456,6 +536,7 @@ public class CaptchaSolver {
                         fail(client, "server", "rejected with nothing left to try");
                     }
                 } else if ("solved".equals(fb) || now >= phaseDeadline) {
+                    stopVoting();
                     phase = Phase.IDLE;
                     log("captcha_solved", "attempt", attempt, "answer", lastSentAnswer,
                         "confirmed", "solved".equals(fb), "mode", captureMode, "source", source,
@@ -524,6 +605,7 @@ public class CaptchaSolver {
     private void fail(MinecraftClient client, String stage, String why) {
         typer.cancel(client);
         restoreHud(client);
+        stopVoting();
         phase = Phase.IDLE;
         log("captcha_failed", "stage", stage, "why", why, "attempts", attempt, "answersSent", answersSent,
             "source", source, "mode", captureMode);
@@ -538,10 +620,22 @@ public class CaptchaSolver {
             MapHit hit = findCaptchaMap(client);
             if (hit.state() != null) {
                 try {
-                    byte[] mapPng = renderMapPng(hit.state(), cfg.captchaMapScale, cfg.captchaMapSmooth);
-                    // Cross-check render: the bench reads the same map differently at another
-                    // scale often enough that the disagreement is the best second guess.
-                    secondPng = cfg.captchaSecondScale > 0 && cfg.captchaSecondScale != cfg.captchaMapScale
+                    // The ballot's renders (0.9.26): the same map at every scale of the
+                    // schedule, rendered once; the first is the one dumped and re-prompted.
+                    renders.clear();
+                    byte[] mapPng = null;
+                    if (cfg.captchaVoteRenders != null) {
+                        for (String spec : cfg.captchaVoteRenders) {
+                            int[] rs = parseRenderSpec(spec);
+                            if (rs == null) continue;
+                            byte[] p = renderMapPng(hit.state(), rs[0], rs[1] == 1);
+                            if (mapPng == null) mapPng = p;
+                            renders.add(new NamedPng(spec.trim().toLowerCase(java.util.Locale.ROOT), p));
+                        }
+                    }
+                    if (mapPng == null) mapPng = renderMapPng(hit.state(), cfg.captchaMapScale, cfg.captchaMapSmooth);
+                    // Legacy cross-check render, used only by the single-read path (screen captures, re-prompts).
+                    secondPng = renders.isEmpty() && cfg.captchaSecondScale > 0 && cfg.captchaSecondScale != cfg.captchaMapScale
                         ? renderMapPng(hit.state(), cfg.captchaSecondScale, cfg.captchaMapSmooth) : null;
                     captureMode = "map";
                     captureWhere = hit.where();
@@ -662,6 +756,88 @@ public class CaptchaSolver {
             }
         }
         return CaptchaImages.encodePng(CaptchaImages.scale(base, 128 * Math.max(1, scale), smooth && scale > 2));
+    }
+
+    /** "x4bil" -> {4, 1}, "x2near" -> {2, 0}; null for anything else. */
+    static int[] parseRenderSpec(String spec) {
+        if (spec == null) return null;
+        Matcher m = RENDER_SPEC.matcher(spec.trim().toLowerCase(java.util.Locale.ROOT));
+        if (!m.matches()) return null;
+        int scale = Integer.parseInt(m.group(1));
+        if (scale < 1 || scale > 8) return null;
+        return new int[]{scale, "bil".equals(m.group(2)) ? 1 : 0};
+    }
+
+    private static final Pattern RENDER_SPEC = Pattern.compile("x(\\d{1,2})(bil|near)");
+
+    /**
+     * One background reader for the whole captcha: the schedule at temperature 0, then
+     * again at captchaVoteTemperature, one request at a time, each parsed reading a vote,
+     * until the ballot is stopped (solved, failed, cancelled) or captchaVoteMaxReads.
+     * Errors are logged on the tick thread; a connection failure before any vote is the
+     * usual vlm-offline hand-over.
+     */
+    private void startVoting() {
+        phase = Phase.SOLVING;
+        phaseDeadline = System.currentTimeMillis() + cfg.captchaTimeoutMs + 2000;
+        mapPromptUsed = true;
+        ballotActive = true;
+        votingDone = false;
+        final int gen = ++voteGeneration;
+        final String promptText = cfg.captchaMapPrompt;
+        final List<NamedPng> snapshot = new ArrayList<>(renders);
+        final int maxReads = Math.max(1, cfg.captchaVoteMaxReads);
+        final double heat = cfg.captchaVoteTemperature;
+        Thread t = new Thread(() -> {
+            int reads = 0;
+            double[] temps = heat > 0 ? new double[]{0.0, heat} : new double[]{0.0};
+            outer:
+            for (double temp : temps) {
+                for (NamedPng r : snapshot) {
+                    if (gen != voteGeneration || reads >= maxReads) break outer;
+                    try {
+                        HttpResponse<String> resp = http.send(buildRequest(r.png(), promptText, temp, 64),
+                            HttpResponse.BodyHandlers.ofString());
+                        if (resp.statusCode() != 200) {
+                            voteError.set("HTTP " + resp.statusCode() + " on " + r.name());
+                            continue;
+                        }
+                        String content = contentOf(resp.body());
+                        String reading = ChatClassifier.parseAnswerArray(content, cfg.captchaPreserveCase);
+                        if (reading == null) {
+                            voteError.set("no answer on " + r.name() + ": " + truncate(content, 120));
+                            continue;
+                        }
+                        if (gen != voteGeneration) break outer;
+                        ballot.cast(reading, r.name(), temp);
+                        reads++;
+                    } catch (Exception e) {
+                        if (isConnectFailure(e) && ballot.reads() == 0) {
+                            vlmError.set("request failed: " + rootMessage(e));
+                            vlmConnectFailed.set(true);
+                            break outer;
+                        }
+                        voteError.set(r.name() + ": " + rootMessage(e));
+                    }
+                }
+            }
+            if (gen == voteGeneration) votingDone = true;
+        }, "ycbot-captcha-vote");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Candidates = the ballot minus rejected readings; an all-agree ballot still gets the look-alike second guess. */
+    private void refreshCandidates() {
+        candidates.clear();
+        candidates.addAll(ballot.ranked(wrongAnswers));
+        if (ballot.distinct() == 1) {
+            String only = ballot.leader(List.of());
+            String alt = ChatClassifier.lookalikeAlt(only, cfg.captchaLookalikes, cfg.captchaCaseAmbiguous);
+            if (alt != null && !alt.equals(only) && !wrongAnswers.contains(alt) && !candidates.contains(alt)) {
+                candidates.add(alt);
+            }
+        }
     }
 
     private String dumpPng(byte[] png) {
@@ -820,9 +996,11 @@ public class CaptchaSolver {
     private void afterSend(MinecraftClient client, long now, String answer, String out, boolean typed, int typos, String directWhy) {
         lastSentAnswer = answer;
         answersSent++;
+        answerSentAt = now;
         if ("map".equals(captureMode)) mapAnswersSent = answersSent;
         pendingOut = null;
         log("captcha_answer", "answer", answer, "sent", out, "typed", typed, "typos", typos,
+            "typedMismatch", typed && typer.typedMismatch() ? true : null,
             "directWhy", directWhy, "answersSent", answersSent, "attempt", attempt, "source", source,
             "mode", captureMode);
         feedback = null;

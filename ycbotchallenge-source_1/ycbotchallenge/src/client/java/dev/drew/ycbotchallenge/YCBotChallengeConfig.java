@@ -312,8 +312,33 @@ public class YCBotChallengeConfig {
     public int captchaMapDataWaitMs = 1500;
     /** Draw the map bilinear-smoothed when captchaMapScale > 2 (nearest x4 misread, smoothed x4 read right). */
     public boolean captchaMapSmooth = true;
-    /** A second render at this scale is read as a cross-check; a different reading becomes the second guess. 0 = off. */
+    /** Legacy since 0.9.26 (the ballot below reads every render); still used by the single-read paths. */
     public int captchaSecondScale = 3;
+    /**
+     * Running ballot (0.9.26). The map is rendered once at every scale here ("x<scale>bil"
+     * smoothed, "x<scale>near" nearest; smoothing only applies above x2) and one background
+     * reader reads them in turn — the schedule at temperature 0, then again at
+     * captchaVoteTemperature — until the captcha is resolved or captchaVoteMaxReads. Every
+     * reading is a vote; the first answer is the leader once the reading pause has passed
+     * and captchaVoteMinReads votes are in (or captchaVoteMaxWaitMs later with at least
+     * one); voting continues while the answer is verified, so a rejection sends the
+     * best-supported alternative. 19:43 log + bench: x4 read "Kra" 12/12 on the live image
+     * while x3 and x2 read "KrA" 8/8 — a vote picks KrA, the old primary render typed Kra.
+     * Certified captures: x4/x3/x2 vote right on KrA, p8b and pnGe (x6 was a coin flip on
+     * KrA and misread p8b; x4 nearest is garbage — keep those out of the schedule).
+     */
+    public List<String> captchaVoteRenders = List.of("x4bil", "x3bil", "x2near", "x5bil", "x3near");
+    public double captchaVoteTemperature = 0.6;
+    public int captchaVoteMaxReads = 12;
+    public int captchaVoteMinReads = 3;
+    public int captchaVoteMaxWaitMs = 3000;
+    /**
+     * The server says nothing after an answer, right or wrong (latest.log 13:43); on a right
+     * one the map leaves the hand. A map still held this long after the answer is the
+     * rejection and the next candidate goes out (the captchaMaxAnswers cap still holds).
+     * 0 = off (silence = solved, the 0.9.22 rule).
+     */
+    public int captchaMapHeldRejectMs = 7000;
     /**
      * Look-alike pairs for the second guess when both renders agree: the alphabet mixes
      * letters and digits (17:38: read "pBb", answer "p8b"). First matching character is
@@ -1186,7 +1211,9 @@ public class YCBotChallengeConfig {
         }
         if (configVersion < 30) {
             // v30: nameplates are read from hologram text displays, the boss bar backstops
-            // the AFK mob, Ctrl+toggle marks a mob ignored (new knobs take their defaults).
+            // the AFK mob, Ctrl+toggle marks a mob ignored; captcha answers come from a
+            // running ballot over several renders and a map still held after the answer
+            // is the rejection (new knobs take their defaults).
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;
@@ -1216,6 +1243,13 @@ public class YCBotChallengeConfig {
         if (captchaLookalikes == null) captchaLookalikes = fresh.captchaLookalikes;
         if (captchaSecondScale < 0) captchaSecondScale = 0;
         if (captchaSecondScale > 8) captchaSecondScale = 8;
+        if (captchaVoteRenders == null || captchaVoteRenders.isEmpty()) captchaVoteRenders = fresh.captchaVoteRenders;
+        if (captchaVoteTemperature < 0 || captchaVoteTemperature > 1.5) captchaVoteTemperature = 0.6;
+        if (captchaVoteMaxReads < 1) captchaVoteMaxReads = 1;
+        if (captchaVoteMinReads < 1) captchaVoteMinReads = 1;
+        if (captchaVoteMinReads > captchaVoteMaxReads) captchaVoteMinReads = captchaVoteMaxReads;
+        if (captchaVoteMaxWaitMs < 0) captchaVoteMaxWaitMs = 0;
+        if (captchaMapHeldRejectMs < 0) captchaMapHeldRejectMs = 0;
         if (captchaSolvedPatterns == null) captchaSolvedPatterns = fresh.captchaSolvedPatterns;
         if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
         if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;

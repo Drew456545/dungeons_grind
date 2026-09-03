@@ -61,6 +61,8 @@ public final class EconomyChecks {
         n += patience();
         n += rebirthProbe();
         n += suffixLearning();
+        n += typer();
+        n += ballot();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1070,6 +1072,89 @@ public final class EconomyChecks {
             n++;
         }
         Amounts.resetLearned();
+        return n;
+    }
+
+    /**
+     * 0.9.26 keystrokes: the old rule advanced past the intended character on a typo, so
+     * "/zone max" with a slip at the 'o' ended as "/zne max" in the field (19:43 log) while
+     * the original string was sent. The pure step keeps the index until the slip is fixed.
+     */
+    private static int typer() {
+        int n = 0;
+        String cmd = "/zone max";
+        ChatTyper.Keys k = ChatTyper.Keys.start();
+        k = ChatTyper.step(k, cmd, false, 'x');           // '/'
+        k = ChatTyper.step(k, cmd, false, 'x');           // 'z'
+        n += eq("two chars", k.typed(), "/z");
+        k = ChatTyper.step(k, cmd, true, 'n');            // slip: 'n' instead of 'o'
+        n += eq("slip shows", k.typed(), "/zn");
+        n += eq("slip pending", k.typoAt(), 2);
+        n += eq("index held", k.next(), 2);
+        k = ChatTyper.step(k, cmd, false, 'x');           // backspace
+        n += eq("backspaced", k.typed(), "/z");
+        n += eq("slip cleared", k.typoAt(), -1);
+        k = ChatTyper.step(k, cmd, false, 'x');           // the intended 'o'
+        n += eq("intended char typed", k.typed(), "/zo");
+        while (!ChatTyper.done(k, cmd)) k = ChatTyper.step(k, cmd, false, 'x');
+        n += eq("field equals the command", k.typed(), cmd);
+        // Two slips, one right at the end: still exact.
+        k = ChatTyper.Keys.start();
+        int i = 0;
+        while (!ChatTyper.done(k, cmd)) {
+            boolean slip = k.typoAt() < 0 && (k.next() == 3 || k.next() == cmd.length() - 1);
+            k = ChatTyper.step(k, cmd, slip, 'q');
+            if (++i > 100) break;
+        }
+        n += eq("two slips, exact", k.typed(), cmd);
+        n += eq("no slip path", ChatTyper.step(ChatTyper.Keys.start(), "ab", false, 'x').typed(), "a");
+        n += eq("past the end is a no-op", ChatTyper.step(new ChatTyper.Keys("ab", 2, -1), "ab", false, 'x').typed(), "ab");
+        n += eq("done", ChatTyper.done(new ChatTyper.Keys("ab", 2, -1), "ab"), true);
+        n += eq("not done with a slip pending", ChatTyper.done(new ChatTyper.Keys("abq", 2, 2), "ab"), false);
+        return n;
+    }
+
+    /**
+     * 0.9.26 ballot, from the bench on the certified captures (greedy readings per render):
+     * KrA live PNG x4 Kra / x3 KrA / x2 KrA; KrA fixture KrA / KrA / Kra; p8b p8b / p8b / pBb;
+     * pnGe all pnGe. The leader is right on all four; the old primary-render rule was wrong
+     * on the first.
+     */
+    private static int ballot() {
+        int n = 0;
+        CaptchaBallot b = new CaptchaBallot();
+        n += eq("empty leader", b.leader(List.of()) == null, true);
+        n += eq("empty reads", b.reads(), 0);
+        b.cast("Kra", "x4bil", 0.0);
+        n += eq("first read leads", b.leader(List.of()), "Kra");
+        b.cast("KrA", "x3bil", 0.0);
+        n += eq("tie keeps first-seen", b.leader(List.of()), "Kra");
+        b.cast("KrA", "x2near", 0.0);
+        n += eq("live case: KrA wins 2-1", b.leader(List.of()), "KrA");
+        n += eq("ranked", b.ranked(List.of()), List.of("KrA", "Kra"));
+        n += eq("reads", b.reads(), 3);
+        n += eq("distinct", b.distinct(), 2);
+        n += eq("render of KrA", b.renderOf("KrA"), "x3bil");
+        n += eq("tallies", b.tallies().get("KrA"), 2);
+        n += eq("rejected leader excluded", b.leader(List.of("KrA")), "Kra");
+        n += eq("all excluded", b.leader(List.of("KrA", "Kra")) == null, true);
+        b.cast(null, "x5bil", 0.0);
+        b.cast("", "x5bil", 0.0);
+        n += eq("nulls skipped", b.reads(), 3);
+
+        CaptchaBallot f = new CaptchaBallot();
+        f.cast("KrA", "x4bil", 0.0); f.cast("KrA", "x3bil", 0.0); f.cast("Kra", "x2near", 0.0);
+        n += eq("fixture case", f.leader(List.of()), "KrA");
+        CaptchaBallot p = new CaptchaBallot();
+        p.cast("p8b", "x4bil", 0.0); p.cast("p8b", "x3bil", 0.0); p.cast("pBb", "x2near", 0.0);
+        n += eq("p8b case", p.leader(List.of()), "p8b");
+        n += eq("p8b runner-up", p.ranked(List.of("p8b")), List.of("pBb"));
+        CaptchaBallot g = new CaptchaBallot();
+        g.cast("pnGe", "x4bil", 0.0); g.cast("pnGe", "x3bil", 0.0); g.cast("pnGe", "x2near", 0.0);
+        n += eq("all agree", g.distinct(), 1);
+        n += eq("all agree leader", g.leader(List.of()), "pnGe");
+        g.clear();
+        n += eq("cleared", g.reads(), 0);
         return n;
     }
 

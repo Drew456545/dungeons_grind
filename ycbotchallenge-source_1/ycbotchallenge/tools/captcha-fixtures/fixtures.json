@@ -1,5 +1,11 @@
 [
   {
+    "file": "KrA-map128.png",
+    "answer": "KrA",
+    "kind": "map",
+    "source": "bot capture 2026-09-03 19:43 (512 px x4 smoothed dump, box-downsampled to the 128 px grid); bot read Kra at x4, KrA at x3; Drew answered KrA by hand"
+  },
+  {
     "file": "p8b-map128.png",
     "answer": "p8b",
     "kind": "map",
