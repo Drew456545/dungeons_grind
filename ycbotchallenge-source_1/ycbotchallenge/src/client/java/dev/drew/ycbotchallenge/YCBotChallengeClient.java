@@ -50,6 +50,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         stats.setStateStore(new StateStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-state.json")));
         stats.setSuffixStore(new SuffixStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-suffixes.json")));
         combat = new CombatController(config, stats);
+        combat.setIgnoreStore(new IgnoreStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-ignored.json")));
         upgrades = new UpgradeController(config, stats);
         enchants = new EnchantController(config, stats);
         rebirthUpgrades = new RebirthUpgradeController(config, stats);
@@ -90,13 +91,15 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onTick);
 
-        LOGGER.info("YCBotChallenge loaded — press G in game to toggle, Shift+G to toggle sprint.");
+        LOGGER.info("YCBotChallenge loaded — press G in game to toggle, Shift+G to toggle sprint, Ctrl+G to ignore the mob you look at.");
     }
 
     private void onTick(MinecraftClient client) {
         while (toggleKey.wasPressed()) {
-            // Shift + toggle key = flip sprinting (persisted to the config); plain = bot on/off
-            if (shiftHeld(client)) toggleSprint(client);
+            // Ctrl + toggle = ignore/unignore the mob under the crosshair (0.9.26);
+            // Shift + toggle = flip sprinting (persisted to the config); plain = bot on/off
+            if (ctrlHeld(client)) markIgnored(client);
+            else if (shiftHeld(client)) toggleSprint(client);
             else setEnabled(client, !enabled, false);
         }
         if (client.player == null || client.world == null) return;
@@ -212,6 +215,19 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 "bals", stats.formattedBalances(),
                 "zoneReady", Math.round(1000.0 * stats.zoneReadiness()) / 10.0);
         }
+    }
+
+    private static boolean ctrlHeld(MinecraftClient client) {
+        var w = client.getWindow();
+        return InputUtil.isKeyPressed(w, GLFW.GLFW_KEY_LEFT_CONTROL) || InputUtil.isKeyPressed(w, GLFW.GLFW_KEY_RIGHT_CONTROL);
+    }
+
+    private void markIgnored(MinecraftClient client) {
+        String msg = combat.toggleManualIgnore(client);
+        if (client.player == null) return;
+        client.player.sendMessage(Text.literal(msg != null
+            ? "§e[YCBotChallenge] " + msg
+            : "§e[YCBotChallenge] no mob under the crosshair — look at the one to ignore and press Ctrl+toggle."), false);
     }
 
     private static boolean shiftHeld(MinecraftClient client) {

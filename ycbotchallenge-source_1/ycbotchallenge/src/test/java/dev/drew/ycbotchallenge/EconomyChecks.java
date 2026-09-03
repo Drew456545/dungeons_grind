@@ -748,6 +748,52 @@ public final class EconomyChecks {
         n += eq("rare mob targeted", Economy.ignoredMob("[RARE] LVL6 Cow ❤41.4M", res), false);
         n += eq("no nameplate", Economy.ignoredMob(null, res), false);
         n += eq("no patterns", Economy.ignoredMob("[AFKMOB] LVL7 Donkey", List.of()), false);
+
+        // 0.9.26: the plate is a hologram (19:26 log + screenshot: three text-display lines
+        // above the AFK Mooshroom), and the hit raises a bar titled "[AFKMOB] LVL9 Mooshroom".
+        n += eq("hologram lines ignored", Economy.ignoredByLines(
+            List.of("⟡332.12B⟡", "[AFKMOB] LVL9 Mooshroom ❤∞", "RIGHT CLICK TO UPGRADE"), res), true);
+        n += eq("real plate lines targeted", Economy.ignoredByLines(List.of("[RARE] LVL9 Mooshroom ❤2.3B"), res), false);
+        n += eq("no lines", Economy.ignoredByLines(List.of(), res), false);
+        n += eq("null lines", Economy.ignoredByLines(null, res), false);
+        n += eq("afk bar title", Economy.bossBarIgnored(List.of("[AFKMOB] LVL9 Mooshroom"), res), true);
+        n += eq("afk bar next to a real bar", Economy.bossBarIgnored(List.of("[AFKMOB] LVL9 Mooshroom", "LVL9 Mooshroom"), res), false);
+        n += eq("real bar", Economy.bossBarIgnored(List.of("[RARE] LVL9 Mooshroom"), res), false);
+        n += eq("no bars", Economy.bossBarIgnored(List.of(), res), false);
+        n += eq("plate above the mob", Economy.hologramBelongs(0.2, 0.1, 1.9, 0.9), true);
+        n += eq("plate at head height", Economy.hologramBelongs(0.0, 0.0, 0.0, 0.9), true);
+        n += eq("plate of the neighbour", Economy.hologramBelongs(2.5, 0.0, 1.9, 0.9), false);
+        n += eq("plate below", Economy.hologramBelongs(0.0, 0.0, -1.0, 0.9), false);
+        n += eq("plate too high", Economy.hologramBelongs(0.0, 0.0, 4.0, 0.9), false);
+        n += eq("manual mark same kind", Economy.manualMarkMatches("Mooshroom", "mooshroom", 0.4, 1.5), true);
+        n += eq("manual mark other kind", Economy.manualMarkMatches("Cow", "Mooshroom", 0.4, 1.5), false);
+        n += eq("manual mark far", Economy.manualMarkMatches("Mooshroom", "Mooshroom", 3.0, 1.5), false);
+        n += eq("manual mark null", Economy.manualMarkMatches(null, "Mooshroom", 0.0, 1.5), false);
+        // Manual marks persist by kind and position.
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-ignored", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            IgnoreStore s = new IgnoreStore(tmp);
+            n += eq("empty ignore store", s.size(), 0);
+            IgnoreStore.Mark m = new IgnoreStore.Mark();
+            m.type = "Mooshroom";
+            m.x = 12.3; m.y = 64.0; m.z = -30.2;
+            m.label = "[AFKMOB] LVL9 Mooshroom ❤∞ | RIGHT CLICK TO UPGRADE";
+            m.at = 1_788_470_000_000L;
+            s.add(m);
+            IgnoreStore r = new IgnoreStore(tmp);
+            n += eq("mark persisted", r.size(), 1);
+            n += eq("mark found nearby", r.findNear("Mooshroom", 12.6, 64.0, -30.0, 1.5) != null, true);
+            n += eq("mark label kept", r.findNear("mooshroom", 12.3, 64.0, -30.2, 1.5).label, m.label);
+            n += eq("mark other kind", r.findNear("Cow", 12.3, 64.0, -30.2, 1.5) == null, true);
+            n += eq("mark far away", r.findNear("Mooshroom", 20.0, 64.0, -30.2, 1.5) == null, true);
+            n += eq("mark removed", r.removeNear("Mooshroom", 12.3, 64.0, -30.2, 1.5) != null, true);
+            n += eq("removal persisted", new IgnoreStore(tmp).size(), 0);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL ignoreStore: " + ex);
+            n++;
+        }
         return n;
     }
 

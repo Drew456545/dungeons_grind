@@ -992,6 +992,19 @@ public class StatsTracker {
         return false;
     }
 
+    /** Prefix titles of every boss bar mentioning {@code mobName} (the AFK mob's own reads "[AFKMOB] LVL9 Mooshroom"). */
+    public List<String> bossBarTitlesFor(String mobName) {
+        List<String> out = new ArrayList<>();
+        if (mobName == null || mobName.isBlank()) return out;
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.inGameHud == null) return out;
+        for (ClientBossBar bar : bossBars(client).values()) {
+            String prefix = bossBarPrefix(bar.getName().getString());
+            if (prefix.toLowerCase().contains(mobName.toLowerCase())) out.add(prefix);
+        }
+        return out;
+    }
+
     /** Current heart HP of the boss bar whose title mentions {@code mobName}, or null. */
     public Double currentHpFor(String mobName) {
         if (mobName == null || mobName.isBlank()) return null;

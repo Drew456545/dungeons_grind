@@ -164,6 +164,26 @@ public class YCBotChallengeConfig {
      * tag tells it apart; locking onto it wasted whole cook cycles (0.9.14).
      */
     public List<String> ignoreMobPatterns = List.of("[afkmob]", "❤∞");
+    /**
+     * 0.9.26: on this server a mob's plate is a text display riding the mob or floating
+     * above it, not the entity's name (target_ignored never fired in any log). A plate
+     * entity within this many blocks horizontally of a mob, from half a block below to
+     * 3.5 above, is read as its nameplate for ignoreMobPatterns, rarity and level.
+     */
+    public double nameplateHologramRadiusBlocks = 0.9;
+    /**
+     * Backstop after the first hit: when every boss bar mentioning the mob matches
+     * ignoreMobPatterns ("[AFKMOB] LVL9 Mooshroom"), the target is dropped for the session.
+     */
+    public boolean ignoreByBossBar = true;
+    /**
+     * Ctrl + toggle key marks the mob under the crosshair ignored (or unmarks it):
+     * persisted by kind and position in config/ycbotchallenge-ignored.json and matched
+     * within this radius; when nothing is in reach, the nearest mob within this many
+     * degrees of the look line is taken.
+     */
+    public double manualIgnoreRadiusBlocks = 1.5;
+    public double manualIgnoreAimDeg = 4.0;
     public double ghostMotionBlocks = 0.5;
     /** Watch a mob stand still for this many ticks before it becomes targetable. */
     public int minObservationTicks = 3;
@@ -921,7 +941,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 29;
+    public static final int CURRENT_CONFIG_VERSION = 30;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1164,6 +1184,11 @@ public class YCBotChallengeConfig {
             // Qa/Qi/Sx/Sp/Oc/No/Dc left the built-in table.
             changed = true;
         }
+        if (configVersion < 30) {
+            // v30: nameplates are read from hologram text displays, the boss bar backstops
+            // the AFK mob, Ctrl+toggle marks a mob ignored (new knobs take their defaults).
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1195,6 +1220,9 @@ public class YCBotChallengeConfig {
         if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
         if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;
         if (ignoreMobPatterns == null) ignoreMobPatterns = fresh.ignoreMobPatterns;
+        if (nameplateHologramRadiusBlocks <= 0) nameplateHologramRadiusBlocks = 0.9;
+        if (manualIgnoreRadiusBlocks <= 0) manualIgnoreRadiusBlocks = 1.5;
+        if (manualIgnoreAimDeg <= 0) manualIgnoreAimDeg = 4.0;
         if (captchaMapScale < 1) captchaMapScale = fresh.captchaMapScale;
         if (captchaMapScale > 8) captchaMapScale = 8;
         if (captchaScreenMaxPx < 256) captchaScreenMaxPx = fresh.captchaScreenMaxPx;

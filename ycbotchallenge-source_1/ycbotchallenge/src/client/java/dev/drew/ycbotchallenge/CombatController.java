@@ -135,6 +135,13 @@ public class CombatController {
     /** Nameplates never targeted (ignoreMobPatterns); entity ids already logged as ignored. */
     private final java.util.List<Pattern> ignoreRes = new java.util.ArrayList<>();
     private final java.util.Set<Integer> ignoredLogged = new java.util.HashSet<>();
+    /** Entity ids ignored for the session by evidence that arrives after the pick (its boss bar) or by hand (Ctrl+toggle). */
+    private final java.util.Set<Integer> ignoredIds = new java.util.HashSet<>();
+    /** Manual marks (kind + position), persisted. */
+    private IgnoreStore ignoreStore;
+    /** Plate entities (text displays, named armor stands) near the player, refreshed at most every 250ms. */
+    private final List<Entity> plateCache = new ArrayList<>();
+    private long plateCacheAt = 0;
 
     public CombatController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -675,6 +682,25 @@ public class CombatController {
 
         // Connect detection: a click has landed once the mob's boss bar is showing.
         if (clicksThisTarget >= 1 && stats.bossBarMatches(targetMob)) {
+            // Backstop (0.9.26): the bar the hit raised names the mob for us. The AFK
+            // mob's reads "[AFKMOB] LVL9 Mooshroom" — drop it for the session instead of
+            // cooking an infinite-HP mob until the cook timeout.
+            if (cfg.ignoreByBossBar && !ignoreRes.isEmpty()) {
+                List<String> titles = stats.bossBarTitlesFor(targetMob);
+                if (Economy.bossBarIgnored(titles, ignoreRes)) {
+                    ignoredIds.add(target.getId());
+                    if (logger != null) {
+                        logger.log("target_ignored", "via", "bossbar", "nameplate", String.join(" | ", titles),
+                            "entityId", target.getId(), "mob", targetMob);
+                    }
+                    target = null;
+                    clicksThisTarget = 0;
+                    lookIssued = false;
+                    firstClickAt = 0;
+                    nextActionAt = now + HumanTiming.logNormalMs(cfg.reactionDelayMinMs, cfg.reactionDelayMaxMs);
+                    return;
+                }
+            }
             connected = true;
             tagAt = now;
             barGoneAt = 0;
@@ -1116,15 +1142,15 @@ public class CombatController {
         if (e == client.player || e instanceof PlayerEntity) return false;
         if (e instanceof ArmorStandEntity || e instanceof DisplayEntity) return false;
         if (!le.isAlive() || le.isRemoved()) return false;
-        if (!ignoreRes.isEmpty()) {
-            Text plate = le.getCustomName();
-            if (plate != null && Economy.ignoredMob(plate.getString(), ignoreRes)) {
-                if (ignoredLogged.add(e.getId()) && logger != null) {
-                    logger.log("target_ignored", "nameplate", plate.getString(), "entityId", e.getId());
-                }
-                if (ignoredLogged.size() > 4096) ignoredLogged.clear();
-                return false;
+        if (ignoredIds.contains(e.getId())) return false;
+        String why = ignoreReason(client, le);
+        if (why != null) {
+            if (ignoredLogged.add(e.getId()) && logger != null) {
+                logger.log("target_ignored", "via", why, "nameplate", plateSummary(client, le),
+                    "entityId", e.getId(), "mob", typeName(le));
             }
+            if (ignoredLogged.size() > 4096) ignoredLogged.clear();
+            return false;
         }
         if (!inZone(e.getEntityPos())) return false;
         if (cfg.stationaryOnly) {
@@ -1260,10 +1286,10 @@ public class CombatController {
         return best;
     }
 
-    private static String parseRarity(LivingEntity e) {
-        Text custom = e.getCustomName();
-        if (custom == null) return null;
-        Matcher m = NAMEPLATE.matcher(custom.getString().trim());
+    private String parseRarity(LivingEntity e) {
+        String plate = plateName(MinecraftClient.getInstance(), e);
+        if (plate == null) return null;
+        Matcher m = NAMEPLATE.matcher(plate.trim());
         return m.matches() ? m.group("rarity").trim().toUpperCase() : null;
     }
 
@@ -1275,26 +1301,199 @@ public class CombatController {
         return 0;
     }
 
-    private static String describe(LivingEntity e) {
+    private String describe(LivingEntity e) {
+        String plate = plateName(MinecraftClient.getInstance(), e);
+        if (plate == null) return typeName(e);
+        Matcher m = NAMEPLATE.matcher(plate.trim());
+        return m.matches() ? "[" + m.group("rarity") + "] " + m.group("mob") : plate;
+    }
+
+    private static String typeName(Entity e) {
+        return e.getType().getName().getString();
+    }
+
+    /**
+     * The mob's plate text: its entity name when it has one, else the first hologram
+     * line shaped like a nameplate ("[RARE] LVL9 Mooshroom ❤2.3B"), else the first line.
+     */
+    private String plateName(MinecraftClient client, LivingEntity e) {
         Text custom = e.getCustomName();
-        if (custom == null) return e.getType().getName().getString();
-        Matcher m = NAMEPLATE.matcher(custom.getString().trim());
-        return m.matches() ? "[" + m.group("rarity") + "] " + m.group("mob") : custom.getString();
+        if (custom != null) return custom.getString();
+        List<String> lines = plateLines(client, e);
+        for (String l : lines) if (NAMEPLATE.matcher(l.trim()).matches()) return l;
+        return lines.isEmpty() ? null : lines.get(0);
+    }
+
+    /** Every plate line, joined, for logs and notices; null when the mob has none. */
+    private String plateSummary(MinecraftClient client, LivingEntity e) {
+        Text custom = e.getCustomName();
+        List<String> lines = plateLines(client, e);
+        if (custom != null) lines.add(0, custom.getString());
+        return lines.isEmpty() ? null : String.join(" | ", lines);
+    }
+
+    /**
+     * Nameplate lines of a mob on this server (0.9.26). EnchantedMC does not name the
+     * mob entity: the plate is a text display riding the mob or floating just above it
+     * (the AFK mob carries three: "⟡332.12B⟡", "[AFKMOB] LVL9 Mooshroom ❤∞", "RIGHT CLICK
+     * TO UPGRADE"). Passengers first; else every plate entity within
+     * nameplateHologramRadiusBlocks horizontally and 3.5 blocks above.
+     */
+    private List<String> plateLines(MinecraftClient client, LivingEntity e) {
+        List<String> lines = new ArrayList<>();
+        for (Entity p : e.getPassengerList()) addPlateText(p, lines);
+        if (!lines.isEmpty()) return lines;
+        refreshPlateCache(client);
+        Vec3d pos = e.getEntityPos();
+        for (Entity p : plateCache) {
+            if (p.isRemoved()) continue;
+            Vec3d pp = p.getEntityPos();
+            if (!Economy.hologramBelongs(pp.x - pos.x, pp.z - pos.z, pp.y - pos.y, cfg.nameplateHologramRadiusBlocks)) continue;
+            addPlateText(p, lines);
+        }
+        return lines;
+    }
+
+    private void refreshPlateCache(MinecraftClient client) {
+        long now = System.currentTimeMillis();
+        if (now - plateCacheAt < 250 || client == null || client.world == null || client.player == null) return;
+        plateCacheAt = now;
+        plateCache.clear();
+        double reach = cfg.targetRange * 1.5 + 4;
+        for (Entity p : client.world.getEntities()) {
+            if (!(p instanceof DisplayEntity.TextDisplayEntity) && !(p instanceof ArmorStandEntity)) continue;
+            if (client.player.distanceTo(p) > reach) continue;
+            plateCache.add(p);
+        }
+    }
+
+    private static void addPlateText(Entity p, List<String> out) {
+        String text = null;
+        if (p instanceof DisplayEntity.TextDisplayEntity td) {
+            DisplayEntity.TextDisplayEntity.Data d = td.getData();
+            if (d != null && d.text() != null) text = d.text().getString();
+        } else if (p instanceof ArmorStandEntity as) {
+            Text n = as.getCustomName();
+            if (n != null) text = n.getString();
+        }
+        if (text == null) return;
+        for (String line : text.split("\\n")) {
+            String t = line.trim();
+            if (!t.isEmpty()) out.add(t);
+        }
+    }
+
+    /** Why a mob is untargetable ("name", "hologram", "manual"), or null when it is fair game. */
+    private String ignoreReason(MinecraftClient client, LivingEntity le) {
+        if (!ignoreRes.isEmpty()) {
+            Text custom = le.getCustomName();
+            if (custom != null && Economy.ignoredMob(custom.getString(), ignoreRes)) return "name";
+            if (Economy.ignoredByLines(plateLines(client, le), ignoreRes)) return "hologram";
+        }
+        if (ignoreStore != null && ignoreStore.size() > 0) {
+            Vec3d p = le.getEntityPos();
+            if (ignoreStore.findNear(typeName(le), p.x, p.y, p.z, cfg.manualIgnoreRadiusBlocks) != null) return "manual";
+        }
+        return null;
+    }
+
+    public void setIgnoreStore(IgnoreStore store) { this.ignoreStore = store; }
+
+    /**
+     * Ctrl + toggle key (0.9.26): ignore the mob under the crosshair — or, when it is
+     * already marked, stop ignoring it. The mark is the mob's kind and position, so it
+     * outlives the entity id (each zone's AFK mob stands on the same block forever).
+     * Returns the chat notice, or null when nothing is being looked at.
+     */
+    public String toggleManualIgnore(MinecraftClient client) {
+        LivingEntity le = lookedAtMob(client);
+        if (le == null) return null;
+        Vec3d p = le.getEntityPos();
+        String type = typeName(le);
+        String label = plateSummary(client, le);
+        String shown = label != null ? label : type;
+        String at = Math.round(p.x) + ", " + Math.round(p.y) + ", " + Math.round(p.z);
+        IgnoreStore.Mark old = ignoreStore != null
+            ? ignoreStore.removeNear(type, p.x, p.y, p.z, cfg.manualIgnoreRadiusBlocks) : null;
+        if (old != null) {
+            ignoredIds.remove(le.getId());
+            ignoredLogged.remove(le.getId());
+            if (logger != null) {
+                logger.log("target_unignored", "via", "manual", "nameplate", label, "entityId", le.getId(),
+                    "mob", type, "x", Math.round(p.x), "y", Math.round(p.y), "z", Math.round(p.z));
+            }
+            return "no longer ignoring " + shown + " (" + type + " at " + at + ").";
+        }
+        if (ignoreStore != null) {
+            IgnoreStore.Mark m = new IgnoreStore.Mark();
+            m.type = type;
+            m.x = p.x;
+            m.y = p.y;
+            m.z = p.z;
+            m.label = label;
+            m.at = System.currentTimeMillis();
+            ignoreStore.add(m);
+        }
+        ignoredIds.add(le.getId());
+        if (target == le) {
+            target = null;
+            connected = false;
+            clicksThisTarget = 0;
+            lookIssued = false;
+            firstClickAt = 0;
+        }
+        if (nextTarget == le) {
+            nextTarget = null;
+            nextTargetDesc = null;
+        }
+        if (logger != null) {
+            logger.log("target_ignored", "via", "manual", "nameplate", label, "entityId", le.getId(),
+                "mob", type, "x", Math.round(p.x), "y", Math.round(p.y), "z", Math.round(p.z));
+        }
+        return "ignoring " + shown + " (" + type + " at " + at + "). Ctrl+toggle on it again to undo.";
+    }
+
+    /** The mob under the crosshair: the game's own pick within reach, else the nearest mob within manualIgnoreAimDeg of the look line. */
+    private LivingEntity lookedAtMob(MinecraftClient client) {
+        if (client == null || client.player == null || client.world == null) return null;
+        if (client.targetedEntity instanceof LivingEntity hit && !(hit instanceof PlayerEntity)
+            && !(hit instanceof ArmorStandEntity) && !(hit instanceof DisplayEntity)) {
+            return hit;
+        }
+        Vec3d eye = client.player.getEyePos();
+        Vec3d look = client.player.getRotationVec(1.0f);
+        LivingEntity best = null;
+        double bestAng = Math.max(0.5, cfg.manualIgnoreAimDeg);
+        for (Entity e : client.world.getEntities()) {
+            if (!(e instanceof LivingEntity le) || e == client.player || e instanceof PlayerEntity) continue;
+            if (e instanceof ArmorStandEntity || e instanceof DisplayEntity) continue;
+            Vec3d c = e.getEntityPos().add(0, e.getHeight() * 0.5, 0);
+            Vec3d rel = c.subtract(eye);
+            double dist = rel.length();
+            if (dist < 0.3 || dist > 12) continue;
+            double cos = rel.normalize().dotProduct(look);
+            double ang = Math.toDegrees(Math.acos(Math.max(-1.0, Math.min(1.0, cos))));
+            if (ang < bestAng) {
+                bestAng = ang;
+                best = le;
+            }
+        }
+        return best;
     }
 
     private void readNameplate(LivingEntity e) {
         targetRarity = null;
         targetLevel = null;
-        targetMob = e.getType().getName().getString();
-        Text custom = e.getCustomName();
-        if (custom != null) {
-            Matcher m = NAMEPLATE.matcher(custom.getString().trim());
+        targetMob = typeName(e);
+        String plate = plateName(MinecraftClient.getInstance(), e);
+        if (plate != null) {
+            Matcher m = NAMEPLATE.matcher(plate.trim());
             if (m.matches()) {
                 targetRarity = m.group("rarity");
                 try { targetLevel = Integer.parseInt(m.group("level")); } catch (NumberFormatException ignored) {}
                 targetMob = m.group("mob");
-            } else {
-                targetMob = custom.getString();
+            } else if (e.getCustomName() != null) {
+                targetMob = plate;
             }
         }
         lastTargetDesc = (targetRarity != null ? "[" + targetRarity + "] " : "") + targetMob;

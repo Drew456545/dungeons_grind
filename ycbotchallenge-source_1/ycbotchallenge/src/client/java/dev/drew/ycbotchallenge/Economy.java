@@ -349,6 +349,42 @@ public final class Economy {
         return "retag";
     }
 
+    /**
+     * 0.9.26: on this server a mob's plate is not its entity name — it is a text display
+     * riding the mob or floating above it (target_ignored never fired and no tag ever
+     * carried a rarity in any log, so the 0.9.14 rule read a name that was never there).
+     * Any plate line matching an ignore pattern ("[AFKMOB] LVL9 Mooshroom ❤∞",
+     * "RIGHT CLICK TO UPGRADE") makes the mob untargetable.
+     */
+    public static boolean ignoredByLines(java.util.List<String> lines, java.util.List<java.util.regex.Pattern> ignoreRes) {
+        if (lines == null) return false;
+        for (String l : lines) if (ignoredMob(l, ignoreRes)) return true;
+        return false;
+    }
+
+    /**
+     * Backstop after the first hit: the AFK mob's own boss bar reads "[AFKMOB] LVL9
+     * Mooshroom" (19:26 log, boost_start). The target is dropped only when every bar
+     * mentioning the mob matches — a real Mooshroom cooking next to a lingering AFK bar
+     * is not.
+     */
+    public static boolean bossBarIgnored(java.util.List<String> titles, java.util.List<java.util.regex.Pattern> ignoreRes) {
+        if (titles == null || titles.isEmpty()) return false;
+        for (String t : titles) if (!ignoredMob(t, ignoreRes)) return false;
+        return true;
+    }
+
+    /** A floating plate belongs to the mob it hovers over: within {@code radius} horizontally, from half a block below to 3.5 above. */
+    public static boolean hologramBelongs(double dx, double dz, double dy, double radius) {
+        return Math.sqrt(dx * dx + dz * dz) <= Math.max(0, radius) && dy >= -0.5 && dy <= 3.5;
+    }
+
+    /** A manual mark (Ctrl+toggle) matches the same kind of mob within {@code radius} of where it was marked. */
+    public static boolean manualMarkMatches(String type, String markType, double dist, double radius) {
+        if (type == null || markType == null) return false;
+        return type.equalsIgnoreCase(markType) && dist <= Math.max(0, radius);
+    }
+
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);
