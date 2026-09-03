@@ -295,11 +295,11 @@ public final class EconomyChecks {
 
         // Closed gate ⇒ zone is never chosen, even as the only affordable kind (zoneOpen=false).
         n += eq("closed gate: zone-only affordable → wait",
-            Economy.chooseBuyKind(true, false, false, true, null, 2.5e9, 1.25), null);
+            Economy.chooseBuyKind(true, false, false, true, null, 2.5e9, 3e9, 60_000.0, 25, 2000), null);
         n += eq("closed gate: sword affordable → sword",
-            Economy.chooseBuyKind(true, false, true, true, 1.24e9, 2.5e9, 1.25), "sword");
+            Economy.chooseBuyKind(true, false, true, true, 1.24e9, 2.5e9, 3e9, 60_000.0, 25, 2000), "sword");
         n += eq("closed gate: HUD prefers sword",
-            Economy.preferredKind(true, false, null, null, 1.25), "sword");
+            Economy.preferredKind(true, false), "sword");
 
         // Readiness for HUD/status.
         n += eq("ready at gate", Economy.zoneReadiness(10_000.0, 10_000), 1.0, 1e-9);
@@ -315,25 +315,47 @@ public final class EconomyChecks {
         return n;
     }
 
+    /** 0.9.16 zone-first buy order; numbers from the 03-36 post-rebirth log. */
     private static int choose() {
         int n = 0;
-        n += eq("both affordable sword cheaper → sword",
-            Economy.chooseBuyKind(true, true, true, true, 10e9, 10e9, 1.25), "sword");
-        n += eq("both affordable sword 2x zone → zone",
-            Economy.chooseBuyKind(true, true, true, true, 20e9, 10e9, 1.25), "zone");
-        n += eq("sword just over 1.25x → zone",
-            Economy.chooseBuyKind(true, true, true, true, 12.6e9, 10e9, 1.25), "zone");
-        n += eq("sword exactly 1.25x → sword",
-            Economy.chooseBuyKind(true, true, true, true, 12.5e9, 10e9, 1.25), "sword");
-        n += eq("zone unaffordable → sword",
-            Economy.chooseBuyKind(true, true, true, false, 20e9, 10e9, 1.25), "sword");
-        n += eq("only zone affordable → zone",
-            Economy.chooseBuyKind(true, true, false, true, 20e9, 10e9, 1.25), "zone");
-        n += eq("neither → wait",
-            Economy.chooseBuyKind(true, true, false, false, 20e9, 10e9, 1.25), null);
-        n += eq("preferZone true", Economy.preferZone(20e9, 10e9, 1.25), true);
-        n += eq("preferZone false", Economy.preferZone(10e9, 10e9, 1.25), false);
-        n += eq("preferZone nulls", Economy.preferZone(null, 10e9, 1.25), false);
+        // Gate open + zone affordable: the zone, whatever the sword costs.
+        n += eq("zone affordable -> zone", Economy.chooseBuyKind(true, true, true, true, 10e9, 10e9, 20e9, 3000.0, 25, 2000), "zone");
+        n += eq("zone 1: 145.7K zone beats 525K sword", Economy.chooseBuyKind(true, true, true, true, 525.22e3, 145.7e3, 553.5e3, 725.0, 25, 2000), "zone");
+        // Zone 3: bal 31.91M, zone ~252M (gap 220M), sword 22.52M = 10% -> sword while saving.
+        n += eq("cheap sword while saving", Economy.chooseBuyKind(true, true, true, false, 22.52e6, 252e6, 31.91e6, 4742.0, 25, 2000), "sword");
+        // bal 79.14M, sword 78.82M = 45% of the 173M gap -> save for the zone.
+        n += eq("pricey sword while saving -> wait", Economy.chooseBuyKind(true, true, true, false, 78.82e6, 252e6, 79.14e6, 2678.0, 25, 2000), null);
+        // TTK at the movement floor: no sword at all while saving.
+        n += eq("instant ttk -> wait", Economy.chooseBuyKind(true, true, true, false, 1.84e6, 252e6, 200e6, 480.0, 25, 2000), null);
+        // Gate closed (zone 6 on arrival, TTK 42s): the sword.
+        n += eq("gate closed -> sword", Economy.chooseBuyKind(true, false, true, true, 507.09e9, 137.26e9, 568.87e9, 44399.0, 25, 2000), "sword");
+        n += eq("gate closed, sword unaffordable -> wait", Economy.chooseBuyKind(true, false, false, true, 507.09e9, 137.26e9, 385.47e9, 42783.0, 25, 2000), null);
+        n += eq("zone price unknown -> sword", Economy.chooseBuyKind(true, true, true, false, 22.52e6, null, 31.91e6, 4742.0, 25, 2000), "sword");
+        n += eq("neither -> wait", Economy.chooseBuyKind(true, true, false, false, 20e9, 10e9, 1e9, 3000.0, 25, 2000), null);
+        n += eq("sword maxed, zone unaffordable -> wait", Economy.chooseBuyKind(false, true, true, false, 20e9, 10e9, 1e9, 3000.0, 25, 2000), null);
+        n += eq("both closed -> wait", Economy.chooseBuyKind(false, false, true, true, 20e9, 10e9, 50e9, 3000.0, 25, 2000), null);
+        // Saving rule boundaries.
+        n += eq("saving: exactly 25%", Economy.swordWhileSaving(55e6, 252e6, 32e6, 4000.0, 25, 2000), true);
+        n += eq("saving: 25.1%", Economy.swordWhileSaving(55.22e6, 252e6, 32e6, 4000.0, 25, 2000), false);
+        n += eq("saving: ttk unknown uses price only", Economy.swordWhileSaving(22e6, 252e6, 32e6, null, 25, 2000), true);
+        n += eq("saving: at floor", Economy.swordWhileSaving(1e6, 252e6, 32e6, 2000.0, 25, 2000), false);
+        n += eq("saving: floor off", Economy.swordWhileSaving(1e6, 252e6, 32e6, 500.0, 25, 0), true);
+        n += eq("preferred: gate open -> zone", Economy.preferredKind(true, true), "zone");
+        n += eq("preferred: gate closed -> sword", Economy.preferredKind(true, false), "sword");
+        n += eq("preferred: nothing", Economy.preferredKind(false, false) == null, true);
+        // Captcha capture is map-only by default; a v19 "auto" config migrates, "screen" is kept.
+        n += eq("fresh capture mode", CFG.captchaCaptureMode, "map");
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":19,\"captchaCaptureMode\":\"auto\"}");
+            n += eq("auto migrates to map", YCBotChallengeConfig.load(tmp).captchaCaptureMode, "map");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":19,\"captchaCaptureMode\":\"screen\"}");
+            n += eq("screen opt-in kept", YCBotChallengeConfig.load(tmp).captchaCaptureMode, "screen");
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL capture mode migration: " + ex);
+            n++;
+        }
         return n;
     }
 
@@ -348,8 +370,8 @@ public final class EconomyChecks {
         n += eq("rebirth interval 0 is immediate",
             Economy.cooldownElapsed(100, 99, 0, false), true);
         // Sword/zone choice is unused while rebirth is covered (controller short-circuits).
-        n += eq("chooser still sword when asked",
-            Economy.chooseBuyKind(true, true, true, true, 10e9, 10e9, 1.25), "sword");
+        n += eq("chooser still answers when asked",
+            Economy.chooseBuyKind(true, true, true, true, 10e9, 10e9, 20e9, 3000.0, 25, 2000), "zone");
         return n;
     }
 

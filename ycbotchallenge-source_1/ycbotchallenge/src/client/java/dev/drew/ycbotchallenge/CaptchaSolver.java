@@ -506,7 +506,10 @@ public class CaptchaSolver {
             }
         }
         if ("map".equals(mode)) {
-            retryOrFail(client, "capture", "no filled map in hands, hotbar or nearby item frames");
+            // Map-only (default since 0.9.16): a chat/GUI trigger with no map is not a
+            // captcha we can read. Hand over at once rather than screenshot the arena
+            // and type a guess into public chat (the "qwe" incident, 2026-09-03).
+            fail(client, "capture", "no-map: no filled map in hands, hotbar or nearby item frames");
             return;
         }
         captureMode = "screen";

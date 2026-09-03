@@ -38,6 +38,8 @@ public class UpgradeController {
     private final ChatTyper typer;
     /** Kind the rebirth horizon blocked at the last eval (HUD "saving"), null when none. */
     private String horizonBlocked = null;
+    /** Last eval held an affordable sword back to save for the zone (upgrade_skip saving-zone, HUD). */
+    private boolean savingZone = false;
     /** Income at the moment of the last send; the upgrade_gain evidence compares it with the rate later. */
     private Double incomeAtSend = null;
     private String gainKind = null;
@@ -106,6 +108,7 @@ public class UpgradeController {
             if (etaMin != null && etaMin > 0) sb.append("  eta ").append(formatEta(etaMin * 60_000.0));
             if (horizonBlocked != null) sb.append("  §7(saving; ").append(horizonBlocked).append(" waits)§r");
         }
+        if (savingZone && phase == Phase.IDLE) sb.append("  §7(sword waits for zone)§r");
         if (phase != Phase.IDLE) {
             sb.append("  §e").append(phase.name().toLowerCase(Locale.ROOT));
         } else if (kind != null) {
@@ -146,6 +149,7 @@ public class UpgradeController {
         phase = Phase.IDLE;
         pending = null;
         horizonBlocked = null;
+        savingZone = false;
         gainAt = 0;
         queue.clear();
         startupProbed = false;
@@ -262,6 +266,10 @@ public class UpgradeController {
             if (kind == null) {
                 if (horizonBlocked != null) {
                     skipEval("rebirth-horizon", horizonBlocked);
+                    return false;
+                }
+                if (savingZone) {
+                    skipEval("saving-zone", "sword");
                     return false;
                 }
                 boolean zoneGated = !Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs)
@@ -551,6 +559,7 @@ public class UpgradeController {
         Double bal = stats.money();
         logger.log("upgrade_plan", "kind", kind,
             "via", evalReason,
+            "priority", hudKind(),
             "target", price != null ? Amounts.format(price) : null,
             "bal", bal != null ? Amounts.format(bal) : null,
             "pct", price != null && price > 0 && bal != null
@@ -570,22 +579,30 @@ public class UpgradeController {
 
     private String hudKind() {
         if (stats.rebirthTarget != null) return "rebirth";
-        return Economy.preferredKind(!stats.swordMaxed, zoneOpen(),
-            stats.swordTarget, stats.zoneTarget, cfg.zoneOverSwordRatio);
+        return Economy.preferredKind(!stats.swordMaxed, zoneOpen());
     }
 
     /**
-     * Rebirth when covered; else among affordable kinds by price ratio, with zone
-     * only while the TTK gate is open; else one exploratory send — sword first
-     * (unknown sword price beats an affordable zone), zone only through the gate.
+     * Rebirth when covered. Gate closed (TTK above zoneMaxTtkMs): the sword, the only
+     * thing that helps. Gate open: the zone: bought when affordable, probed first when
+     * its price is unknown, saved for otherwise, with a sword allowed only while it is
+     * cheap against the zone gap and the TTK is above the movement floor (0.9.16; the
+     * 03-36 log spent 675K on swords at a 0.73s TTK next to a 145K zone).
      */
     private String decideKind(int kills) {
+        savingZone = false;
         if (rebirthAffordable() || rebirthRetryDue()) return "rebirth";
         boolean zoneOpen = zoneOpen();
+        if (zoneOpen && stats.zoneTarget == null) {
+            // Learn the zone price before spending on a sword (one typed /zone max).
+            String probe = exploreKind("zone", true);
+            if (probe != null) return probe;
+        }
         String buy = Economy.chooseBuyKind(
             !stats.swordMaxed, zoneOpen,
             knownAffordable("sword"), knownAffordable("zone"),
-            stats.swordTarget, stats.zoneTarget, cfg.zoneOverSwordRatio);
+            stats.swordTarget, stats.zoneTarget, stats.money(), evalTtkMs,
+            cfg.swordWhileSavingMaxPct, cfg.zoneInstantTtkMs);
         if (buy != null) {
             if (!horizonAllows(buy)) {
                 // The pricier kind failed the horizon; the cheaper one may still pay off.
@@ -599,8 +616,11 @@ public class UpgradeController {
             }
             return extraKillsOk(buy, kills) ? buy : null;
         }
-        String pref = Economy.preferredKind(!stats.swordMaxed, zoneOpen,
-            stats.swordTarget, stats.zoneTarget, cfg.zoneOverSwordRatio);
+        if (zoneOpen && stats.zoneTarget != null && !knownAffordable("zone") && knownAffordable("sword")) {
+            savingZone = true;
+            return null;
+        }
+        String pref = Economy.preferredKind(!stats.swordMaxed, zoneOpen);
         String explore = exploreKind(pref, zoneOpen);
         if (explore == null && pref != null) explore = exploreKind("zone".equals(pref) ? "sword" : "zone", zoneOpen);
         return explore;
@@ -731,7 +751,10 @@ public class UpgradeController {
             "gain", kind == null ? null : horizonGain(kind),
             "gapPct", kind != null && remaining != null && bal != null && stats.rebirthTarget != null
                 && stats.rebirthTarget - bal > 0
-                ? Math.round(1000.0 * remaining / (stats.rebirthTarget - bal)) / 10.0 : null);
+                ? Math.round(1000.0 * remaining / (stats.rebirthTarget - bal)) / 10.0 : null,
+            "zoneGap", stats.zoneTarget != null && bal != null ? Amounts.format(Math.max(0, stats.zoneTarget - bal)) : null,
+            "swordPct", stats.swordTarget != null && stats.zoneTarget != null && bal != null && stats.zoneTarget - bal > 0
+                ? Math.round(1000.0 * stats.swordTarget / (stats.zoneTarget - bal)) / 10.0 : null);
     }
 
     private static Double tenth(Double v) {

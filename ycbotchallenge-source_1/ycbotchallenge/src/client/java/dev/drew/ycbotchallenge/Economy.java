@@ -37,12 +37,18 @@ public final class Economy {
     }
 
     /**
-     * Zone when the next sword costs more than {@code ratio} × the next zone
-     * (default 1.25). Missing prices never prefer zone.
+     * While saving for a known zone price, a sword is bought only when it cannot hurt:
+     * never at or below the movement-floor TTK ({@code instantTtkMs}, where walking and
+     * aiming dominate and a sharper sword changes nothing: 03-36 spent 525K at 0.73s),
+     * and only when it costs at most {@code savingMaxPct} of the remaining zone gap.
+     * Unknown prices leave the decision to exploration (true).
      */
-    public static boolean preferZone(Double swordTarget, Double zoneTarget, double ratio) {
-        if (swordTarget == null || zoneTarget == null || zoneTarget <= 0) return false;
-        return swordTarget > Math.max(0.0, ratio) * zoneTarget;
+    public static boolean swordWhileSaving(Double swordTarget, Double zoneTarget, Double bal, Double ttkMs,
+                                           double savingMaxPct, int instantTtkMs) {
+        if (ttkMs != null && instantTtkMs > 0 && ttkMs <= instantTtkMs) return false;
+        if (swordTarget == null || zoneTarget == null || bal == null) return true;
+        double gap = Math.max(0.0, zoneTarget - bal);
+        return swordTarget <= gap * Math.max(0.0, savingMaxPct) / 100.0 + 1e-6;
     }
 
     /**
@@ -87,7 +93,12 @@ public final class Economy {
     }
 
     /**
-     * Among currently affordable kinds, pick by the 1.25× sword/zone price ratio.
+     * Buy order (0.9.16, from the 03-36 post-rebirth log): a zone multiplies per-kill
+     * money x20 and costs about one kill of the next zone, so with the TTK gate open
+     * the zone is always the buy and money is saved for it; a sword only helps while
+     * the TTK is above the movement floor, and while saving it is bought only when it
+     * is cheap against the remaining zone gap ({@link #swordWhileSaving}). Gate closed
+     * (TTK above zoneMaxTtkMs, or zone maxed): the sword, the only thing that helps.
      * Rebirth is chosen by the controller before this is consulted.
      *
      * @return {@code "sword"}, {@code "zone"}, or {@code null} to wait
@@ -95,26 +106,19 @@ public final class Economy {
     public static String chooseBuyKind(
             boolean swordOpen, boolean zoneOpen,
             boolean swordAffordable, boolean zoneAffordable,
-            Double swordTarget, Double zoneTarget, double zoneOverSwordRatio) {
+            Double swordTarget, Double zoneTarget, Double bal, Double ttkMs,
+            double savingMaxPct, int instantTtkMs) {
         if (!swordOpen && !zoneOpen) return null;
-        boolean canSword = swordOpen && swordAffordable;
-        boolean canZone = zoneOpen && zoneAffordable;
-        if (canSword && canZone) {
-            return preferZone(swordTarget, zoneTarget, zoneOverSwordRatio) ? "zone" : "sword";
-        }
-        if (canZone) return "zone";
-        if (canSword) return "sword";
-        return null;
+        if (zoneOpen && zoneAffordable) return "zone";
+        if (!swordOpen || !swordAffordable) return null;
+        if (!zoneOpen || zoneTarget == null) return "sword";
+        return swordWhileSaving(swordTarget, zoneTarget, bal, ttkMs, savingMaxPct, instantTtkMs) ? "sword" : null;
     }
 
-    /** What we're working toward (HUD), independent of affordability. */
-    public static String preferredKind(
-            boolean swordOpen, boolean zoneOpen,
-            Double swordTarget, Double zoneTarget, double zoneOverSwordRatio) {
-        if (!swordOpen && !zoneOpen) return null;
-        if (!zoneOpen) return swordOpen ? "sword" : null;
-        if (!swordOpen) return "zone";
-        return preferZone(swordTarget, zoneTarget, zoneOverSwordRatio) ? "zone" : "sword";
+    /** What we're working toward (HUD, exploration order): the zone while the gate is open, else the sword. */
+    public static String preferredKind(boolean swordOpen, boolean zoneOpen) {
+        if (zoneOpen) return "zone";
+        return swordOpen ? "sword" : null;
     }
 
     /** Snapshot covers the next-tier price. Unknown price is never "affordable". */

@@ -229,8 +229,14 @@ public class YCBotChallengeConfig {
         + "give a 3-letter reading. Also consider swapping the most ambiguous letter "
         + "for a look-alike. Your ANSWER and ALT must both differ from every "
         + "rejected guess.";
-    /** "auto" (map if found, else screenshot), "map" (map only, retries if absent), or "screen" (always screenshot). */
-    public String captchaCaptureMode = "auto";
+    /**
+     * "map" (default since 0.9.16): read the captcha from a filled map's own pixels and
+     * pause for the human when there is none: a chat/GUI trigger without a map is not
+     * something the model can read (2026-09-03: it screenshotted the arena and typed
+     * "qwe" into public chat). "auto" falls back to a screenshot, "screen" always
+     * screenshots; both are opt-in.
+     */
+    public String captchaCaptureMode = "map";
     /** How the answer is sent: "{answer}" as plain chat, or e.g. "/captcha {answer}". */
     public String captchaAnswerTemplate = "{answer}";
     /** Wait for the map/screen to actually render before capturing. (Sonar's total budget is ~30s.) */
@@ -373,11 +379,22 @@ public class YCBotChallengeConfig {
     public String swordCommand = "/swordmax";
     public String zoneCommand = "/zone max";
     public String rebirthCommand = "/rebirth";
-    /**
-     * Zone when the next sword costs more than this × the next zone.
-     * TTK is HUD-only; this ratio is the buy switch.
-     */
+    /** Legacy, inert since 0.9.16 (the buy order is zone-first while the TTK gate is open). */
     public double zoneOverSwordRatio = 1.25;
+    /**
+     * Zone-first economy (0.9.16). A zone multiplies per-kill money x20 and costs about
+     * one kill of the next zone (03-36 log: 137B for zone 6 whose kills pay 183B), so
+     * with the TTK gate open the zone is the buy and money is saved for it. A sword is
+     * bought while saving only when it costs at most this percent of the remaining zone
+     * gap (zone 3: the 22.5M sword at 10% of a 220M gap yes, the 78.8M one at 45% no).
+     */
+    public double swordWhileSavingMaxPct = 25;
+    /**
+     * At or below this TTK a sword cannot help (walking and aiming dominate the kill:
+     * 03-36 bought a 525K sword at 0.73s and the TTK stayed 0.73s), so none is bought
+     * while saving for the zone. 0 disables the floor.
+     */
+    public int zoneInstantTtkMs = 2000;
     /**
      * Rebirth horizon (0.9.15): a sword/zone is lost at the rebirth, so it is bought
      * only if it pays for itself first: price < remaining gap x (gain - 1), where gain
@@ -747,7 +764,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 19;
+    public static final int CURRENT_CONFIG_VERSION = 20;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -923,6 +940,11 @@ public class YCBotChallengeConfig {
             // v19: rebirth horizon (knobs default from the initializers; version bump records the rule).
             changed = true;
         }
+        if (configVersion < 20) {
+            // v20: zone-first buy order; captcha capture is map-only unless opted out.
+            if (captchaCaptureMode == null || "auto".equals(captchaCaptureMode)) captchaCaptureMode = fresh.captchaCaptureMode;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -999,6 +1021,9 @@ public class YCBotChallengeConfig {
         if (zoneCommand == null || zoneCommand.isBlank()) zoneCommand = "/zone max";
         if (rebirthCommand == null || rebirthCommand.isBlank()) rebirthCommand = "/rebirth";
         if (zoneOverSwordRatio <= 0) zoneOverSwordRatio = 1.25;
+        if (swordWhileSavingMaxPct < 0) swordWhileSavingMaxPct = 0;
+        if (swordWhileSavingMaxPct > 100) swordWhileSavingMaxPct = 100;
+        if (zoneInstantTtkMs < 0) zoneInstantTtkMs = 0;
         if (rebirthHorizonZoneGain < 1.0) rebirthHorizonZoneGain = 1.3;
         if (rebirthHorizonSwordGain < 1.0) rebirthHorizonSwordGain = 1.25;
         if (rebirthHorizonGainWindowMs < 0) rebirthHorizonGainWindowMs = 0;
