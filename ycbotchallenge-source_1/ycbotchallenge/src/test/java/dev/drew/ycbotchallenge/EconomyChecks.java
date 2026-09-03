@@ -496,6 +496,20 @@ public final class EconomyChecks {
         // Unknown-price retry with a rolled growth (replaces the follow-up re-send).
         n += eq("retry below floor×1.2", Economy.retryUnknownAllowed(1.0e12, 1.1e12, 0.2), false);
         n += eq("retry at floor×1.2", Economy.retryUnknownAllowed(1.0e12, 1.2e12, 0.2), true);
+
+        // Enchanter visit hazard (0.9.11): ramp 2→12 min, 8% at full, squared in between.
+        n += eq("hazard before ramp", Economy.visitHazard(60_000, 120_000, 720_000, 0.08, 1.0, 1.0), 0.0, 1e-12);
+        n += eq("hazard at ramp start", Economy.visitHazard(120_000, 120_000, 720_000, 0.08, 1.0, 1.0), 0.0, 1e-12);
+        n += eq("hazard mid ramp (7 min)", Economy.visitHazard(420_000, 120_000, 720_000, 0.08, 1.0, 1.0), 0.02, 1e-9);
+        n += eq("hazard full", Economy.visitHazard(720_000, 120_000, 720_000, 0.08, 1.0, 1.0), 0.08, 1e-9);
+        n += eq("hazard past full stays", Economy.visitHazard(3_600_000, 120_000, 720_000, 0.08, 1.0, 1.0), 0.08, 1e-9);
+        n += eq("hazard cook bonus", Economy.visitHazard(720_000, 120_000, 720_000, 0.08, 1.0, 2.0), 0.16, 1e-9);
+        n += eq("hazard pull", Economy.visitHazard(720_000, 120_000, 720_000, 0.08, 3.0, 1.0), 0.24, 1e-9);
+        n += eq("hazard capped", Economy.visitHazard(720_000, 120_000, 720_000, 0.8, 3.0, 2.0), 1.0, 1e-9);
+        n += eq("pull below price", Economy.affordPull(5e6, 7.1e6, 3.0), 1.0, 1e-9);
+        n += eq("pull at 2x", Economy.affordPull(14.2e6, 7.1e6, 3.0), 2.0, 1e-9);
+        n += eq("pull capped", Economy.affordPull(100e6, 7.1e6, 3.0), 3.0, 1e-9);
+        n += eq("pull unknown price", Economy.affordPull(100e6, null, 3.0), 1.0, 1e-9);
         return n;
     }
 

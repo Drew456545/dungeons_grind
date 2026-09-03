@@ -40,7 +40,6 @@ public class EnchantController {
     private long phaseUntil;
     private long visitStartedAt;
     private long lastVisitAt = 0;
-    private long nextVisitGapMs = 0;
     private long decidedCookAt = -1;
     private final Map<String, Double> balAtLastVisit = new HashMap<>();
     private int tabIndex;
@@ -60,6 +59,14 @@ public class EnchantController {
     private boolean suspended;
     private boolean firstTabDecided;
     private boolean firstTabSkipped;
+    // Hazard trigger state.
+    private int lastKillSeen = -1;
+    private int lastZoneSeqSeen = -1;
+    private long quietUntil = 0;
+    private long lastQuietSkipLogAt = 0;
+    private int maxBuysThisVisit = 6;
+    /** Cheapest upgradable price seen per tab on the last scan — the affordability pull. */
+    private final Map<String, Double> cheapestByTab = new HashMap<>();
 
     public EnchantController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -177,7 +184,7 @@ public class EnchantController {
                 phase = Phase.SCAN;
             }
             case SCAN -> {
-                if (wrapUp || buys >= cfg.enchantMaxBuysPerVisit) { phase = Phase.CLOSE; return true; }
+                if (wrapUp || buys >= maxBuysThisVisit) { phase = Phase.CLOSE; return true; }
                 if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.ENCHANTER) {
                     onEnchanterGone(client, now);
                     return true;
@@ -193,6 +200,11 @@ public class EnchantController {
                 List<EnchantLore.Item> items = new ArrayList<>();
                 for (EnchantScreens.SlotItem si : slots) items.add(si.item());
                 Double bal = stats.currency(currentTab);
+                Double cheapest = null;
+                for (EnchantLore.Item it : items) {
+                    if (it.upgradable() && (cheapest == null || it.price() < cheapest)) cheapest = it.price();
+                }
+                if (cheapest != null) cheapestByTab.put(currentTab, cheapest); else cheapestByTab.remove(currentTab);
                 if (scansThisTab++ == 0) {
                     List<String> summary = new ArrayList<>();
                     for (EnchantLore.Item it : items) summary.add(it.summary());
@@ -306,7 +318,7 @@ public class EnchantController {
                     phase = Phase.RETURN_WAIT;
                     phaseUntil = now + 1500;
                 } else if (k == EnchantScreens.Kind.ENCHANTER) {
-                    phase = (wrapUp || buys >= cfg.enchantMaxBuysPerVisit) ? Phase.CLOSE : Phase.SCAN;
+                    phase = (wrapUp || buys >= maxBuysThisVisit) ? Phase.CLOSE : Phase.SCAN;
                 } else {
                     onEnchanterGone(client, now);
                 }
@@ -314,7 +326,7 @@ public class EnchantController {
             case RETURN_WAIT -> {
                 EnchantScreens.Kind k = EnchantScreens.classify(client, lore);
                 if (k == EnchantScreens.Kind.ENCHANTER) {
-                    phase = (wrapUp || buys >= cfg.enchantMaxBuysPerVisit) ? Phase.CLOSE : Phase.SCAN;
+                    phase = (wrapUp || buys >= maxBuysThisVisit) ? Phase.CLOSE : Phase.SCAN;
                 } else if (now >= phaseUntil) {
                     onEnchanterGone(client, now);
                 }
@@ -329,37 +341,84 @@ public class EnchantController {
         return true;
     }
 
+    /**
+     * Hazard trigger (0.9.11). Two moments a person opens the enchanter: the lull
+     * right after a kill, and the free time mid-way through a long cook. Both roll
+     * against the same hazard — a ramp over time since the last visit, pulled up
+     * when the sidebar shows the cheapest thing seen last time is affordable,
+     * with a bonus mid-cook. Visits are decorrelated from zone advances by a
+     * random quiet window, and one in ten happens out of curiosity with nothing
+     * to buy. Replaces the 0.9.9 "45s mob and 3 minutes" gate, whose visits only
+     * ever clustered right after zone advances.
+     */
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
         if (suspended || combat.isOnBreak() || client.currentScreen != null) return false;
-        if (!combat.isCooking()) return false;
-        long cookAt = combat.cookStartMs();
-        if (cookAt == decidedCookAt) return false;
+        if (lastVisitAt == 0) lastVisitAt = now; // session start counts as a visit for the ramp
+        int zseq = stats.zoneChangeSeq();
+        if (zseq != lastZoneSeqSeen) {
+            lastZoneSeqSeen = zseq;
+            quietUntil = now + HumanTiming.logNormalMs(cfg.enchantPostZoneQuietMinMs,
+                Math.max(cfg.enchantPostZoneQuietMinMs + 1, cfg.enchantPostZoneQuietMaxMs));
+        }
+        String via;
+        double bonus;
+        int maxBuys;
         Double eta = combat.currentEtaMs;
-        if (eta == null || eta < cfg.enchantMinEtaMs) return false;
-        if (combat.cookElapsedMs() < cfg.enchantCookSettleMs) return false;
-        decidedCookAt = cookAt; // one decision per cook, whatever it is
-        if (lastVisitAt > 0 && now - lastVisitAt < nextVisitGapMs) {
-            log("enchant_skip", "reason", "cadence", "etaMs", Math.round(eta),
-                "sinceLastMs", now - lastVisitAt, "gapMs", nextVisitGapMs);
+        if (combat.isCooking()) {
+            long cookAt = combat.cookStartMs();
+            if (cookAt == decidedCookAt) return false;
+            if (eta == null || eta < cfg.enchantCookMinEtaMs) return false;
+            if (combat.cookElapsedMs() < cfg.enchantCookSettleMs) return false;
+            decidedCookAt = cookAt; // one roll per cook, whatever it is
+            via = "cook";
+            bonus = cfg.enchantHazardCookBonus;
+            maxBuys = cfg.enchantMaxBuysPerVisit;
+        } else {
+            if (combat.kills == lastKillSeen) return false;
+            lastKillSeen = combat.kills; // one roll per lull
+            via = "lull";
+            bonus = 1.0;
+            maxBuys = cfg.enchantMaxBuysBetweenKills;
+        }
+        if (now < quietUntil) {
+            if (now - lastQuietSkipLogAt > 30_000) {
+                lastQuietSkipLogAt = now;
+                log("enchant_skip", "reason", "quiet-after-zone", "via", via, "quietLeftMs", quietUntil - now);
+            }
             return false;
         }
-        if (cfg.enchantSkipChance > 0 && ThreadLocalRandom.current().nextDouble() < cfg.enchantSkipChance) {
-            log("enchant_skip", "reason", "rolled-skip", "etaMs", Math.round(eta));
-            return false;
-        }
+        double pull = affordPull();
+        double hazard = Economy.visitHazard(now - lastVisitAt, cfg.enchantHazardRampStartMs, cfg.enchantHazardRampFullMs,
+            cfg.enchantHazardFullChance, pull, bonus);
+        if (ThreadLocalRandom.current().nextDouble() >= hazard) return false;
+        boolean curiosity = false;
         if (!balanceGrew()) {
-            log("enchant_skip", "reason", "no-growth", "etaMs", Math.round(eta));
-            return false;
+            if (ThreadLocalRandom.current().nextDouble() >= cfg.enchantCuriosityChance) {
+                log("enchant_skip", "reason", "no-growth", "via", via, "hazard", Math.round(hazard * 1000) / 1000.0);
+                return false;
+            }
+            curiosity = true;
         }
         if (!EnchantScreens.swordInHand(client, lore)) {
-            log("enchant_skip", "reason", "no-sword", "etaMs", Math.round(eta));
+            log("enchant_skip", "reason", "no-sword", "via", via);
             return false;
         }
-        begin(client, now, eta);
+        maxBuysThisVisit = Math.max(1, maxBuys);
+        begin(client, now, via, eta, hazard, pull, curiosity);
         return true;
     }
 
-    private void begin(MinecraftClient client, long now, double eta) {
+    /** Strongest pull across tabs: balance over the cheapest upgradable price seen on the last scan. */
+    private double affordPull() {
+        double best = 1.0;
+        for (String tab : lore.tabs()) {
+            double p = Economy.affordPull(stats.currency(tab), cheapestByTab.get(tab), cfg.enchantHazardPullMaxMult);
+            if (p > best) best = p;
+        }
+        return best;
+    }
+
+    private void begin(MinecraftClient client, long now, String via, Double eta, double hazard, double pull, boolean curiosity) {
         visitStartedAt = now;
         tabIndex = 0;
         currentTab = null;
@@ -374,7 +433,10 @@ public class EnchantController {
         firstTabDecided = false;
         firstTabSkipped = false;
         log("sword_lore", "lines", EnchantScreens.mainHandLore(client));
-        log("enchant_visit_start", "etaMs", Math.round(eta), "balances", balancesNow());
+        log("enchant_visit_start", "via", via, "etaMs", eta != null ? Math.round(eta) : null,
+            "sinceLastVisitMs", now - lastVisitAt, "hazard", Math.round(hazard * 1000) / 1000.0,
+            "pull", Math.round(pull * 100) / 100.0, "curiosity", curiosity,
+            "maxBuys", maxBuysThisVisit, "balances", balancesNow());
         openMenu(client, now);
     }
 
@@ -398,7 +460,7 @@ public class EnchantController {
             phaseUntil = now + 1500;
             return;
         }
-        boolean workLeft = !wrapUp && buys < cfg.enchantMaxBuysPerVisit && tabIndex < lore.tabs().size();
+        boolean workLeft = !wrapUp && buys < maxBuysThisVisit && tabIndex < lore.tabs().size();
         if (!reopened && workLeft && now - visitStartedAt < cfg.enchantMaxMenuMs) {
             reopened = true;
             log("enchant_reopen", "buys", buys, "tab", currentTab);
@@ -464,8 +526,6 @@ public class EnchantController {
 
     private void endVisit(MinecraftClient client, long now) {
         lastVisitAt = now;
-        nextVisitGapMs = HumanTiming.logNormalMs(cfg.enchantVisitGapMinMs,
-            Math.max(cfg.enchantVisitGapMinMs + 1, cfg.enchantVisitGapMaxMs));
         balAtLastVisit.clear();
         for (String tab : lore.tabs()) {
             Double v = stats.currency(tab);

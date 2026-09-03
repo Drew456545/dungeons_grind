@@ -179,6 +179,34 @@ public final class Economy {
         return killsSince >= Math.max(0, minKills) && msSince >= Math.max(0, minDelayMs);
     }
 
+    /**
+     * Per-lull hazard for an enchanter visit: nothing before {@code rampStartMs}
+     * since the last visit, rising (squared, so the middle is gentle) to
+     * {@code fullChance} at {@code rampFullMs}, scaled by the affordability pull
+     * and a bonus for free time mid-cook. A renewal process with a wandering
+     * interval — never "45s mob and 3 minutes".
+     */
+    public static double visitHazard(long sinceLastVisitMs, int rampStartMs, int rampFullMs,
+                                     double fullChance, double pullMult, double bonus) {
+        if (sinceLastVisitMs < Math.max(0, rampStartMs)) return 0;
+        double span = Math.max(1, rampFullMs - rampStartMs);
+        double r = Math.min(1.0, (sinceLastVisitMs - rampStartMs) / span);
+        double h = Math.max(0, fullChance) * r * r * Math.max(0, pullMult) * Math.max(0, bonus);
+        return Math.min(1.0, h);
+    }
+
+    /**
+     * Affordability pull: players check the menu more once the sidebar shows they can
+     * afford the cheapest thing they saw last time. 1 below that price, the balance
+     * ratio above it, capped at {@code maxMult}.
+     */
+    public static double affordPull(Double balance, Double cheapestPrice, double maxMult) {
+        if (balance == null || cheapestPrice == null || cheapestPrice <= 0) return 1.0;
+        double ratio = balance / cheapestPrice;
+        if (ratio < 1.0) return 1.0;
+        return Math.min(Math.max(1.0, maxMult), ratio);
+    }
+
     /** True once {@code settleMs} have passed since a spend (or there was no spend). */
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;

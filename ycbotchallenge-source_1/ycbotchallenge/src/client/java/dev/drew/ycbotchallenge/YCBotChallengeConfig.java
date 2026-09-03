@@ -361,15 +361,36 @@ public class YCBotChallengeConfig {
 
     /** Visit the enchanter during long kills and Max-Upgrade the first unlocked, non-maxed, affordable enchant per tab. */
     public boolean enchantsEnabled = true;
-    /** Only when the mob's predicted remaining time is at least this (fresh-stage 50–120s kills; never the 4s ones). */
+    /** Legacy (0.9.9 "45s mob" gate); inert since the 0.9.11 hazard trigger. */
     public int enchantMinEtaMs = 45_000;
-    /** Cook this long before opening the menu (the DPS/ETA read needs a few samples). */
+    /** Cook this long before opening the menu mid-cook (the DPS/ETA read needs a few samples). */
     public int enchantCookSettleMs = 3_000;
-    /** Log-normal gap between visits, re-rolled after every visit — never a fixed interval. */
+    /** Legacy (0.9.9 visit gap); inert. */
     public int enchantVisitGapMinMs = 150_000;
     public int enchantVisitGapMaxMs = 330_000;
-    /** Chance to simply not bother on a qualifying kill. */
-    public double enchantSkipChance = 0.25;
+    /** Legacy (0.9.9 skip roll); inert — the hazard supplies the randomness. */
+    public double enchantSkipChance = 0.0;
+    /**
+     * Hazard trigger (0.9.11): every post-kill lull (and once per long cook) rolls
+     * against a chance that is 0 until enchantHazardRampStartMs since the last visit,
+     * rising (squared) to enchantHazardFullChance at enchantHazardRampFullMs. With
+     * ~5s kills the mean spacing is ~6 min with a long tail — no fixed cadence.
+     */
+    public int enchantHazardRampStartMs = 120_000;
+    public int enchantHazardRampFullMs = 720_000;
+    public double enchantHazardFullChance = 0.08;
+    /** Multiply the hazard by up to this once a tab balance passes the cheapest upgradable price seen on the last scan. */
+    public double enchantHazardPullMaxMult = 3.0;
+    /** Mid-cook the time is free: hazard bonus, evaluated once per cook with at least this much left. */
+    public double enchantHazardCookBonus = 2.0;
+    public int enchantCookMinEtaMs = 20_000;
+    /** One visit in ~ten happens with nothing to buy (open, scan, close). */
+    public double enchantCuriosityChance = 0.10;
+    /** No visit rolls for a random window after a zone advance, so visits never land a fixed beat after arriving. */
+    public int enchantPostZoneQuietMinMs = 30_000;
+    public int enchantPostZoneQuietMaxMs = 90_000;
+    /** A between-kills visit stays short: at most this many purchases (mid-cook visits use enchantMaxBuysPerVisit). */
+    public int enchantMaxBuysBetweenKills = 2;
     /** A visit needs at least one tab currency to have grown this much since the last visit. */
     public double enchantMinBalanceGrowthPct = 0.10;
     /** Wrap the visit up (finish the click in flight, close) once the mob has this little time left. */
@@ -647,7 +668,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 14;
+    public static final int CURRENT_CONFIG_VERSION = 15;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -789,6 +810,18 @@ public class YCBotChallengeConfig {
             flickMaxDurationMs = fresh.flickMaxDurationMs;
             changed = true;
         }
+        if (configVersion < 15) {
+            // v15: hazard-based enchanter visits replace the "45s mob + 3 min" gate.
+            enchantSkipChance = fresh.enchantSkipChance;
+            enchantHazardRampStartMs = fresh.enchantHazardRampStartMs;
+            enchantHazardRampFullMs = fresh.enchantHazardRampFullMs;
+            enchantHazardFullChance = fresh.enchantHazardFullChance;
+            enchantHazardPullMaxMult = fresh.enchantHazardPullMaxMult;
+            enchantHazardCookBonus = fresh.enchantHazardCookBonus;
+            enchantCookMinEtaMs = fresh.enchantCookMinEtaMs;
+            enchantCuriosityChance = fresh.enchantCuriosityChance;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -887,7 +920,17 @@ public class YCBotChallengeConfig {
         if (enchantCookSettleMs < 0) enchantCookSettleMs = 3_000;
         if (enchantVisitGapMinMs < 0) enchantVisitGapMinMs = 150_000;
         if (enchantVisitGapMaxMs < enchantVisitGapMinMs) enchantVisitGapMaxMs = enchantVisitGapMinMs;
-        if (enchantSkipChance < 0 || enchantSkipChance > 1) enchantSkipChance = 0.25;
+        if (enchantSkipChance < 0 || enchantSkipChance > 1) enchantSkipChance = 0;
+        if (enchantHazardRampStartMs < 0) enchantHazardRampStartMs = 120_000;
+        if (enchantHazardRampFullMs <= enchantHazardRampStartMs) enchantHazardRampFullMs = enchantHazardRampStartMs + 600_000;
+        if (enchantHazardFullChance < 0 || enchantHazardFullChance > 1) enchantHazardFullChance = 0.08;
+        if (enchantHazardPullMaxMult < 1) enchantHazardPullMaxMult = 1;
+        if (enchantHazardCookBonus < 0) enchantHazardCookBonus = 1;
+        if (enchantCookMinEtaMs < 0) enchantCookMinEtaMs = 20_000;
+        if (enchantCuriosityChance < 0 || enchantCuriosityChance > 1) enchantCuriosityChance = 0.10;
+        if (enchantPostZoneQuietMinMs < 0) enchantPostZoneQuietMinMs = 0;
+        if (enchantPostZoneQuietMaxMs < enchantPostZoneQuietMinMs) enchantPostZoneQuietMaxMs = enchantPostZoneQuietMinMs;
+        if (enchantMaxBuysBetweenKills < 1) enchantMaxBuysBetweenKills = 2;
         if (enchantMinBalanceGrowthPct < 0) enchantMinBalanceGrowthPct = 0;
         if (enchantWrapUpEtaMs < 0) enchantWrapUpEtaMs = 5_000;
         if (enchantOpenTimeoutMs < 500) enchantOpenTimeoutMs = 2_500;
