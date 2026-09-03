@@ -52,14 +52,62 @@ public final class Economy {
     }
 
     /**
-     * Effective TTK for the zone gate: the DPS-predicted whole-mob TTK of the mob
-     * being cooked when available (readable seconds into a fresh stage), else the
-     * rolling kill median, else unknown.
+     * Effective TTK for the zone gate (0.9.23): the rolling kill median once three kills
+     * of this stage have landed — what actually happened — and the DPS-predicted
+     * whole-mob TTK of the mob being cooked only before that (the first mob of a fresh
+     * stage, readable seconds in). The 17:57 log had it the other way round: the
+     * prediction from the first slow chicken after the rebirth (11.5s) outlived it by
+     * two minutes while the median fell to 0.3–0.8s, the gate stayed closed, and three
+     * swords were bought on zone 1 instead of the first zone.
      */
     public static Double effectiveTtkMs(Double predictedMs, Double medianMs) {
-        if (predictedMs != null && predictedMs > 0) return predictedMs;
         if (medianMs != null && medianMs > 0) return medianMs;
+        if (predictedMs != null && predictedMs > 0) return predictedMs;
         return null;
+    }
+
+    /** Which number {@link #effectiveTtkMs} used: "median", "predicted", or null. */
+    public static String ttkSource(Double predictedMs, Double medianMs) {
+        if (medianMs != null && medianMs > 0) return "median";
+        if (predictedMs != null && predictedMs > 0) return "predicted";
+        return null;
+    }
+
+    /**
+     * A DPS prediction describes the mob it was read from. It is refreshed every tick
+     * while that mob is being cooked, so one older than {@code maxAgeMs} belongs to a
+     * mob that is already dead (instant kills never produce a fresh one) and is dropped.
+     * {@code maxAgeMs <= 0} keeps every prediction.
+     */
+    public static Double freshPrediction(Double predictedMs, long predictedAt, long now, int maxAgeMs) {
+        if (predictedMs == null || predictedMs <= 0) return null;
+        if (maxAgeMs <= 0) return predictedMs;
+        if (predictedAt <= 0 || now - predictedAt > maxAgeMs) return null;
+        return predictedMs;
+    }
+
+    /**
+     * Zone patience (0.9.23): the kill time a player tolerates before wanting a sword
+     * instead of the next stage is a mood, not a line. Bounds for the per-stage roll:
+     * {@code baseMs × minMult .. baseMs × maxMult}, sanitized (a disabled gate stays
+     * disabled, swapped or sub-zero multipliers collapse to the base).
+     */
+    public static int[] zonePatienceBounds(int baseMs, double minMult, double maxMult) {
+        if (baseMs <= 0) return new int[]{0, 0};
+        double lo = Math.max(0.05, Math.min(minMult, maxMult));
+        double hi = Math.max(lo, Math.max(minMult, maxMult));
+        return new int[]{(int) Math.round(baseMs * lo), (int) Math.round(baseMs * hi)};
+    }
+
+    /**
+     * The persisted rebirth floor is stale once the balance sits on or above it with no
+     * rebirth having happened (with /autorebirth the server would already have fired):
+     * the 17:57 log ran at 155Q against a 900T floor from two rebirths ago, so the
+     * horizon rule had no rebirth target all session and bought a 489Q sword two
+     * minutes before the ~800Q rebirth. Stale ⇒ the one-per-session seed probe is due.
+     */
+    public static boolean rebirthFloorStale(Double floor, Double bal, double growthPct) {
+        return retryUnknownAllowed(floor, bal, growthPct);
     }
 
     /**

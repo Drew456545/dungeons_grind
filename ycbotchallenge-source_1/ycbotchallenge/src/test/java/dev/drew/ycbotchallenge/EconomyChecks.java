@@ -57,6 +57,7 @@ public final class EconomyChecks {
         n += rebirthHorizon();
         n += rebirthUpgrades();
         n += instantKills();
+        n += patience();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -290,10 +291,13 @@ public final class EconomyChecks {
 
     private static int zoneGate() {
         int n = 0;
-        // Effective TTK: the DPS prediction wins, then the kill median, else unknown.
-        n += eq("predicted wins", Economy.effectiveTtkMs(4_000.0, 12_000.0), 4_000.0, 1e-9);
-        n += eq("median fallback", Economy.effectiveTtkMs(null, 12_000.0), 12_000.0, 1e-9);
+        // Effective TTK (0.9.23): the kill median once it exists, the DPS prediction before, else unknown.
+        n += eq("median wins once kills landed", Economy.effectiveTtkMs(11_502.0, 769.0), 769.0, 1e-9);
+        n += eq("prediction fills a fresh stage", Economy.effectiveTtkMs(4_000.0, null), 4_000.0, 1e-9);
         n += eq("unknown ttk", Economy.effectiveTtkMs(null, null) == null, true);
+        n += eq("ttk source median", Economy.ttkSource(11_502.0, 769.0), "median");
+        n += eq("ttk source predicted", Economy.ttkSource(4_000.0, null), "predicted");
+        n += eq("ttk source none", Economy.ttkSource(null, null) == null, true);
 
         // The 0.9.5 spiral (events-baseline 20:52): Rabbit 0.25s → Sheep 7.2s → Pig 75s → Goat 90s.
         // With the 10s gate the third zone buy never happens.
@@ -796,6 +800,53 @@ public final class EconomyChecks {
             System.err.println("FAIL images: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /**
+     * 0.9.23, from events-baseline-2026-09-03T17-57-06: after the 4→5 rebirth the first
+     * chicken's prediction (11502 ms) sat in every eval for two minutes ("ttkMs":11502,
+     * "zoneGate":"closed") while zone_benchmark medians read 1206 → 301 ms, and the bot
+     * bought 2.57M + 6.43M + 22.52M of swords on zone 1 with no zone probe at all.
+     */
+    private static int patience() {
+        int n = 0;
+        long t0 = 1_788_459_200_000L;
+        // The stale prediction is dropped once it is older than the freshness window…
+        n += eq("stale prediction dropped", Economy.freshPrediction(11_502.0, t0, t0 + 120_000, 4000) == null, true);
+        // …a live one (refreshed every tick while cooking) survives…
+        n += eq("fresh prediction kept", Economy.freshPrediction(11_502.0, t0, t0 + 900, 4000), 11_502.0, 1e-9);
+        n += eq("never stamped -> none", Economy.freshPrediction(11_502.0, 0, t0, 4000) == null, true);
+        n += eq("age check off", Economy.freshPrediction(11_502.0, t0, t0 + 120_000, 0), 11_502.0, 1e-9);
+        // …and the gate then reads the zone-1 median, which opens it.
+        Double eff = Economy.effectiveTtkMs(Economy.freshPrediction(11_502.0, t0, t0 + 120_000, 4000), 769.0);
+        n += eq("zone 1 after rebirth: 769ms median opens the gate", Economy.zoneAllowed(eff, CFG.zoneMaxTtkMs), true);
+        // With no median yet (first two kills of a stage) the live prediction still decides.
+        n += eq("fresh stage: 25s prediction closes", Economy.zoneAllowed(
+            Economy.effectiveTtkMs(Economy.freshPrediction(25_059.0, t0, t0 + 500, 4000), null), CFG.zoneMaxTtkMs), false);
+
+        // Patience bounds: 10s base rolls between 6s and 16s; a disabled gate stays disabled;
+        // swapped or broken multipliers collapse sanely.
+        int[] b = Economy.zonePatienceBounds(10_000, CFG.zonePatienceMinMult, CFG.zonePatienceMaxMult);
+        n += eq("patience lo", b[0], 6000);
+        n += eq("patience hi", b[1], 16_000);
+        int[] off = Economy.zonePatienceBounds(0, 0.6, 1.6);
+        n += eq("patience disabled lo", off[0], 0);
+        n += eq("patience disabled hi", off[1], 0);
+        int[] swapped = Economy.zonePatienceBounds(10_000, 1.6, 0.6);
+        n += eq("patience swapped lo", swapped[0], 6000);
+        n += eq("patience swapped hi", swapped[1], 16_000);
+        int[] fixed = Economy.zonePatienceBounds(10_000, 1.0, 1.0);
+        n += eq("patience fixed line", fixed[0] == 10_000 && fixed[1] == 10_000, true);
+        // The 03-36 sheep (7.2s) is inside the roll band: open for a patient stage, closed for an impatient one.
+        n += eq("7.2s sheep vs 6s patience closed", Economy.zoneAllowed(7_202.0, 6000), false);
+        n += eq("7.2s sheep vs 16s patience open", Economy.zoneAllowed(7_202.0, 16_000), true);
+
+        // Stale rebirth floor: 155.44Q balance on a 900T floor from two rebirths ago => probe.
+        n += eq("stale floor -> probe", Economy.rebirthFloorStale(900e12, 155.44e15, 0.0), true);
+        n += eq("fresh floor -> no probe", Economy.rebirthFloorStale(900e12, 585.71e12, 0.0), false);
+        n += eq("no floor -> unknown account path", Economy.rebirthFloorStale(null, 155.44e15, 0.0), false);
+        n += eq("margin respected", Economy.rebirthFloorStale(900e12, 1000e12, 0.5), false);
         return n;
     }
 

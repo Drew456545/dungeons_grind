@@ -756,6 +756,23 @@ public class YCBotChallengeConfig {
      * 0.25s → 90s TTK across three zone buys and then starved. 0 disables the gate.
      */
     public int zoneMaxTtkMs = 10_000;
+    /**
+     * Zone patience (0.9.23): the TTK a player tolerates before wanting a sword instead
+     * of the next stage is a mood, not a line. Every zone change and enable rolls this
+     * stage's tolerance log-normally between zoneMaxTtkMs x min and x max (zone_patience),
+     * so the same 8s median opens the gate one stage and closes it the next. Both 1 = the
+     * fixed line.
+     */
+    public double zonePatienceMinMult = 0.6;
+    public double zonePatienceMaxMult = 1.6;
+    /**
+     * A DPS prediction (HP at tag / boss-bar DPS) only describes the mob it was read from
+     * and is refreshed every tick while that mob is cooked; one older than this is dropped
+     * (17:57 log: the first slow chicken's 11.5s prediction gated zone 1 for two minutes of
+     * 0.3–0.8s kills). The kill median takes over once three kills of the stage have landed.
+     * 0 keeps every prediction.
+     */
+    public int predictedTtkMaxAgeMs = 4000;
     /** Legacy (pre-0.9.7 log-lerp readiness); inert. */
     public int zoneReadyTtkMs = 2000;
     public double zoneMinReadiness = 0.5;
@@ -875,7 +892,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 26;
+    public static final int CURRENT_CONFIG_VERSION = 27;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1101,6 +1118,12 @@ public class YCBotChallengeConfig {
             }
             changed = true;
         }
+        if (configVersion < 27) {
+            // v27: the zone gate reads real kills (median first, DPS prediction only while
+            // fresh) and rolls a per-stage patience around zoneMaxTtkMs; stale rebirth
+            // floors trigger the seed probe. New knobs take their defaults.
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1310,6 +1333,12 @@ public class YCBotChallengeConfig {
         if (upgradeMinIntervalMs < 0) upgradeMinIntervalMs = 60_000;
         if (cooldownRelaxBalanceMult < 0) cooldownRelaxBalanceMult = 0;
         if (zoneMaxTtkMs < 0) zoneMaxTtkMs = 10_000;
+        if (zonePatienceMinMult <= 0) zonePatienceMinMult = 0.6;
+        if (zonePatienceMaxMult <= 0) zonePatienceMaxMult = 1.6;
+        if (zonePatienceMaxMult < zonePatienceMinMult) {
+            double t = zonePatienceMinMult; zonePatienceMinMult = zonePatienceMaxMult; zonePatienceMaxMult = t;
+        }
+        if (predictedTtkMaxAgeMs < 0) predictedTtkMaxAgeMs = 4000;
         if (evalFallbackMs < 0) evalFallbackMs = 30_000;
         if (cookStallMs < 0) cookStallMs = 15_000;
         if (minKillsAfterAffordable < 0) minKillsAfterAffordable = 0;

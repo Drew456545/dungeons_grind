@@ -244,10 +244,30 @@ public class StatsTracker {
 
     /** Last effective TTK the controller evaluated (HUD/status share this one number). */
     public volatile Double lastEffectiveTtkMs = null;
+    /** This stage's rolled zone patience (ms); -1 until the first roll. */
+    private volatile int zoneTtkToleranceMs = -1;
 
-    /** HUD/log readiness: 1.0 while the zone gate is open, scaled down above zoneMaxTtkMs, 0 while unknown. */
+    /**
+     * Zone patience for the current stage (0.9.23): the TTK above which /zone max is
+     * refused. Rolled log-normally around zoneMaxTtkMs on every zone change and enable
+     * (zone_patience), so the same median opens the gate one stage and closes it the next.
+     */
+    public int zoneTtkToleranceMs() {
+        if (cfg.zoneMaxTtkMs <= 0) return 0;
+        return zoneTtkToleranceMs >= 0 ? zoneTtkToleranceMs : cfg.zoneMaxTtkMs;
+    }
+
+    private void rollZonePatience(String via) {
+        int[] b = Economy.zonePatienceBounds(cfg.zoneMaxTtkMs, cfg.zonePatienceMinMult, cfg.zonePatienceMaxMult);
+        int rolled = b[1] <= b[0] ? b[0] : (int) Math.min(Integer.MAX_VALUE, HumanTiming.logNormalMs(b[0], b[1]));
+        zoneTtkToleranceMs = rolled;
+        log("zone_patience", "via", via, "toleranceMs", rolled, "baseMs", cfg.zoneMaxTtkMs,
+            "loMs", b[0], "hiMs", b[1]);
+    }
+
+    /** HUD/log readiness: 1.0 while the zone gate is open, scaled down above this stage's patience, 0 while unknown. */
     public double zoneReadiness() {
-        return Economy.zoneReadiness(lastEffectiveTtkMs, cfg.zoneMaxTtkMs);
+        return Economy.zoneReadiness(lastEffectiveTtkMs, zoneTtkToleranceMs());
     }
 
     /** Copy live bals into the canonical snapshot (HUD / logs / buy eval). */
@@ -816,6 +836,7 @@ public class StatsTracker {
         killDurations.clear();
         lastEffectiveTtkMs = null;
         log("ttk_reset", "via", via);
+        rollZonePatience(via);
     }
 
     /**

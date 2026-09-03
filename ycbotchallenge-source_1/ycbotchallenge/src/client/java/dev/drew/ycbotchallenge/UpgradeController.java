@@ -18,8 +18,9 @@ import net.minecraft.util.math.Vec3d;
  * Sidebar money is truth (no {@code /bal}). Rebirth is seeded from the chat gap
  * {@code You need $29.99T Money to Rebirth.} Evaluations fire on a kill, on a
  * sidebar money increase, or on a timer; if rebirth is covered, sword/zone are
- * skipped. Zone is refused outright while the effective TTK is above
- * {@code zoneMaxTtkMs}; among affordable kinds the 1.25× price ratio decides.
+ * skipped. Zone is refused outright while the effective TTK (the stage's kill
+ * median, or a fresh DPS prediction before three kills) is above this stage's rolled
+ * patience (around {@code zoneMaxTtkMs}); with the gate open the zone is the buy.
  */
 public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
@@ -89,6 +90,8 @@ public class UpgradeController {
     private Double lastSeenMoney = null;
     private String evalReason = null;
     private Double evalTtkMs = null;
+    /** Where evalTtkMs came from ("median" / "predicted" / null) — logged with every plan and skip. */
+    private String evalTtkVia = null;
 
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -277,7 +280,10 @@ public class UpgradeController {
             lastEvalAt = now;
 
             stats.publishSnapshot(true);
-            evalTtkMs = stats.effectiveTtkMs(combat.lastPredictedTtkMs);
+            Double predicted = Economy.freshPrediction(combat.lastPredictedTtkMs, combat.lastPredictedAt,
+                now, cfg.predictedTtkMaxAgeMs);
+            evalTtkMs = stats.effectiveTtkMs(predicted);
+            evalTtkVia = Economy.ttkSource(predicted, stats.medianTtkMs());
             stats.lastEffectiveTtkMs = evalTtkMs;
             updateAffordableMarks(combat.kills);
             String kind = decideKind(combat.kills);
@@ -290,7 +296,7 @@ public class UpgradeController {
                     skipEval("saving-zone", "sword");
                     return false;
                 }
-                boolean zoneGated = !Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs)
+                boolean zoneGated = !Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs())
                     && !stats.zoneMaxed && (knownAffordable("zone") || stats.zoneTarget == null);
                 skipEval(zoneGated ? "zone-gated" : "unaffordable", null);
                 return false;
@@ -550,11 +556,18 @@ public class UpgradeController {
                 "killsSinceRebirth", combat.kills - killsAtRebirth, "msSinceRebirth", now - rb);
             return;
         }
-        if (stats.lastPrice("rebirth") != null || rebirthSeedSent) return;
+        if (rebirthSeedSent) return;
+        // A persisted floor is a lower bound from an earlier rebirth. Once the balance sits on
+        // it with no rebirth having fired, it is stale (0.9.23: 155Q against a 900T floor) and
+        // the seed probe is due on the same lazy schedule as for an unknown account.
+        Double floor = stats.lastPrice("rebirth");
+        boolean stale = floor != null && Economy.rebirthFloorStale(floor, stats.money(), stats.retryGrowth("rebirth"));
+        if (floor != null && !stale) return;
         if (!Economy.probeDue(combat.kills - killsAtEnable, seedKillsNeeded, now - enabledAt, seedDelayMs)) return;
         rebirthSeedSent = true;
         queue.add(new PendingCmd(cfg.rebirthCommand, Kind.REBIRTH, now + HumanTiming.logNormalMs(800, 2000), false));
-        if (logger != null) logger.log("upgrade_plan", "kind", "rebirth", "via", "seed",
+        if (logger != null) logger.log("upgrade_plan", "kind", "rebirth", "via", stale ? "stale-floor" : "seed",
+            "floor", floor != null ? Amounts.format(floor) : null,
             "killsSinceEnable", combat.kills - killsAtEnable, "msSinceEnable", now - enabledAt);
     }
 
@@ -643,7 +656,9 @@ public class UpgradeController {
                 ? Math.round(1000.0 * bal / price) / 10.0 : null,
             "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
             "ttkMs", evalTtkMs != null ? Math.round(evalTtkMs) : null,
-            "zoneGate", Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs) ? "open" : "closed",
+            "ttkVia", evalTtkVia,
+            "patienceMs", stats.zoneTtkToleranceMs(),
+            "zoneGate", Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs()) ? "open" : "closed",
             "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
             "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
             "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,
@@ -651,7 +666,7 @@ public class UpgradeController {
     }
 
     private boolean zoneOpen() {
-        return !stats.zoneMaxed && Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs);
+        return !stats.zoneMaxed && Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs());
     }
 
     private String hudKind() {
@@ -660,7 +675,7 @@ public class UpgradeController {
     }
 
     /**
-     * Rebirth when covered. Gate closed (TTK above zoneMaxTtkMs): the sword, the only
+     * Rebirth when covered. Gate closed (TTK above this stage's patience): the sword, the only
      * thing that helps. Gate open: the zone: bought when affordable, probed first when
      * its price is unknown, saved for otherwise, with a sword allowed only while it is
      * cheap against the zone gap and the TTK is above the movement floor (0.9.16; the
@@ -817,7 +832,9 @@ public class UpgradeController {
             "target", remaining != null ? Amounts.format(remaining) : null,
             "bal", bal != null ? Amounts.format(bal) : null,
             "ttkMs", evalTtkMs != null ? Math.round(evalTtkMs) : null,
-            "zoneGate", Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs) ? "open" : "closed",
+            "ttkVia", evalTtkVia,
+            "patienceMs", stats.zoneTtkToleranceMs(),
+            "zoneGate", Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs()) ? "open" : "closed",
             "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
             "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
             "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,

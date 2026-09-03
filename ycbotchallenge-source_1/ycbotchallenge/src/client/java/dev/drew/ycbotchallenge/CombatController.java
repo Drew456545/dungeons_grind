@@ -93,6 +93,8 @@ public class CombatController {
     private Double tagHp = null;
     /** Predicted TTK (tag HP / DPS) of the most recent cook — survives the kill for the upgrade eval. */
     public Double lastPredictedTtkMs = null;
+    /** When {@link #lastPredictedTtkMs} was last refreshed (it only describes the mob being cooked). */
+    public long lastPredictedAt = 0;
     private Double lastHpSeen = null;
     private long lastHpDropAt = 0;
 
@@ -764,6 +766,7 @@ public class CombatController {
         // seconds into the first mob of a new stage instead of waiting for three kills.
         if (tagHp != null && currentDps != null && currentDps > 0) {
             lastPredictedTtkMs = tagHp / currentDps * 1000.0;
+            lastPredictedAt = now;
         }
         if (currentHp != null) {
             if (lastHpSeen == null || currentHp < lastHpSeen - 1e-9) lastHpDropAt = now;
