@@ -998,7 +998,8 @@ public class CombatController {
         client.options.jumpKey.setPressed(client.player.horizontalCollision || hopping);
     }
 
-    private void tapSprint(MinecraftClient client, boolean wantSprint) {
+    /** Sprint key handling for both "Hold" and "Toggle" modes; shared with the companion walk (0.9.28). */
+    void tapSprint(MinecraftClient client, boolean wantSprint) {
         boolean toggled = false;
         try {
             toggled = client.options.getSprintToggled().getValue();
@@ -1414,6 +1415,25 @@ public class CombatController {
             if (client.player.distanceTo(p) > reach) continue;
             plateCache.add(p);
         }
+    }
+
+    /** Plate entities (text displays, named armor stands) within {@code radius} of the player (0.9.28: the companion egg's hologram). */
+    public List<Entity> nearbyPlates(MinecraftClient client, double radius) {
+        List<Entity> out = new ArrayList<>();
+        if (client == null || client.world == null || client.player == null) return out;
+        for (Entity p : client.world.getEntities()) {
+            if (!(p instanceof DisplayEntity.TextDisplayEntity) && !(p instanceof ArmorStandEntity)) continue;
+            if (client.player.distanceTo(p) > radius) continue;
+            out.add(p);
+        }
+        return out;
+    }
+
+    /** A plate entity's text lines (display text or armor-stand name), trimmed; empty when it has none. */
+    static List<String> plateTextLines(Entity p) {
+        List<String> out = new ArrayList<>();
+        addPlateText(p, out);
+        return out;
     }
 
     private static void addPlateText(Entity p, List<String> out) {

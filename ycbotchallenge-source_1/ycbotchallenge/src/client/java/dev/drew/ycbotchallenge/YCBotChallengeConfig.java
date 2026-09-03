@@ -560,6 +560,94 @@ public class YCBotChallengeConfig {
     public int rebirthLookMinMs = 600;
     public int rebirthLookMaxMs = 3500;
 
+    // ---- 0.9.28: companions. Walk to the zone's Companion Egg (dragon egg under a hologram
+    // "<Zone> Companion Egg / … / | Price: $121.3300 Money"; the Credit Egg is never touched),
+    // right-click, open eggs while an open is cheap against income, /companion → Equip Best,
+    // a look at Fuse Companions (logged, not automated yet), then a sliding-window bulk delete.
+    public boolean companionsEnabled = true;
+    /** The egg's hologram: matched on the tail only ("Western Companion Egg", "Farm Companion Egg"). */
+    public String companionEggPattern = "/\\bcompanion egg\\b/";
+    /** "| Price: $121.3300 Money" / "| Price: 363.9800 Money" → the amount (the first open is the probe for its scale). */
+    public String companionPricePattern = "/price:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money/";
+    /** A hologram with this is the other egg. */
+    public String companionEggExcludePattern = "/credits/";
+    /** "OPEN: [3x COMPANION EGG]" (name or lore) → 3. */
+    public String companionOpenPattern = "/open:?\\s*\\[\\s*(?<n>\\d+)\\s*x\\s*companion egg\\s*\\]/";
+    /** "[ZONE 1 STAGE 10]" on a companion. */
+    public String companionZoneStagePattern = "/\\[\\s*zone\\s*(?<zone>\\d+)\\s*stage\\s*(?<stage>\\d+)\\s*\\]/";
+    /** "| Multiplier: 156.38x Money". */
+    public String companionMultiplierPattern = "/multiplier:\\s*(?<x>[\\d,.]+)\\s*x/";
+    /** "| Rarity: Rare (NORMAL)". */
+    public String companionRarityPattern = "/rarity:\\s*(?<r>[A-Za-z]+)/";
+    public String companionEquipBestPattern = "/equip best/";
+    public String companionFusePattern = "/fuse companions/";
+    public String companionEggsTitlePattern = "/^companion eggs\\b/";
+    public String companionsTitlePattern = "/^companions\\b/";
+    public String companionFuseTitlePattern = "/^fuse companions\\b/";
+    public String companionCommand = "/companion";
+    /** Slots of the four equip positions in the Companions GUI (screenshot: the row left of the nether star). */
+    public List<Integer> companionEquipSlots = List.of(0, 1, 2, 3);
+    /**
+     * Sliding window (Drew): keep the newest companionKeepZones zones (the current and the
+     * previous one), bulk-delete older zone/stage pairs never held by an equipped companion,
+     * at most companionMaxBulkDeletes commands per visit.
+     */
+    public boolean companionBulkDeleteEnabled = true;
+    public int companionKeepZones = 2;
+    public int companionMaxBulkDeletes = 5;
+    public String companionBulkDeleteCommand = "/companion bulkdelete {zone} {stage}";
+    /** Where to look for the egg's hologram, how close to walk, how far under the lowest line the egg block sits, and how far a crosshair hit may be from that point. */
+    public double companionEggSearchRadius = 60.0;
+    public double companionEggReach = 2.5;
+    public double companionEggAimDrop = 1.2;
+    public double companionEggHitRadius = 1.8;
+    public int companionWalkTimeoutMs = 45_000;
+    /** Eggs per visit (rolled), and the click cap on open items per visit. */
+    public int companionEggsMin = 3;
+    public int companionEggsMax = 10;
+    public int companionMaxOpensPerVisit = 6;
+    /**
+     * Trigger: a sliding window on price vs income, not the top stage (a batch there costs
+     * ~1/4 of the rebirth). Once companionStageSettleKills kills on the stage have made the
+     * income its own, a visit is due when a batch of companionEggsMin eggs costs at most
+     * companionMaxIncomeMinutes of income and companionMaxBalancePct of the balance, the
+     * stage is companionMinStageGain above the last purchase, and fewer than
+     * companionMaxVisitsPerRebirth visits happened this rebirth. Fallback: when zone buys
+     * stop (horizon / zone maxed / rebirth ETA ≤ companionRebirthEtaMinMax) with no visit
+     * this rebirth, one visit within companionEndOfRebirthMaxIncomeMinutes.
+     */
+    public double companionMaxIncomeMinutes = 2.0;
+    public double companionEndOfRebirthMaxIncomeMinutes = 8.0;
+    public double companionMaxBalancePct = 40;
+    public int companionMinStageGain = 2;
+    public int companionMaxVisitsPerRebirth = 2;
+    public int companionStageSettleKills = 10;
+    public double companionRebirthEtaMinMax = 8.0;
+    /** "Finish this kill, then go buy pets": delay between the decision and the walk. */
+    public int companionDelayMinMs = 10_000;
+    public int companionDelayMaxMs = 60_000;
+    /** Settle after a click before reading the sidebar / GUI again. */
+    public int companionSettleMinMs = 1500;
+    public int companionSettleMaxMs = 3000;
+    public int companionOpenTimeoutMs = 4000;
+    public int companionMaxVisitMs = 180_000;
+    public int companionMaxConsecutiveAborts = 3;
+
+    // ---- 0.9.28: the Transcend ability (Q with the sword held; "Your Transcend Ability has
+    // been activated (180s Cooldown)" / "… has ended"). Periodic, never on the dot.
+    public boolean transcendEnabled = true;
+    /** Used until the server's own "(Ns Cooldown)" has been read. */
+    public int transcendCooldownMs = 300_000;
+    public String transcendActivePattern = "/transcend ability has been activated/";
+    public String transcendEndPattern = "/transcend ability has ended/";
+    public String transcendCooldownPattern = "/\\((?<s>\\d+)\\s*s\\s*cooldown\\)/";
+    /** After the cooldown, per-kill chance ramps from 0 to transcendFullChance over transcendRampMs. */
+    public int transcendRampMs = 90_000;
+    public double transcendFullChance = 0.3;
+    /** First press after enabling: not at once. */
+    public int transcendFirstDelayMinMs = 20_000;
+    public int transcendFirstDelayMaxMs = 120_000;
+
     // --- 0.9.10: rebirth settle, lazy /rebirth knowledge, hesitation, de-fingerprinting ---
 
     /** Stand and look around after our own teleport before targeting: rebirth (zone 1 reload) vs zone advance. */
@@ -975,7 +1063,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 31;
+    public static final int CURRENT_CONFIG_VERSION = 32;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1229,6 +1317,11 @@ public class YCBotChallengeConfig {
             // v31: targetZoneLevelOnly — the plate level keeps the bot on its own stage's mobs.
             changed = true;
         }
+        if (configVersion < 32) {
+            // v32: companions (egg visits, equip best, sliding-window delete) and the
+            // Transcend ability presser; every new knob takes its default.
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1350,6 +1443,53 @@ public class YCBotChallengeConfig {
         if (rebirthUpgradeSettleMaxMs < rebirthUpgradeSettleMinMs) rebirthUpgradeSettleMaxMs = rebirthUpgradeSettleMinMs;
         if (rebirthUpgradeOpenTimeoutMs < 500) rebirthUpgradeOpenTimeoutMs = 4000;
         if (rebirthUpgradeMaxMenuMs < 5000) rebirthUpgradeMaxMenuMs = 60_000;
+        if (companionEggPattern == null || companionEggPattern.isBlank()) companionEggPattern = fresh.companionEggPattern;
+        if (companionPricePattern == null || companionPricePattern.isBlank()) companionPricePattern = fresh.companionPricePattern;
+        if (companionEggExcludePattern == null) companionEggExcludePattern = fresh.companionEggExcludePattern;
+        if (companionOpenPattern == null || companionOpenPattern.isBlank()) companionOpenPattern = fresh.companionOpenPattern;
+        if (companionZoneStagePattern == null || companionZoneStagePattern.isBlank()) companionZoneStagePattern = fresh.companionZoneStagePattern;
+        if (companionMultiplierPattern == null || companionMultiplierPattern.isBlank()) companionMultiplierPattern = fresh.companionMultiplierPattern;
+        if (companionRarityPattern == null || companionRarityPattern.isBlank()) companionRarityPattern = fresh.companionRarityPattern;
+        if (companionEquipBestPattern == null || companionEquipBestPattern.isBlank()) companionEquipBestPattern = fresh.companionEquipBestPattern;
+        if (companionFusePattern == null || companionFusePattern.isBlank()) companionFusePattern = fresh.companionFusePattern;
+        if (companionEggsTitlePattern == null || companionEggsTitlePattern.isBlank()) companionEggsTitlePattern = fresh.companionEggsTitlePattern;
+        if (companionsTitlePattern == null || companionsTitlePattern.isBlank()) companionsTitlePattern = fresh.companionsTitlePattern;
+        if (companionFuseTitlePattern == null || companionFuseTitlePattern.isBlank()) companionFuseTitlePattern = fresh.companionFuseTitlePattern;
+        if (companionCommand == null || companionCommand.isBlank()) companionCommand = fresh.companionCommand;
+        if (companionEquipSlots == null) companionEquipSlots = fresh.companionEquipSlots;
+        if (companionBulkDeleteCommand == null || !companionBulkDeleteCommand.contains("{zone}")) companionBulkDeleteCommand = fresh.companionBulkDeleteCommand;
+        if (companionKeepZones < 1) companionKeepZones = 1;
+        if (companionMaxBulkDeletes < 0) companionMaxBulkDeletes = 0;
+        if (companionEggSearchRadius < 5) companionEggSearchRadius = 60.0;
+        if (companionEggReach < 1) companionEggReach = 2.5;
+        if (companionEggAimDrop < 0) companionEggAimDrop = 1.2;
+        if (companionEggHitRadius < 0.5) companionEggHitRadius = 1.8;
+        if (companionWalkTimeoutMs < 5000) companionWalkTimeoutMs = 45_000;
+        if (companionEggsMin < 1) companionEggsMin = 1;
+        if (companionEggsMax < companionEggsMin) companionEggsMax = companionEggsMin;
+        if (companionMaxOpensPerVisit < 1) companionMaxOpensPerVisit = 1;
+        if (companionMaxIncomeMinutes < 0) companionMaxIncomeMinutes = 0;
+        if (companionEndOfRebirthMaxIncomeMinutes < companionMaxIncomeMinutes) companionEndOfRebirthMaxIncomeMinutes = companionMaxIncomeMinutes;
+        if (companionMaxBalancePct < 0) companionMaxBalancePct = 0;
+        if (companionMaxBalancePct > 100) companionMaxBalancePct = 100;
+        if (companionMinStageGain < 0) companionMinStageGain = 0;
+        if (companionMaxVisitsPerRebirth < 0) companionMaxVisitsPerRebirth = 0;
+        if (companionStageSettleKills < 0) companionStageSettleKills = 0;
+        if (companionDelayMinMs < 0) companionDelayMinMs = 0;
+        if (companionDelayMaxMs < companionDelayMinMs) companionDelayMaxMs = companionDelayMinMs;
+        if (companionSettleMinMs < 200) companionSettleMinMs = 200;
+        if (companionSettleMaxMs < companionSettleMinMs) companionSettleMaxMs = companionSettleMinMs;
+        if (companionOpenTimeoutMs < 500) companionOpenTimeoutMs = 4000;
+        if (companionMaxVisitMs < 10_000) companionMaxVisitMs = 180_000;
+        if (companionMaxConsecutiveAborts < 1) companionMaxConsecutiveAborts = 1;
+        if (transcendCooldownMs < 0) transcendCooldownMs = 0;
+        if (transcendActivePattern == null || transcendActivePattern.isBlank()) transcendActivePattern = fresh.transcendActivePattern;
+        if (transcendEndPattern == null || transcendEndPattern.isBlank()) transcendEndPattern = fresh.transcendEndPattern;
+        if (transcendCooldownPattern == null || transcendCooldownPattern.isBlank()) transcendCooldownPattern = fresh.transcendCooldownPattern;
+        if (transcendRampMs < 1000) transcendRampMs = 1000;
+        if (transcendFullChance < 0 || transcendFullChance > 1) transcendFullChance = 0.3;
+        if (transcendFirstDelayMinMs < 0) transcendFirstDelayMinMs = 0;
+        if (transcendFirstDelayMaxMs < transcendFirstDelayMinMs) transcendFirstDelayMaxMs = transcendFirstDelayMinMs;
         if (swordWhileSavingMaxPct > 100) swordWhileSavingMaxPct = 100;
         if (zoneInstantTtkMs < 0) zoneInstantTtkMs = 0;
         if (rebirthHorizonZoneGain < 1.0) rebirthHorizonZoneGain = 1.3;

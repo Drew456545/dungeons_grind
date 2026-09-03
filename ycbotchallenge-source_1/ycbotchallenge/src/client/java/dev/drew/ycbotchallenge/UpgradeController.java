@@ -105,6 +105,9 @@ public class UpgradeController {
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
+    /** The kind the rebirth horizon held back at the last eval ("zone"/"sword"), or null (0.9.28: the companion trigger reads it). */
+    public String horizonBlockedKind() { return horizonBlocked; }
+
     public String hudLine() {
         if (!cfg.upgradesEnabled) return null;
         String kind = hudKind();

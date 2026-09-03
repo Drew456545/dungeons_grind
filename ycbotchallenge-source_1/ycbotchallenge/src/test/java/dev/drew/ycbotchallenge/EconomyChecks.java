@@ -64,6 +64,8 @@ public final class EconomyChecks {
         n += typer();
         n += ballot();
         n += zoneLevel();
+        n += companions();
+        n += transcend();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1196,6 +1198,99 @@ public final class EconomyChecks {
         n += eq("zone level of LVL7", Economy.zoneLevelOf("LVL7"), 7);
         n += eq("zone level of null", Economy.zoneLevelOf(null) == null, true);
         n += eq("zone level of junk", Economy.zoneLevelOf("Dungeons") == null, true);
+        return n;
+    }
+
+    /** 0.9.28 companions: fixtures verbatim from Drew's screenshots (2026-09-03). */
+    private static int companions() {
+        int n = 0;
+        CompanionLore cl = new CompanionLore(CFG);
+        List<String> egg = List.of("Western Companion Egg", "Unhatch a Dungeons Companion that boosts",
+            "the amount of money you gain!", "| Price: $121.3300 Money", "<< Right Click to view. >>");
+        List<String> credit = List.of("Western Credit Egg", "Unhatch a Dungeons Companion that boosts",
+            "the amount of money you gain!.", "| Price: 100 Credits", "<< Right Click to view. >>");
+        n += eq("money egg hologram", cl.isEggHologram(egg), true);
+        n += eq("credit egg excluded", cl.isEggHologram(credit), false);
+        n += eq("prefix is not matched", cl.isEggHologram(List.of("Farm Companion Egg", "| Price: $5.10 Money")), true);
+        n += eq("egg price", cl.eggPrice(egg), 121.33, 1e-6);
+        n += eq("plain mob plate is no egg", cl.isEggHologram(List.of("LVL7 Donkey ❤69B")), false);
+
+        List<String> openLore = List.of("Pressing this will open up 3x Companion Egg, all",
+            "companions will go directly to your companion storage.", "| Price: 363.9800 Money",
+            "| Discounted Openings Left: 0x", "[CLICK THIS TO OPEN 3x COMPANION EGG]");
+        CompanionLore.OpenOption o3 = cl.openOption(36, "OPEN: [3x COMPANION EGG]", openLore);
+        n += eq("open option parses", o3 != null, true);
+        n += eq("open count", o3 != null ? o3.count() : null, 3);
+        n += eq("open price", o3 != null ? o3.price() : null, 363.98, 1e-6);
+        n += eq("open by lore only", cl.openOption(37, "Egg", List.of("open: [10x companion egg]", "| Price: 1213.3 Money")) != null, true);
+        n += eq("filler is no option", cl.openOption(1, "Gray Glass", List.of()) == null, true);
+
+        List<String> cow = List.of("COMPANION", "Information:", "| Rarity: Rare (NORMAL)", "| Multiplier: 156.38x Money",
+            "[ZONE 1 STAGE 10]", "<< Click Here to un-equip your Cow Companion. >>");
+        CompanionLore.Companion c = cl.companion(1, "Cow Companion", cow);
+        n += eq("companion parses", c != null, true);
+        n += eq("companion zone", c != null ? c.zone() : null, 1);
+        n += eq("companion stage", c != null ? c.stage() : null, 10);
+        n += eq("companion multiplier", c != null ? c.multiplier() : null, 156.38, 1e-6);
+        n += eq("companion rarity", c != null ? c.rarity() : null, "Rare");
+        n += eq("equip best by name", cl.isEquipBest("Equip Best", List.of("Equip Companions")), true);
+        n += eq("equip best is no companion", cl.companion(4, "Equip Best", List.of("Equip Companions",
+            "The new Equip Best option will automatically equip your companions with the highest multiplier.")) == null, true);
+        n += eq("fuse by name", cl.isFuse("Fuse Companions", List.of()), true);
+        n += eq("eggs title", cl.isEggsTitle("Companion Eggs"), true);
+        n += eq("companions title", cl.isCompanionsTitle("Companions"), true);
+        n += eq("companions title is not eggs", cl.isEggsTitle("Companions"), false);
+        n += eq("fuse title", cl.isFuseTitle("Fuse Companions"), true);
+        n += eq("fuse title is not companions", cl.isCompanionsTitle("Fuse Companions"), false);
+
+        // Pick the open: largest that fits the eggs left, the income budget and the balance cap.
+        List<CompanionLore.OpenOption> opts = List.of(
+            new CompanionLore.OpenOption(36, "1x", 1, 121.33), new CompanionLore.OpenOption(37, "3x", 3, 363.98),
+            new CompanionLore.OpenOption(38, "10x", 10, 1213.3));
+        CompanionLore.OpenOption p = CompanionLore.pickOpen(opts, 7, 100.0, 2.0, 100_000.0, 40);
+        n += eq("tight income -> 1x", p != null ? p.count() : null, 1);
+        p = CompanionLore.pickOpen(opts, 7, 1000.0, 2.0, 100_000.0, 40);
+        n += eq("room for 3x, 10x over eggs left", p != null ? p.count() : null, 3);
+        p = CompanionLore.pickOpen(opts, 10, 1000.0, 2.0, 100_000.0, 40);
+        n += eq("10x fits", p != null ? p.count() : null, 10);
+        p = CompanionLore.pickOpen(opts, 10, 1000.0, 2.0, 500.0, 40);
+        n += eq("balance cap -> 1x", p != null ? p.count() : null, 1);
+        n += eq("no income -> nothing", CompanionLore.pickOpen(opts, 7, null, 2.0, 100_000.0, 40) == null, true);
+        n += eq("no eggs left -> nothing", CompanionLore.pickOpen(opts, 0, 1000.0, 2.0, 100_000.0, 40) == null, true);
+        n += eq("too poor -> nothing", CompanionLore.pickOpen(opts, 7, 10.0, 2.0, 100_000.0, 40) == null, true);
+        n += eq("income minutes", CompanionLore.incomeMinutes(363.98, 100.0), 3.6398, 1e-6);
+        n += eq("income minutes unknown", CompanionLore.incomeMinutes(363.98, null) == null, true);
+
+        // Sliding-window delete: keep the current and previous zone, never an equipped pair.
+        List<CompanionLore.ZoneStage> st = List.of(zs(1, 8), zs(1, 9), zs(1, 9), zs(2, 3), zs(3, 1), zs(3, 5));
+        List<CompanionLore.ZoneStage> del = CompanionLore.deletePairs(st, List.of(zs(1, 9)), 3, 2);
+        n += eq("window of 2 deletes zone 1 only", del, List.of(zs(1, 8)));
+        n += eq("window of 1 deletes zones 1-2", CompanionLore.deletePairs(st, List.of(), 3, 1), List.of(zs(1, 8), zs(1, 9), zs(2, 3)));
+        n += eq("unknown zone deletes nothing", CompanionLore.deletePairs(st, List.of(), null, 2).isEmpty(), true);
+        n += eq("current zone 1 deletes nothing", CompanionLore.deletePairs(st, List.of(), 1, 2).isEmpty(), true);
+        n += eq("bulk delete command", CompanionLore.bulkDeleteCommand(CFG.companionBulkDeleteCommand, zs(1, 8)), "/companion bulkdelete 1 8");
+        return n;
+    }
+
+    private static CompanionLore.ZoneStage zs(int z, int s) { return new CompanionLore.ZoneStage(z, s); }
+
+    /** 0.9.28 Transcend: lines verbatim from the 20:35 log. */
+    private static int transcend() {
+        int n = 0;
+        Pattern cd = RebirthLore.compileLoose(CFG.transcendCooldownPattern);
+        n += eq("cooldown 180", TranscendController.cooldownSecondsOf("Your Transcend Ability has been activated (180s Cooldown)", cd), 180);
+        n += eq("cooldown on end line", TranscendController.cooldownSecondsOf("Your Transcend Ability has ended (180s Cooldown)", cd), 180);
+        n += eq("no cooldown", TranscendController.cooldownSecondsOf("Your Transcend Ability has ended", cd) == null, true);
+        n += eq("active line", RebirthLore.compileLoose(CFG.transcendActivePattern).matcher("Your Transcend Ability has been activated (180s Cooldown)").find(), true);
+        n += eq("end line", RebirthLore.compileLoose(CFG.transcendEndPattern).matcher("Your Transcend Ability has ended (180s Cooldown)").find(), true);
+        long t0 = 1_788_480_000_000L;
+        n += eq("never pressed: ready after first delay", TranscendController.ready(0, 0, 180_000, t0 + 30_000, t0 + 31_000), true);
+        n += eq("not before first delay", TranscendController.ready(0, 0, 180_000, t0 + 30_000, t0 + 1000), false);
+        n += eq("cooling", TranscendController.ready(t0, 0, 180_000, 0, t0 + 100_000), false);
+        n += eq("cooled", TranscendController.ready(t0, 0, 180_000, 0, t0 + 181_000), true);
+        n += eq("our press counts too", TranscendController.ready(0, t0, 180_000, 0, t0 + 100_000), false);
+        n += eq("hazard zero at ready", Economy.visitHazard(0, 0, 90_000, 0.3, 1.0, 1.0), 0.0, 1e-9);
+        n += eq("hazard full after ramp", Economy.visitHazard(90_000, 0, 90_000, 0.3, 1.0, 1.0), 0.3, 1e-9);
         return n;
     }
 

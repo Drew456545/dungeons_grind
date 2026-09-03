@@ -14,9 +14,12 @@ public class HudOverlay {
     private final UpgradeController upgrades;
     private final EnchantController enchants;
     private final RebirthUpgradeController rebirthUpgrades;
+    private final CompanionController companions;
+    private final TranscendController transcend;
 
     public HudOverlay(YCBotChallengeConfig cfg, StatsTracker stats, CombatController combat, CaptchaSolver captcha,
-                      UpgradeController upgrades, EnchantController enchants, RebirthUpgradeController rebirthUpgrades) {
+                      UpgradeController upgrades, EnchantController enchants, RebirthUpgradeController rebirthUpgrades,
+                      CompanionController companions, TranscendController transcend) {
         this.cfg = cfg;
         this.stats = stats;
         this.combat = combat;
@@ -24,6 +27,8 @@ public class HudOverlay {
         this.upgrades = upgrades;
         this.enchants = enchants;
         this.rebirthUpgrades = rebirthUpgrades;
+        this.companions = companions;
+        this.transcend = transcend;
     }
 
     public void render(DrawContext context) {
@@ -62,6 +67,10 @@ public class HudOverlay {
             if (en != null) lines.add("§d" + en + "§r");
             String ru = rebirthUpgrades != null ? rebirthUpgrades.hudLine() : null;
             if (ru != null) lines.add("§b" + ru + "§r");
+            String co = companions != null ? companions.hudLine() : null;
+            if (co != null) lines.add("§6" + co + "§r");
+            String tr = transcend != null ? transcend.hudLine() : null;
+            if (tr != null) lines.add("§8" + tr + "§r");
         }
         if (on && captcha != null && captcha.vlmHudLine() != null) lines.add(captcha.vlmHudLine());
         String bals = stats.hudBalancesLine();

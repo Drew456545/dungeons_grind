@@ -31,6 +31,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private UpgradeController upgrades;
     private EnchantController enchants;
     private RebirthUpgradeController rebirthUpgrades;
+    private CompanionController companions;
+    private TranscendController transcend;
     private CaptchaSolver captchaSolver;
     private CaptchaDetector captchaDetector;
     private EventLogger logger;
@@ -54,6 +56,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         upgrades = new UpgradeController(config, stats);
         enchants = new EnchantController(config, stats);
         rebirthUpgrades = new RebirthUpgradeController(config, stats);
+        companions = new CompanionController(config, stats, upgrades);
+        transcend = new TranscendController(config, enchants.lore());
         MouseDriver.INSTANCE.configure(config, null);
         captchaSolver = new CaptchaSolver(config, new CaptchaSolver.Callbacks() {
             @Override public void onSolved(MinecraftClient client) {
@@ -77,11 +81,15 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
         HudElementRegistry.addLast(
             Identifier.of("ycbotchallenge", "hud"),
-            (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver, upgrades, enchants, rebirthUpgrades).render(context));
+            (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver, upgrades, enchants, rebirthUpgrades, companions, transcend).render(context));
 
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             stats.onGameMessage(message, overlay);
-            if (!overlay) captchaSolver.onGameMessage(message.getString());
+            if (!overlay) {
+                captchaSolver.onGameMessage(message.getString());
+                String all = message.getString();
+                if (all != null) for (String line : all.split("\\R")) transcend.onChatLine(ChatClassifier.clean(line));
+            }
         });
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
@@ -96,9 +104,11 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
     private void onTick(MinecraftClient client) {
         while (toggleKey.wasPressed()) {
+            // Ctrl + Shift + toggle = run the companion visit now (0.9.28);
             // Ctrl + toggle = ignore/unignore the mob under the crosshair (0.9.26);
             // Shift + toggle = flip sprinting (persisted to the config); plain = bot on/off
-            if (ctrlHeld(client)) markIgnored(client);
+            if (ctrlHeld(client) && shiftHeld(client)) runCompanions(client);
+            else if (ctrlHeld(client)) markIgnored(client);
             else if (shiftHeld(client)) toggleSprint(client);
             else setEnabled(client, !enabled, false);
         }
@@ -143,6 +153,15 @@ public class YCBotChallengeClient implements ClientModInitializer {
             rebirthUpgrades.tick(client, combat);
             return;
         }
+        if (companions.isBusy()) {
+            companions.tick(client, combat);
+            if (combat.stopRequest != null) {
+                String reason = combat.stopRequest;
+                combat.stopRequest = null;
+                emergencyStop(client, reason);
+            }
+            return;
+        }
         // The SWORD ENCHANTER's title is formatting-only (font glyph), so it is
         // recognised by its contents — which arrive a tick after the screen opens, hence
         // the grace. Our own menus (enchanter, Rebirth GUI, Upgrades) are never a captcha;
@@ -156,7 +175,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         String screenTitle = client.currentScreen != null && client.currentScreen.getTitle() != null
             ? client.currentScreen.getTitle().getString() : "";
         boolean ownGui = handled && (RebirthScreens.isRebirthGui(screenTitle) || enchants.isOurGui(client)
-            || rebirthUpgrades.isOurGui(client));
+            || rebirthUpgrades.isOurGui(client) || companions.isOurGui(client));
         if (ownGui && config.strayGuiCloseMs > 0 && nowGui - guiSeenAt >= config.strayGuiCloseMs) {
             if (logger != null) logger.log("stray_gui_close", "title", screenTitle, "ageMs", nowGui - guiSeenAt);
             EnchantScreens.closeGui(client);
@@ -192,6 +211,10 @@ public class YCBotChallengeClient implements ClientModInitializer {
         if (rebirthUpgrades.tick(client, combat)) {
             return;
         }
+        if (companions.tick(client, combat)) {
+            return;
+        }
+        transcend.tick(client, combat);
 
         combat.tick(client);
 
@@ -220,6 +243,15 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private static boolean ctrlHeld(MinecraftClient client) {
         var w = client.getWindow();
         return InputUtil.isKeyPressed(w, GLFW.GLFW_KEY_LEFT_CONTROL) || InputUtil.isKeyPressed(w, GLFW.GLFW_KEY_RIGHT_CONTROL);
+    }
+
+    private void runCompanions(MinecraftClient client) {
+        if (!enabled) {
+            if (client.player != null) client.player.sendMessage(Text.literal("§e[YCBotChallenge] turn the bot on first, then Ctrl+Shift+toggle to buy companions."), false);
+            return;
+        }
+        companions.runNow();
+        if (client.player != null) client.player.sendMessage(Text.literal("§e[YCBotChallenge] companion visit queued — after this kill."), false);
     }
 
     private void markIgnored(MinecraftClient client) {
@@ -318,6 +350,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 upgrades.setLogger(logger);
                 enchants.setLogger(logger);
                 rebirthUpgrades.setLogger(logger);
+                companions.setLogger(logger);
+                transcend.setLogger(logger);
                 captchaSolver.setLogger(logger);
                 captchaDetector.setLogger(logger);
                 MouseDriver.INSTANCE.configure(config, logger);
@@ -330,6 +364,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
             captchaDetector.onEnable(client);
             captchaSolver.checkHealth(System.currentTimeMillis());
             rebirthUpgrades.onEnable(System.currentTimeMillis(), combat.kills);
+            companions.onEnable(System.currentTimeMillis(), combat.kills);
+            transcend.onEnable(System.currentTimeMillis(), combat.kills);
         } else {
             if (logger != null) logger.log("bot_off");
             if (client != null) {
@@ -337,6 +373,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 upgrades.reset(client);
                 enchants.reset(client);
                 rebirthUpgrades.reset(client);
+                companions.reset(client);
             }
             MouseDriver.INSTANCE.cancel();
             captchaSolver.cancel();
@@ -357,6 +394,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
             upgrades.setLogger(null);
             enchants.setLogger(null);
             rebirthUpgrades.setLogger(null);
+            companions.setLogger(null);
+            transcend.setLogger(null);
             captchaSolver.setLogger(null);
             captchaDetector.setLogger(null);
             MouseDriver.INSTANCE.configure(config, null);
