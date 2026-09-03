@@ -847,6 +847,14 @@ public class YCBotChallengeConfig {
 
     /** Boss-bar-vanish kill credit requires the entity gone OR this much cook time (below it = tag didn't stick). */
     public int barVanishMinCookMs = 1200;
+    /**
+     * A bar gone under barVanishMinCookMs with the entity still standing waits this long
+     * for the entity to vanish or the sidebar money to rise before it counts as a missed
+     * tag (0.9.21). Instant kills (zone 1 after a rebirth: one click, bar alive one tick,
+     * money a second later) are credited this way with the bar's lifetime as TTK, which
+     * is what opens the zone gate; the 17:12 log filed 36 of 39 as retags instead.
+     */
+    public int instantKillConfirmMs = 1500;
     /** Rarity HP scaling: TTK is divided by (1 + scale) so the zone benchmark compares across rarities. */
     public Map<String, Double> rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
 
@@ -856,7 +864,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 24;
+    public static final int CURRENT_CONFIG_VERSION = 25;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1065,6 +1073,10 @@ public class YCBotChallengeConfig {
             rebirthChatPatterns = fresh.rebirthChatPatterns;
             changed = true;
         }
+        if (configVersion < 25) {
+            // v25: instant kills credited via entity-gone / money-landed (instantKillConfirmMs).
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1258,6 +1270,7 @@ public class YCBotChallengeConfig {
         if (moneyCollapseMaxValue <= 0) moneyCollapseMaxValue = 1e12;
         if (expectedTeleportAfterRebirthMs < 0) expectedTeleportAfterRebirthMs = 8000;
         if (teleportExplainGraceMs < 0) teleportExplainGraceMs = 0;
+        if (instantKillConfirmMs < 200) instantKillConfirmMs = 200;
         if (rebirthChatPatterns == null) rebirthChatPatterns = fresh.rebirthChatPatterns;
         if (moneyCurrency == null || moneyCurrency.isBlank() || moneyCurrency.equalsIgnoreCase("chicken")) {
             moneyCurrency = "money";

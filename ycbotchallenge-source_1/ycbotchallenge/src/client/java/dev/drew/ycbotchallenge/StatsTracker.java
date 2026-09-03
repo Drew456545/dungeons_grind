@@ -143,6 +143,8 @@ public class StatsTracker {
     private final List<Pattern> captchaHintRes = new ArrayList<>();
     /** Evidence net for unclassified server lines (chat_raw). */
     private final RawChatNet rawNet;
+    /** When the sidebar money row last increased: the kill credit for instant kills whose bar lived one tick. */
+    public volatile long lastMoneyUpAt = 0;
     /** Amount suffixes seen on the sidebar so far (amount_suffix logged on first sight, with the previous row). */
     private final Set<String> suffixesSeen = new HashSet<>();
     // Giveaways (0.9.17): announcement seq for the controller, prize, outcome counters.
@@ -609,6 +611,7 @@ public class StatsTracker {
         if (key.equals(moneyKey())) {
             long nowMs = System.currentTimeMillis();
             lastSidebarMoneyAt = nowMs;
+            if (prev != null && value > prev + 1e-6) lastMoneyUpAt = nowMs;
             // Money collapsing to ~zero while we didn't just buy anything = a rebirth
             // wiped the balance (the sidebar rebirth counter is the primary signal;
             // this covers boards where that row isn't always rendered). A collapse

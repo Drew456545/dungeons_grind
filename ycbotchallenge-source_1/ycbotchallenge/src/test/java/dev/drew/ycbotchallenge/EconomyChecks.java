@@ -56,6 +56,7 @@ public final class EconomyChecks {
         n += ignoredMobs();
         n += rebirthHorizon();
         n += rebirthUpgrades();
+        n += instantKills();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -604,6 +605,24 @@ public final class EconomyChecks {
             System.err.println("FAIL stateStore: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /** 0.9.21: a bar that vanished under barVanishMinCookMs (timings from the 17:12 chicken log). */
+    private static int instantKills() {
+        int n = 0;
+        long tag = 100_000;
+        // bar gone at +150ms, money landed at +1000ms, judged at +1100ms -> kill
+        n += eq("instant: money after tag", Economy.vanishVerdict(tag + 150, tag, tag + 1100, false, tag + 1000, 1500), "kill");
+        // nothing yet at +800ms -> wait
+        n += eq("instant: still waiting", Economy.vanishVerdict(tag + 150, tag, tag + 800, false, 0, 1500), "wait");
+        // window over (+1800ms), no money, entity alive -> the old verdict
+        n += eq("instant: window over", Economy.vanishVerdict(tag + 150, tag, tag + 1800, false, 0, 1500), "retag");
+        // entity gone at any time -> kill
+        n += eq("instant: entity gone", Economy.vanishVerdict(tag + 150, tag, tag + 200, true, 0, 1500), "kill");
+        // money that rose before the tag is someone else's credit
+        n += eq("instant: stale money", Economy.vanishVerdict(tag + 150, tag, tag + 1800, false, tag - 500, 1500), "retag");
+        n += eq("instant: stale money still waits", Economy.vanishVerdict(tag + 150, tag, tag + 500, false, tag - 500, 1500), "wait");
         return n;
     }
 

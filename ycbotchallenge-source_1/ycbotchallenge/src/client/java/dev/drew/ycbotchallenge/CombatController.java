@@ -41,6 +41,10 @@ public class CombatController {
     /** Connected = a click landed (boss bar for this mob appeared). The server now cooks it. */
     private boolean connected = false;
     private long tagAt = 0;
+    /** When the cooking mob's bar vanished early (0 = still showing); see instantKillConfirmMs. */
+    private long barGoneAt = 0;
+    /** First click on the current target (0 = none yet): money landing after it credits a kill the bar never showed. */
+    private long firstClickAt = 0;
     private long targetPickedAt = 0;
     /** While the current mob cooks: the mob we'll go for next (pre-aimed so the handoff is instant). */
     private LivingEntity nextTarget = null;
@@ -261,6 +265,8 @@ public class CombatController {
         nextTarget = null;
         connected = false;
         clicksThisTarget = 0;
+        barGoneAt = 0;
+        firstClickAt = 0;
         prevOct = 0;
         octStaggerTicks = 0;
         lookIssued = false;
@@ -519,6 +525,40 @@ public class CombatController {
                 nextActionAt = now + HumanTiming.logNormalMs(cfg.reactionDelayMinMs, cfg.reactionDelayMaxMs);
                 return;
             }
+            // Instant kill (0.9.21): the bar lived a tick and the entity is still in its
+            // death animation. Wait for the entity to vanish or the money to land before
+            // calling it a missed tag; the TTK is the bar's lifetime.
+            if (barGoneAt == 0) barGoneAt = now;
+            String verdict = Economy.vanishVerdict(barGoneAt, tagAt, now, entityGone, stats.lastMoneyUpAt, cfg.instantKillConfirmMs);
+            if ("kill".equals(verdict)) {
+                long ttk = Math.max(1, barGoneAt - tagAt);
+                kills++;
+                stats.recordKill();
+                stats.recordKillDuration(ttk, targetRarity);
+                wantsUpgradeWindow = true;
+                if (logger != null) {
+                    logger.log("kill",
+                        "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
+                        "timeToKillMs", ttk, "kills", kills, "via", "instant",
+                        "confirm", entityGone ? "entity" : "money", "confirmMs", now - barGoneAt,
+                        "clicks", clicksThisTarget);
+                }
+                target = null;
+                connected = false;
+                clicksThisTarget = 0;
+                barGoneAt = 0;
+                firstClickAt = 0;
+                lookIssued = false;
+                nextTarget = null;
+                nextTargetDesc = null;
+                nextActionAt = now + HumanTiming.logNormalMs(cfg.reactionDelayMinMs, cfg.reactionDelayMaxMs);
+                return;
+            }
+            if ("wait".equals(verdict)) {
+                releaseKeys(client);
+                return;
+            }
+            // "retag": the re-tag safety block below drops the connect and clicks again.
         }
 
         // current target dead? -> kill credit (only if we actually connected)
@@ -534,7 +574,22 @@ public class CombatController {
                         "timeToKillMs", now - tagAt, "kills", kills, "via", "death",
                         "clicks", clicksThisTarget);
                 }
+            } else if (firstClickAt > 0 && stats.lastMoneyUpAt > firstClickAt) {
+                // The bar never rendered, but the mob is gone and the money landed after
+                // our first click: a kill the boss bar was too quick to show.
+                kills++;
+                stats.recordKill();
+                stats.recordKillDuration(Math.max(1, now - firstClickAt), targetRarity);
+                wantsUpgradeWindow = true;
+                if (logger != null) {
+                    logger.log("kill",
+                        "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
+                        "timeToKillMs", now - firstClickAt, "kills", kills, "via", "death+money",
+                        "clicks", clicksThisTarget);
+                }
             }
+            barGoneAt = 0;
+            firstClickAt = 0;
             target = null;
             connected = false;
             clicksThisTarget = 0;
@@ -587,6 +642,8 @@ public class CombatController {
             nextTargetDesc = null;
             targetPickedAt = now;
             clicksThisTarget = 0;
+            barGoneAt = 0;
+            firstClickAt = 0;
             rollAimPoint(client);
             lookIssued = false;
             readNameplate(target);
@@ -618,6 +675,7 @@ public class CombatController {
         if (clicksThisTarget >= 1 && stats.bossBarMatches(targetMob)) {
             connected = true;
             tagAt = now;
+            barGoneAt = 0;
             tagHp = stats.currentHpFor(targetMob);
             lastHpSeen = tagHp;
             lastHpDropAt = now;
@@ -646,6 +704,7 @@ public class CombatController {
             pressAttack(client);
             lastClickAt = now;
             clicksThisTarget++; // a whiff counts; a lucky early land is how connects happen
+            if (firstClickAt == 0) firstClickAt = now;
         }
 
         if (dist > effectiveReach()) {
@@ -684,6 +743,7 @@ public class CombatController {
             pressAttack(client);
             lastClickAt = now;
             clicksThisTarget++;
+            if (firstClickAt == 0) firstClickAt = now;
             if (logger != null && clicksThisTarget == 1) {
                 logger.log("click_start", "mob", targetMob, "aimErr", Math.round(aimErr * 10.0) / 10.0);
             }

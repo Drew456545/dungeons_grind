@@ -261,6 +261,22 @@ public final class Economy {
         return Math.max(0, rebirthTarget - bal + price) / (incomePerMin * gain);
     }
 
+    /**
+     * A boss bar that vanished under barVanishMinCookMs with the entity still standing
+     * (0.9.21). On zone 1 after a rebirth every chicken dies on the first click: the
+     * bar lives one tick, the client entity is still in its death animation, and the
+     * 17:12 log filed 36 of 39 tags as "tag didn't stick" while the money landed a
+     * second after each. Verdict: "kill" once the entity is gone or the sidebar money
+     * rose after the tag; "wait" while the confirm window is open; else "retag".
+     */
+    public static String vanishVerdict(long barGoneAt, long tagAt, long now, boolean entityGone,
+                                       long lastMoneyUpAt, int confirmMs) {
+        if (entityGone) return "kill";
+        if (lastMoneyUpAt > tagAt) return "kill";
+        if (now - barGoneAt < Math.max(0, confirmMs)) return "wait";
+        return "retag";
+    }
+
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);
