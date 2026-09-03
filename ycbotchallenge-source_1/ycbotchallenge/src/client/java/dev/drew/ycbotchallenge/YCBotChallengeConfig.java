@@ -425,6 +425,12 @@ public class YCBotChallengeConfig {
      */
     public int evalFallbackMs = 30_000;
     public boolean evalOnMoneyIncrease = true;
+    /**
+     * Enabling the bot clears the TTK window (kill median + DPS prediction) so the
+     * zone gate re-measures where you actually are — after /spawn, a manual zone
+     * hop, or an AFK gap. Learned prices are kept (server state, not position).
+     */
+    public boolean resetTtkOnEnable = true;
     /** Legacy; TTK readiness no longer requires a sword buy this zone. */
     public int zoneMinSwordBuysThisZone = 0;
     /**
@@ -474,8 +480,14 @@ public class YCBotChallengeConfig {
     public double sprintHitChance = 0.01;
     /** Per-char chance of a typo + backspace correction while typing commands. */
     public double typoChancePerChar = 0.01;
-    /** Periodic human-length breaks. */
+    /** Periodic human-length breaks. Focus time counts only ticks the bot actually runs. */
     public boolean breaksEnabled = true;
+    /**
+     * A toggle, stop-protocol or captcha pause ends any running break and starts a
+     * fresh focus block on the next enable. Without this (0.9.7) a re-enable after a
+     * long AFK landed straight in a 3-minute break that toggling could not clear.
+     */
+    public boolean breaksResetOnToggle = true;
     public int focusMinutesMin = 45;
     public int focusMinutesMax = 90;
     public int breakMinutesMin = 1;
@@ -513,7 +525,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 11;
+    public static final int CURRENT_CONFIG_VERSION = 12;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -617,6 +629,12 @@ public class YCBotChallengeConfig {
             cooldownRelaxBalanceMult = fresh.cooldownRelaxBalanceMult;
             cookStallMs = fresh.cookStallMs;
             minKillsAfterAffordable = fresh.minKillsAfterAffordable;
+            changed = true;
+        }
+        if (configVersion < 12) {
+            // v12: breaks reset on toggle and count active time only; enable resets the TTK window.
+            breaksResetOnToggle = fresh.breaksResetOnToggle;
+            resetTtkOnEnable = fresh.resetTtkOnEnable;
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;

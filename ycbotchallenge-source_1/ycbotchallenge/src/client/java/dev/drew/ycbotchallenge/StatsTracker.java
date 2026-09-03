@@ -633,6 +633,25 @@ public class StatsTracker {
     }
 
     /**
+     * Bot enabled: assume nothing about where we are. After /spawn, a manual zone
+     * change or an AFK gap the old kill samples describe a different stage (or a
+     * different sword), so the TTK window restarts and the zone gate waits for
+     * fresh evidence. Prices are kept — they are server state, not position state.
+     */
+    public void onEnable() {
+        resetTtkWindow("enable");
+    }
+
+    private void resetTtkWindow(String via) {
+        zoneBaselineTtkMs = null;
+        zoneKills = 0;
+        lastBenchmarkLogged = null;
+        killDurations.clear();
+        lastEffectiveTtkMs = null;
+        log("ttk_reset", "via", via);
+    }
+
+    /**
      * A zone change invalidates every TTK sample: the median window is cleared so
      * the zone gate cannot be fooled by the previous stage's fast kills, and the
      * benchmark baseline restarts. Duplicate signals for the same advance
@@ -646,12 +665,8 @@ public class StatsTracker {
         }
         lastZoneChangeAt = now;
         zoneChangeSeq++;
-        zoneBaselineTtkMs = null;
-        zoneKills = 0;
         swordBuysThisZone = 0;
-        lastBenchmarkLogged = null;
-        killDurations.clear();
-        lastEffectiveTtkMs = null;
+        resetTtkWindow(via);
         log("zone_change", "via", via, "zone", zone);
     }
 

@@ -223,6 +223,12 @@ public class YCBotChallengeClient implements ClientModInitializer {
             pausedReason = null;
             stats.captchaMessage = null;
             HumanTiming.beginSession(config);
+            // Fresh start: after /spawn, a manual zone hop or an AFK gap, old kill
+            // samples describe a different stage — the zone gate re-measures.
+            if (config.resetTtkOnEnable) {
+                stats.onEnable();
+                combat.lastPredictedTtkMs = null;
+            }
         }
         if (on) {
             if (logger == null) {

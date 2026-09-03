@@ -38,7 +38,9 @@ public class HudOverlay {
         if (on) {
             String solving = captcha != null ? captcha.hudLine() : null;
             if (solving != null) lines.add(solving);
-            else if (combat.isOnBreak()) lines.add("§8on break§r");
+            else if (combat.isOnBreak()) {
+                lines.add("§8on break — " + (combat.breakRemainingMs() + 999) / 1000 + "s left (toggle to skip)§r");
+            }
             else lines.add("§7" + combat.stateDescription() + "§r");
             if (combat.dominantDesc != null) lines.add("§7pack: " + combat.dominantDesc + "§r");
             if (combat.ghostsIgnored > 0) lines.add("§8ghosts ignored: " + combat.ghostsIgnored + "§r");

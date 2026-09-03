@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.9.7.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.9.8.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -60,6 +60,7 @@ The sidebar is reread every second: the money row feeds the buy path directly, o
 - `evalFallbackMs` (30000) / `evalOnMoneyIncrease` (true) — upgrade evaluation triggers beyond kills: a timer backstop and any sidebar money increase.
 - `cooldownRelaxBalanceMult` (3.0) — the 60s per-kind cap collapses to `commandCooldownMs` while balance ≥ this × the kind's last price. 0 disables.
 - `cookStallMs` (15000) — `maxCookMs` only abandons a mob whose boss-bar HP has not dropped for this long.
+- `resetTtkOnEnable` (true) — enabling the bot clears the TTK window (`ttk_reset`) so the zone gate re-measures wherever you are: after `/spawn`, a manual zone hop, or an AFK gap. Learned prices are kept.
 - `zoneReadyTtkMs`, `zoneMinReadiness` — legacy (pre-0.9.7 readiness curve); inert.
 - `scoreboardSnapshotMs` (5000) — how often the canonical multi-currency snapshot is published.
 - `sidebarCurrencies` — names parsed from the sidebar (`money`, `souls`, `essence`, `shards`, `credits`).
@@ -86,7 +87,7 @@ The sidebar is reread every second: the money row feeds the buy path directly, o
 - Timing: soft bounds instead of hard clamps (`softClampMarginPct`), rare heavy-tail pauses (`tailChancePerDelay`), per-session bounds jitter (`sessionJitterPct`), fatigue drift (`fatiguePerHour`), and long distractions (`distractionChancePerMinute`, 2–30 s by default).
 - Mouse: fast one-shot flicks with a big swoopy curve (~350 ms for a 30° snap at `aimAgility` 1.0 — the old default `0.4` is auto-migrated). Bump size is tunable via `curveBumpMinPct/MaxPct` (7–22% of flick distance by default), sparse idle tremor only, and small flick-tempo regimes (`agilityRegimes`) so no single Fitts regression fits. `mouseChaining` (mid-path re-targets) exists but is off by default — it reads as servo ticking.
 - Mistakes: `misclickChance`, `wrongTargetChance`, `sprintHitChance`, `typoChancePerChar` (typo + backspace while typing commands).
-- Session theater: `breaksEnabled` with `focusMinutesMin/Max` and `breakMinutesMin/Max`.
+- Session theater: `breaksEnabled` with `focusMinutesMin/Max` and `breakMinutesMin/Max`. Focus counts only time the bot is actually running (never wall clock while it is off), and `breaksResetOnToggle` (default on) makes any toggle, stop or captcha pause end the break and start a fresh focus block — the HUD shows `on break — 142s left (toggle to skip)`. Logged as `focus_start` / `break_start`.
 - `movingTargetPolicy`: `ignore` (default, ghost filter untouched) or `sometimes` (`movingTargetAttackChance`).
 
 ## Captcha auto-solve (local Qwen3-VL)
@@ -106,7 +107,7 @@ Defaults are tuned to Sonar (what the hackathon runs): detection matches its "en
 
 ## How it detects progression
 
-Rebirths: sidebar counter going up = rebirth; counter dropping = reset = ascension (plus chat-message patterns as a second signal, same for prestige). Boosts: boss bar titles, tracked as start/end and stamped into every event's context. Balances: the sidebar rows (`balance` on change, `scoreboard_snapshot` every 5s); the reward summary feeds only the income rate. Zone: own teleport, boss-bar mob level, respawn broadcast or a sidebar Zone row. Log events: `scoreboard_snapshot`, `balance`, `income`, `income_summary`, `upgrade_plan` / `upgrade_skip` (with `via` = kill/money/timer, `ttkMs`, `zoneGate`, `swordFloor`/`zoneFloor`), `upgrade_send`, `upgrade_chat`, `upgrade_result` (`paid`, `extraLevel` for multi-level `/swordmax`), `upgrade_maxed`, `upgrade_response_raw`, `zone_benchmark`, `zone_teleport`, `zone_change`, `boss_level`, `economy_reset`, `target_abandoned` (`sinceHpDropMs`) (plus ninja noise: `misclick`, `target_mispick`, `sprint_hit_slip`, `distracted`, `break_start`, `aim_regime`).
+Rebirths: sidebar counter going up = rebirth; counter dropping = reset = ascension (plus chat-message patterns as a second signal, same for prestige). Boosts: boss bar titles, tracked as start/end and stamped into every event's context. Balances: the sidebar rows (`balance` on change, `scoreboard_snapshot` every 5s); the reward summary feeds only the income rate. Zone: own teleport, boss-bar mob level, respawn broadcast or a sidebar Zone row. Log events: `scoreboard_snapshot`, `balance`, `income`, `income_summary`, `upgrade_plan` / `upgrade_skip` (with `via` = kill/money/timer, `ttkMs`, `zoneGate`, `swordFloor`/`zoneFloor`), `upgrade_send`, `upgrade_chat`, `upgrade_result` (`paid`, `extraLevel` for multi-level `/swordmax`), `upgrade_maxed`, `upgrade_response_raw`, `zone_benchmark`, `zone_teleport`, `zone_change`, `boss_level`, `ttk_reset`, `economy_reset`, `target_abandoned` (`sinceHpDropMs`), `focus_start` (plus ninja noise: `misclick`, `target_mispick`, `sprint_hit_slip`, `distracted`, `break_start`, `aim_regime`).
 
 ## Building from source
 

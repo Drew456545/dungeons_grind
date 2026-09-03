@@ -50,7 +50,14 @@ public class CombatController {
     public String nextTargetDesc = null;
     private long nextActionAt = 0;   // humanized reaction / idle gate
     private long breakUntil = 0;     // break scheduler: inert while now < breakUntil
-    private long nextFocusEndAt = 0;
+    /**
+     * Active-time budget until the next break; -1 = roll a fresh focus block. Counted
+     * from ticks the bot actually runs, never wall clock: the 0.9.7 scheduler kept a
+     * wall-clock deadline, so 49 minutes of the bot being OFF counted as "focus" and
+     * every re-enable landed straight in a break the toggle could not clear.
+     */
+    private long focusRemainingMs = -1;
+    private long lastFocusTickAt = 0;
     private int lastZoneSeq = 0;
     private long lastClickAt = 0;
     /** Set to request the client stop the bot (teleport / player radar); consumed by the main tick. */
@@ -141,6 +148,11 @@ public class CombatController {
         return System.currentTimeMillis() < breakUntil;
     }
 
+    /** Milliseconds left on the current break (0 when not on one) — shown on the HUD. */
+    public long breakRemainingMs() {
+        return Math.max(0, breakUntil - System.currentTimeMillis());
+    }
+
     /** Match any whitelist entry against the full name or any single line of it (NPCs use multi-line plates). */
     private boolean radarWhitelisted(String name) {
         // SidebarParser.strip normalizes unicode small caps (NPC plates on this
@@ -196,6 +208,16 @@ public class CombatController {
         motion.clear();
         radarMotion.clear();
         lastTickPos = null;
+        tagHp = null;
+        lastHpSeen = null;
+        lastHpDropAt = 0;
+        // A toggle, stop or captcha is a human intervention: the "break" is over and a
+        // fresh focus block starts on the next enable (breaksResetOnToggle).
+        if (cfg.breaksResetOnToggle) {
+            breakUntil = 0;
+            focusRemainingMs = -1;
+            lastFocusTickAt = 0;
+        }
         MouseDriver.INSTANCE.cancel();
         releaseKeys(client);
     }
@@ -304,12 +326,20 @@ public class CombatController {
         // break scheduler: human-length breaks between focus blocks
         if (cfg.ninja && cfg.breaksEnabled) {
             if (now < breakUntil) { releaseKeys(client); return; }
-            if (nextFocusEndAt == 0) nextFocusEndAt = now + focusMs();
-            if (now >= nextFocusEndAt) {
+            if (focusRemainingMs < 0) {
+                focusRemainingMs = focusMs();
+                if (logger != null) logger.log("focus_start", "focusMs", focusRemainingMs);
+            }
+            // Only time the bot actually runs counts as focus (gaps over 1s = it was off).
+            long dt = lastFocusTickAt == 0 ? 0 : Math.min(1000, now - lastFocusTickAt);
+            lastFocusTickAt = now;
+            focusRemainingMs -= dt;
+            if (focusRemainingMs <= 0) {
                 breakUntil = now + HumanTiming.logNormalMs(
                     cfg.breakMinutesMin * 60_000, Math.max(cfg.breakMinutesMin * 60_000 + 1, cfg.breakMinutesMax * 60_000));
-                nextFocusEndAt = breakUntil + focusMs();
-                if (logger != null) logger.log("break_start", "durationMs", breakUntil - now);
+                focusRemainingMs = focusMs();
+                lastFocusTickAt = 0;
+                if (logger != null) logger.log("break_start", "durationMs", breakUntil - now, "nextFocusMs", focusRemainingMs);
                 releaseKeys(client);
                 return;
             }
