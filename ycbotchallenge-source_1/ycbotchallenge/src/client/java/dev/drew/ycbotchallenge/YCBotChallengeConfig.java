@@ -432,6 +432,16 @@ public class YCBotChallengeConfig {
      */
     public boolean serverAutoRebirth = true;
     /**
+     * /rebirth probe hygiene (0.9.24). After the diamond click the bot waits this long
+     * for the server's own answer — its fail line, or a rebirth signal (chat line,
+     * sidebar counter, money collapse; all within ~5s) — and a GUI that merely closed
+     * is never read as a rebirth. A probe that never reached the GUI may be re-typed
+     * at most this many times per session; one that did and went unanswered is left
+     * alone (18:37 log: five /rebirth in 80s on an unknown "QQ" suffix).
+     */
+    public int rebirthSignalWaitMs = 6000;
+    public int rebirthProbeMaxRetries = 1;
+    /**
      * Giveaways: the server announces "NEW GIVEAWAY (30s to enter)" / prize / "Click to
      * Enter!" and typing /giveaway joins ("You have joined the giveaway for Current
      * Lootbox!", 2026-09-03; Drew won a Monster Lootbox). Toggle: joining every one
@@ -892,7 +902,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 27;
+    public static final int CURRENT_CONFIG_VERSION = 28;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1124,6 +1134,11 @@ public class YCBotChallengeConfig {
             // floors trigger the seed probe. New knobs take their defaults.
             changed = true;
         }
+        if (configVersion < 28) {
+            // v28: QQ = 1e18 built in; /rebirth probe never loops and a closed GUI is not
+            // a rebirth (rebirthSignalWaitMs, rebirthProbeMaxRetries take their defaults).
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1339,6 +1354,8 @@ public class YCBotChallengeConfig {
             double t = zonePatienceMinMult; zonePatienceMinMult = zonePatienceMaxMult; zonePatienceMaxMult = t;
         }
         if (predictedTtkMaxAgeMs < 0) predictedTtkMaxAgeMs = 4000;
+        if (rebirthSignalWaitMs < 1000) rebirthSignalWaitMs = 6000;
+        if (rebirthProbeMaxRetries < 0) rebirthProbeMaxRetries = 0;
         if (evalFallbackMs < 0) evalFallbackMs = 30_000;
         if (cookStallMs < 0) cookStallMs = 15_000;
         if (minKillsAfterAffordable < 0) minKillsAfterAffordable = 0;

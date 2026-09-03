@@ -74,6 +74,8 @@ public class UpgradeController {
     private int reprobeKillsNeeded = -1;
     private long reprobeDelayMs = 0;
     private boolean reprobeSent = false;
+    /** /rebirth probe re-types this session after an abort that never reached the GUI (capped). */
+    private int rebirthProbeRetries = 0;
     // Buy hesitation on long saves.
     private long hesitatingUntil = 0;
     private String hesitateKind = null;
@@ -429,9 +431,7 @@ public class UpgradeController {
             case GUI_LOOK -> {
                 combat.releaseKeys(client);
                 if (!rebirthGuiOpen(client)) {
-                    if (stats.lastSendSucceeded || (lastSendAt > 0 && !stats.failSince("rebirth", lastSendAt)
-                        && stats.rebirths != null)) {
-                        if (!stats.lastSendSucceeded) stats.onUpgradeSuccess("rebirth", now);
+                    if (Economy.rebirthConfirmed(stats.lastRebirthAt, lastSendAt)) {
                         finish();
                         return false;
                     }
@@ -466,7 +466,7 @@ public class UpgradeController {
                     return false;
                 }
                 phase = Phase.SETTLE;
-                phaseUntil = now + Math.max(cfg.successSilenceMs, 2000);
+                phaseUntil = now + Math.max(cfg.rebirthSignalWaitMs, Math.max(cfg.successSilenceMs, 2000));
             }
             case GUI_ESC -> {
                 combat.releaseKeys(client);
@@ -480,20 +480,24 @@ public class UpgradeController {
         return true;
     }
 
+    /**
+     * After the diamond click: the server's fail line ends it (price learned, or an
+     * unknown amount logged), the server's own rebirth signal ends it (the reset
+     * already ran from that signal), and nothing else does — a closed GUI is waited
+     * out for rebirthSignalWaitMs and then aborted without touching the economy.
+     */
     private boolean settleRebirth(MinecraftClient client, long now) {
         if (stats.failSince("rebirth", lastSendAt)) {
             closeRebirthGui(client);
             finish();
             return false;
         }
-        boolean guiGone = !rebirthGuiOpen(client);
-        if (stats.lastSendSucceeded || guiGone) {
-            if (!stats.lastSendSucceeded) stats.onUpgradeSuccess("rebirth", now);
+        if (Economy.rebirthConfirmed(stats.lastRebirthAt, lastSendAt)) {
             finish();
             return false;
         }
         if (now < phaseUntil) return true;
-        abort(client, "rebirth-timeout");
+        abort(client, rebirthGuiOpen(client) ? "rebirth-timeout" : "no-signal");
         return false;
     }
 
@@ -899,9 +903,17 @@ public class UpgradeController {
         closeOurChat(client);
         closeRebirthGui(client);
         if (pendingKind == Kind.REBIRTH && stats.rebirthTarget == null) {
-            stats.unseed("rebirth");
-            queue.add(new PendingCmd(cfg.rebirthCommand, Kind.REBIRTH,
-                System.currentTimeMillis() + HumanTiming.logNormalMs(8_000, 20_000), false));
+            if (Economy.rebirthProbeRetryAllowed(why, rebirthProbeRetries, cfg.rebirthProbeMaxRetries)) {
+                rebirthProbeRetries++;
+                stats.unseed("rebirth");
+                queue.add(new PendingCmd(cfg.rebirthCommand, Kind.REBIRTH,
+                    System.currentTimeMillis() + HumanTiming.logNormalMs(8_000, 20_000), false));
+                if (logger != null) logger.log("rebirth_probe_retry", "reason", why, "retry", rebirthProbeRetries);
+            } else if (logger != null) {
+                // Unresolved: the next look at /rebirth is the deferred re-probe after the
+                // next rebirth, or the next session's seed — never a re-type in seconds.
+                logger.log("rebirth_probe_unresolved", "reason", why, "retries", rebirthProbeRetries);
+            }
         }
         phase = Phase.IDLE;
         pending = null;

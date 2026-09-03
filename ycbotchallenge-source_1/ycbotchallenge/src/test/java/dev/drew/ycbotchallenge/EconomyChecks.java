@@ -58,6 +58,7 @@ public final class EconomyChecks {
         n += rebirthUpgrades();
         n += instantKills();
         n += patience();
+        n += rebirthProbe();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -87,14 +88,21 @@ public final class EconomyChecks {
         n += eq("parens (1.09T)", Amounts.parse("(1.09T)"), 1.09e12, 1e6);
         n += eq("235 SHARDS not suffix", Amounts.parse("235 SHARDS"), 235.0, 1e-6);
         n += eq("format B", Amounts.format(131.56e9), "131.56B");
-        // Server suffix order K M B T Q Qa Qi (Drew: T -> Q -> Qa); 0.9.19 fixes Qa = 1e18.
+        // Server suffix order K M B T Q QQ: the server's quintillion is "QQ" (2026-09-03 18:43,
+        // rebirth GUI: "You need $20.xQQ Money to Rebirth." after a 2.66Q balance). Qa is an alias.
         n += eq("2Q", Amounts.parse("2Q"), 2e15, 1e6);
-        n += eq("1.5Qa", Amounts.parse("1.5Qa"), 1.5e18, 1e9);
+        n += eq("20.5QQ", Amounts.parse("20.5QQ"), 20.5e18, 1e9);
+        n += eq("$20.5QQ", Amounts.parse("$20.5QQ"), 20.5e18, 1e9);
+        n += eq("1.5Qa alias", Amounts.parse("1.5Qa"), 1.5e18, 1e9);
         n += eq("3Qi", Amounts.parse("3Qi"), 3e21, 1e12);
         n += eq("4Sx", Amounts.parse("4Sx"), 4e24, 1e15);
         n += eq("format Q", Amounts.format(1.25e15), "1.25Q");
-        n += eq("format Qa", Amounts.format(1.5e18), "1.5Qa");
+        n += eq("format QQ", Amounts.format(1.5e18), "1.5QQ");
         n += eq("suffix of 1.25Qa", Amounts.suffixOf("1.25Qa"), "Qa");
+        n += eq("suffix of 20.5QQ", Amounts.suffixOf("20.5QQ"), "QQ");
+        n += eq("QQ known", Amounts.knownSuffix("QQ"), true);
+        n += eq("QQQ unknown", Amounts.knownSuffix("QQQ"), false);
+        n += eq("bare number known", Amounts.knownSuffix(""), true);
         n += eq("suffix of $29.99T", Amounts.suffixOf("$29.99T"), "T");
         n += eq("suffix of 58", Amounts.suffixOf("58"), "");
 
@@ -847,6 +855,44 @@ public final class EconomyChecks {
         n += eq("fresh floor -> no probe", Economy.rebirthFloorStale(900e12, 585.71e12, 0.0), false);
         n += eq("no floor -> unknown account path", Economy.rebirthFloorStale(null, 155.44e15, 0.0), false);
         n += eq("margin respected", Economy.rebirthFloorStale(900e12, 1000e12, 0.5), false);
+        return n;
+    }
+
+    /**
+     * 0.9.24, from events-baseline-2026-09-03T18-37-16 + latest.log 12:43:03 ("Unknown
+     * amount suffix 'QQ'"): the stale-floor probe clicked the diamond, the server answered
+     * with a QQ gap the parser could not scale, so no fail was recorded, the probe timed
+     * out, the abort path re-typed /rebirth five times in 80s, and the fifth read a closed
+     * GUI as a rebirth (economy_reset via upgrade-success at 2.66Q). The QQ line below is
+     * reconstructed from Drew's report ("you need 20.x QQ"), not a verbatim capture.
+     */
+    private static int rebirthProbe() {
+        int n = 0;
+        Pattern need = loose(CFG.upgradeNeedAmountPattern);
+        String qq = " You need $20.5QQ Money to Rebirth.";
+        n += eq("QQ line is a fail shape", looseAll(CFG.upgradeFailPatterns).stream().anyMatch(p -> p.matcher(qq).find()), true);
+        n += eq("QQ token extracted", ChatClassifier.needAmountToken(qq, need), "20.5QQ");
+        n += eq("QQ gap parses now", ChatClassifier.needAmount(qq, need), 20.5e18, 1e9);
+        n += eq("QQ line is rebirth", ChatClassifier.kindOf(qq, null), "rebirth");
+        n += eq("token on a still-unknown suffix", ChatClassifier.needAmountToken(" You need $3.1QQQ Money to Rebirth.", need), "3.1QQQ");
+        n += eq("no token on noise", ChatClassifier.needAmountToken("Zone Boss has been Defeated", need) == null, true);
+        n += eq("verbatim T line still parses", ChatClassifier.needAmount(REBIRTH_NEED, need), 29.99e12, 1e6);
+
+        // The probe never loops on an unanswered GUI; only a probe that never got there retries, once.
+        n += eq("timeout: no retry", Economy.rebirthProbeRetryAllowed("rebirth-timeout", 0, 1), false);
+        n += eq("no-signal: no retry", Economy.rebirthProbeRetryAllowed("no-signal", 0, 1), false);
+        n += eq("gui-closed: no retry", Economy.rebirthProbeRetryAllowed("gui-closed", 0, 1), false);
+        n += eq("no-gui: one retry", Economy.rebirthProbeRetryAllowed("no-gui", 0, 1), true);
+        n += eq("no-gui: second retry refused", Economy.rebirthProbeRetryAllowed("no-gui", 1, 1), false);
+        n += eq("no-diamond: retry", Economy.rebirthProbeRetryAllowed("no-diamond", 0, 1), true);
+        n += eq("retries disabled", Economy.rebirthProbeRetryAllowed("no-gui", 0, 0), false);
+
+        // A rebirth is confirmed only by the server's own signal after our send.
+        long send = 1_788_461_000_000L;
+        n += eq("signal after send confirms", Economy.rebirthConfirmed(send + 1200, send), true);
+        n += eq("old signal does not", Economy.rebirthConfirmed(send - 60_000, send), false);
+        n += eq("no signal does not", Economy.rebirthConfirmed(0, send), false);
+        n += eq("no send does not", Economy.rebirthConfirmed(send + 1200, 0), false);
         return n;
     }
 

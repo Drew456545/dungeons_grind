@@ -111,6 +111,30 @@ public final class Economy {
     }
 
     /**
+     * A /rebirth probe that opened the GUI and got no answer it understood is not
+     * re-typed (18:37 log: an unknown "QQ" suffix turned every probe into a timeout and
+     * the abort path re-queued /rebirth five times in 80s, then read a closed GUI as a
+     * rebirth and wiped the learned prices). Only a probe that never reached the GUI
+     * ("no-gui": the typed command was eaten, "no-diamond": an unexpected layout) may
+     * retry, and at most {@code maxRetries} times per session.
+     */
+    public static boolean rebirthProbeRetryAllowed(String abortReason, int retriesSoFar, int maxRetries) {
+        if (abortReason == null) return false;
+        if (!"no-gui".equals(abortReason) && !"no-diamond".equals(abortReason)) return false;
+        return retriesSoFar < Math.max(0, maxRetries);
+    }
+
+    /**
+     * A rebirth is only ever confirmed by the server's own signals (its chat line, the
+     * sidebar counter, the money collapse — all of which land within ~5s of the click);
+     * a GUI that merely closed is not one (18:37 log: "success via silence" on the
+     * fifth probe with the balance still 2.66Q).
+     */
+    public static boolean rebirthConfirmed(long lastRebirthAt, long sendAt) {
+        return sendAt > 0 && lastRebirthAt >= sendAt;
+    }
+
+    /**
      * Hard zone gate: zone is allowed only with a KNOWN effective TTK at or under
      * {@code maxTtkMs}, affordable or not. Unknown TTK refuses (wait for data);
      * {@code maxTtkMs <= 0} disables the gate. This is what keeps the sword ahead

@@ -82,6 +82,23 @@ public final class ChatClassifier {
         return amountGroup(stripped, needAmountRe);
     }
 
+    /**
+     * The raw amount token of a need line ("20.5QQ" from "You need $20.5QQ Money to
+     * Rebirth."), whether or not its suffix is known — so an unknown suffix is logged
+     * as evidence and the send still resolves as a fail instead of a timeout (0.9.24).
+     */
+    public static String needAmountToken(String stripped, Pattern needAmountRe) {
+        if (stripped == null || needAmountRe == null) return null;
+        Matcher m = needAmountRe.matcher(stripped);
+        if (!m.find()) return null;
+        try {
+            String tok = m.group("amount");
+            return tok == null ? null : tok.trim();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
     /** Summary payout amount, e.g. " + 17.19B Money" (money lines only). */
     public static Double summaryMoney(String stripped, Pattern moneyRe) {
         return amountGroup(stripped, moneyRe);

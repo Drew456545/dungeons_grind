@@ -1144,6 +1144,20 @@ public class StatsTracker {
 
         boolean failShape = anyMatch(upgradeFailRes, text);
         Double gap = ChatClassifier.needAmount(text, needAmountRe);
+        if (gap == null) {
+            // The line names an amount we cannot scale ("$20.5QQ" before 0.9.24 knew QQ):
+            // keep the evidence and still resolve the send as a fail, never a timeout.
+            String tok = ChatClassifier.needAmountToken(text, needAmountRe);
+            if (tok != null && !Amounts.knownSuffix(Amounts.suffixOf(tok))) {
+                String kind = ChatClassifier.kindOf(text, lastUpgradeKind);
+                log("amount_unknown", "kind", kind, "token", tok, "suffix", Amounts.suffixOf(tok), "raw", text);
+                if (kind != null) {
+                    upgradeChatFrag = null;
+                    onFailUnknownAmount(kind, text, now);
+                    return true;
+                }
+            }
+        }
         if (failShape && gap == null) {
             // First half of a split fail ("You don't have enough...") — wait for the amount line.
             upgradeChatFrag = text;
@@ -1155,6 +1169,16 @@ public class StatsTracker {
         if (kind == null) return false;
         onFail(kind, gap, text, now);
         return true;
+    }
+
+    /** A fail line whose amount could not be scaled: the send failed, the price stays unknown. */
+    private void onFailUnknownAmount(String kind, String raw, long now) {
+        if ("zone".equals(kind)) { zoneExploratorySent = false; lastZoneFailAt = now; }
+        else if ("rebirth".equals(kind)) { rebirthExploratorySent = false; lastRebirthFailAt = now; }
+        else { swordExploratorySent = false; lastSwordFailAt = now; }
+        log("upgrade_chat", "kind", kind, "gap", null, "target", null,
+            "balance", money() != null ? Amounts.format(money()) : null, "raw", raw, "unknownAmount", true);
+        log("upgrade_result", "kind", kind, "success", false, "fail", true, "message", raw, "via", "unknown-amount");
     }
 
     private void onFail(String kind, double gap, String raw, long now) {
