@@ -796,6 +796,10 @@ public class StatsTracker {
      * economy so the loop re-discovers post-rebirth prices from scratch.
      */
     private void rebirthReset(String via) {
+        // Back on stage 1: the old level is meaningless until a bar shows the new one.
+        bossLevel = null;
+        pendingBossLevel = null;
+        pendingBossLevelPolls = 0;
         // One rebirth arrives as up to three signals (chat line, money collapse, sidebar
         // counter) within seconds; the first one does the reset.
         long nowMs = System.currentTimeMillis();
@@ -913,9 +917,22 @@ public class StatsTracker {
         onZoneChange("bossbar-level");
     }
 
-    /** Our own zone advance confirmed by the teleport — same reset as any other zone signal. */
+    /**
+     * Our own zone advance confirmed by the teleport — same reset as any other zone
+     * signal, plus the boss-bar level is no longer trusted: the new stage's level is
+     * only known once a hit raises its bar (0.9.27: the zone-level target filter stays
+     * off until then; the label after a teleport lags by that much).
+     */
     public void onZoneAdvance(String via) {
+        bossLevel = null;
+        pendingBossLevel = null;
+        pendingBossLevelPolls = 0;
         onZoneChange(via);
+    }
+
+    /** The stage the boss bar last confirmed ("LVL7" prefix, two polls), or null after a teleport/rebirth. */
+    public Integer confirmedZoneLevel() {
+        return bossLevel;
     }
 
     /**

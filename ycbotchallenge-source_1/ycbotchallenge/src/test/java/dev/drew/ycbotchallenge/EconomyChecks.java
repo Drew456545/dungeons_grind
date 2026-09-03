@@ -63,6 +63,7 @@ public final class EconomyChecks {
         n += suffixLearning();
         n += typer();
         n += ballot();
+        n += zoneLevel();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1157,6 +1158,44 @@ public final class EconomyChecks {
         n += eq("all agree leader", g.leader(List.of()), "pnGe");
         g.clear();
         n += eq("cleared", g.reads(), 0);
+        return n;
+    }
+
+    /**
+     * 0.9.27 stay-in-your-zone, from the 20:35 log: plates "LVL7 Donkey ❤69B" (no rarity —
+     * the common shape, which the old regex did not parse at all), "[RARE] LVL9 Mooshroom
+     * ❤2.3B", "[AFKMOB] LVL9 Mooshroom ❤∞"; a Chicken (level 1) picked in zone 7.
+     */
+    private static int zoneLevel() {
+        int n = 0;
+        CombatController.Plate p = CombatController.parsePlate("LVL7 Donkey ❤69B");
+        n += eq("plain plate parses", p != null, true);
+        n += eq("plain plate level", p != null ? p.level() : null, 7);
+        n += eq("plain plate mob", p != null ? p.mob() : null, "Donkey");
+        n += eq("plain plate no rarity", p != null && p.rarity() == null, true);
+        p = CombatController.parsePlate("[RARE] LVL9 Mooshroom ❤2.3B");
+        n += eq("tagged plate rarity", p != null ? p.rarity() : null, "RARE");
+        n += eq("tagged plate level", p != null ? p.level() : null, 9);
+        n += eq("tagged plate mob", p != null ? p.mob() : null, "Mooshroom");
+        p = CombatController.parsePlate("[AFKMOB] LVL9 Mooshroom ❤∞");
+        n += eq("afk plate rarity", p != null ? p.rarity() : null, "AFKMOB");
+        n += eq("afk plate level", p != null ? p.level() : null, 9);
+        p = CombatController.parsePlate("[LEGENDARY] Chicken");
+        n += eq("no level", p != null && p.level() == null, true);
+        n += eq("no level mob", p != null ? p.mob() : null, "Chicken");
+        p = CombatController.parsePlate("LVL1 Chicken ❤116");
+        n += eq("chicken level 1", p != null ? p.level() : null, 1);
+        n += eq("upgrade line has no level", CombatController.parsePlate("RIGHT CLICK TO UPGRADE").level() == null, true);
+        n += eq("null line", CombatController.parsePlate(null) == null, true);
+
+        n += eq("chicken in zone 7 rejected", Economy.sameZoneLevel(1, 7), false);
+        n += eq("donkey in zone 7 ok", Economy.sameZoneLevel(7, 7), true);
+        n += eq("unknown plate level: no opinion", Economy.sameZoneLevel(null, 7), true);
+        n += eq("unknown zone level: no opinion", Economy.sameZoneLevel(7, null), true);
+        n += eq("zone level of lvl10", Economy.zoneLevelOf("lvl10"), 10);
+        n += eq("zone level of LVL7", Economy.zoneLevelOf("LVL7"), 7);
+        n += eq("zone level of null", Economy.zoneLevelOf(null) == null, true);
+        n += eq("zone level of junk", Economy.zoneLevelOf("Dungeons") == null, true);
         return n;
     }
 

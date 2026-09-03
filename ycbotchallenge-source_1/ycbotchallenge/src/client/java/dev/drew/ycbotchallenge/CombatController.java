@@ -29,9 +29,32 @@ import net.minecraft.util.math.Vec3d;
  * death, the handoff is already done.
  */
 public class CombatController {
+    /**
+     * Plate shapes on this server: "[RARE] LVL9 Mooshroom ❤2.3B", "LVL7 Donkey ❤69B" (no
+     * rarity — the common case; 0.9.27 made the tag optional so the level parses for every
+     * mob), "[AFKMOB] LVL9 Mooshroom ❤∞".
+     */
     private static final Pattern NAMEPLATE = Pattern.compile(
-        "^\\[(?<rarity>[^\\]]+)\\]\\s*(?:\\[?(?:Level|Lvl?\\.?)\\s*(?<level>\\d+)\\]?)?\\s*(?<mob>.+?)(?:\\s*[♥❤].*)?$",
+        "^(?:\\[(?<rarity>[^\\]]+)\\]\\s*)?(?:\\[?(?:Level|Lvl?\\.?)\\s*(?<level>\\d+)\\]?)?\\s*(?<mob>.+?)(?:\\s*[♥❤].*)?$",
         Pattern.CASE_INSENSITIVE);
+
+    /** Parsed plate: rarity (null when untagged), level (null when absent), mob name. */
+    record Plate(String rarity, Integer level, String mob) {}
+
+    /** Pure plate parse for one line, or null when the line is not a nameplate at all. */
+    static Plate parsePlate(String line) {
+        if (line == null) return null;
+        Matcher m = NAMEPLATE.matcher(line.trim());
+        if (!m.matches()) return null;
+        String rarity = m.group("rarity");
+        Integer level = null;
+        if (m.group("level") != null) {
+            try { level = Integer.parseInt(m.group("level")); } catch (NumberFormatException ignored) {}
+        }
+        String mob = m.group("mob") != null ? m.group("mob").trim() : null;
+        if (mob == null || mob.isEmpty()) return null;
+        return new Plate(rarity != null ? rarity.trim() : null, level, mob);
+    }
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
@@ -137,6 +160,8 @@ public class CombatController {
     private final java.util.Set<Integer> ignoredLogged = new java.util.HashSet<>();
     /** Entity ids ignored for the session by evidence that arrives after the pick (its boss bar) or by hand (Ctrl+toggle). */
     private final java.util.Set<Integer> ignoredIds = new java.util.HashSet<>();
+    /** Entity ids already logged as another zone's mob (target_offzone). */
+    private final java.util.Set<Integer> offzoneLogged = new java.util.HashSet<>();
     /** Manual marks (kind + position), persisted. */
     private IgnoreStore ignoreStore;
     /** Plate entities (text displays, named armor stands) near the player, refreshed at most every 250ms. */
@@ -1152,6 +1177,22 @@ public class CombatController {
             if (ignoredLogged.size() > 4096) ignoredLogged.clear();
             return false;
         }
+        // Stay in your zone (0.9.27): the plate carries the stage ("LVL7 Donkey"); a mob whose
+        // level differs from the boss-bar-confirmed zone level is a neighbour's, however
+        // close it stands. 20:35 log: a Chicken picked in zone 7 right after a respawn
+        // broadcast, and a stray neighbour species in every zone of the session.
+        if (cfg.targetZoneLevelOnly) {
+            Integer zoneLevel = stats.confirmedZoneLevel();
+            Integer plateLevel = plateLevel(client, le);
+            if (!Economy.sameZoneLevel(plateLevel, zoneLevel)) {
+                if (offzoneLogged.add(e.getId()) && logger != null) {
+                    logger.log("target_offzone", "mob", typeName(le), "plateLevel", plateLevel, "zoneLevel", zoneLevel,
+                        "entityId", e.getId());
+                }
+                if (offzoneLogged.size() > 4096) offzoneLogged.clear();
+                return false;
+            }
+        }
         if (!inZone(e.getEntityPos())) return false;
         if (cfg.stationaryOnly) {
             if (ghosts.contains(e.getId()) && !mayAttackMoving()) return false;
@@ -1287,10 +1328,14 @@ public class CombatController {
     }
 
     private String parseRarity(LivingEntity e) {
-        String plate = plateName(MinecraftClient.getInstance(), e);
-        if (plate == null) return null;
-        Matcher m = NAMEPLATE.matcher(plate.trim());
-        return m.matches() ? m.group("rarity").trim().toUpperCase() : null;
+        Plate p = parsePlate(plateName(MinecraftClient.getInstance(), e));
+        return p != null && p.rarity() != null ? p.rarity().toUpperCase(java.util.Locale.ROOT) : null;
+    }
+
+    /** The stage printed on the mob's plate ("LVL7 Donkey" → 7), or null. */
+    private Integer plateLevel(MinecraftClient client, LivingEntity e) {
+        Plate p = parsePlate(plateName(client, e));
+        return p != null ? p.level() : null;
     }
 
     private double rarityBonus(String rarity) {
@@ -1304,8 +1349,9 @@ public class CombatController {
     private String describe(LivingEntity e) {
         String plate = plateName(MinecraftClient.getInstance(), e);
         if (plate == null) return typeName(e);
-        Matcher m = NAMEPLATE.matcher(plate.trim());
-        return m.matches() ? "[" + m.group("rarity") + "] " + m.group("mob") : plate;
+        Plate p = parsePlate(plate);
+        if (p == null) return plate;
+        return (p.rarity() != null ? "[" + p.rarity() + "] " : "") + p.mob();
     }
 
     private static String typeName(Entity e) {
@@ -1320,7 +1366,10 @@ public class CombatController {
         Text custom = e.getCustomName();
         if (custom != null) return custom.getString();
         List<String> lines = plateLines(client, e);
-        for (String l : lines) if (NAMEPLATE.matcher(l.trim()).matches()) return l;
+        for (String l : lines) {
+            Plate p = parsePlate(l);
+            if (p != null && (p.level() != null || p.rarity() != null)) return l;
+        }
         return lines.isEmpty() ? null : lines.get(0);
     }
 
@@ -1487,11 +1536,11 @@ public class CombatController {
         targetMob = typeName(e);
         String plate = plateName(MinecraftClient.getInstance(), e);
         if (plate != null) {
-            Matcher m = NAMEPLATE.matcher(plate.trim());
-            if (m.matches()) {
-                targetRarity = m.group("rarity");
-                try { targetLevel = Integer.parseInt(m.group("level")); } catch (NumberFormatException ignored) {}
-                targetMob = m.group("mob");
+            Plate p = parsePlate(plate);
+            if (p != null) {
+                targetRarity = p.rarity();
+                targetLevel = p.level();
+                targetMob = p.mob();
             } else if (e.getCustomName() != null) {
                 targetMob = plate;
             }

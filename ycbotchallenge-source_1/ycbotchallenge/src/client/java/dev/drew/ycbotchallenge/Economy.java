@@ -385,6 +385,24 @@ public final class Economy {
         return type.equalsIgnoreCase(markType) && dist <= Math.max(0, radius);
     }
 
+    /**
+     * Stay in your zone (0.9.27): a mob is a candidate only when its plate level matches
+     * the boss-bar-confirmed zone level. Either side unknown = no opinion (the dominant
+     * pack filter carries those seconds, as before).
+     */
+    public static boolean sameZoneLevel(Integer plateLevel, Integer zoneLevel) {
+        if (plateLevel == null || zoneLevel == null) return true;
+        return plateLevel.intValue() == zoneLevel.intValue();
+    }
+
+    /** "lvl7" → 7, anything else → null. */
+    public static Integer zoneLevelOf(String zone) {
+        if (zone == null) return null;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)lvl\\s*(\\d+)").matcher(zone.trim());
+        if (!m.find()) return null;
+        try { return Integer.parseInt(m.group(1)); } catch (NumberFormatException e) { return null; }
+    }
+
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);

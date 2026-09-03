@@ -388,6 +388,15 @@ public class YCBotChallengeConfig {
     public boolean captchaVlmModelAuto = true;
     /** Stricter: pause on ANY screen opening (including chat/inventory you open yourself). */
     public boolean pauseOnAnyScreen = false;
+    /**
+     * Stay in your zone (0.9.27): a mob whose plate level ("LVL7 Donkey") differs from the
+     * boss-bar-confirmed zone level is never a candidate — targetRange (50) reaches the
+     * neighbouring zones and the dominant filter drops out while the local pack respawns
+     * (20:35 log: a Chicken picked in zone 7 right after the respawn broadcast, and a
+     * stray neighbour species in every zone). Off until the first hit of a new stage
+     * confirms its level. Rejections log target_offzone once per mob.
+     */
+    public boolean targetZoneLevelOnly = true;
     /** Target the majority mob type in range — skips stale leftovers from the previous stage. */
     public boolean targetDominant = true;
     /** Dominant filtering only kicks in when the top mob type has at least this many alive in range. */
@@ -966,7 +975,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 30;
+    public static final int CURRENT_CONFIG_VERSION = 31;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1214,6 +1223,10 @@ public class YCBotChallengeConfig {
             // the AFK mob, Ctrl+toggle marks a mob ignored; captcha answers come from a
             // running ballot over several renders and a map still held after the answer
             // is the rejection (new knobs take their defaults).
+            changed = true;
+        }
+        if (configVersion < 31) {
+            // v31: targetZoneLevelOnly — the plate level keeps the bot on its own stage's mobs.
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;
