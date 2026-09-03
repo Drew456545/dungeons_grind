@@ -153,6 +153,32 @@ public class CombatController {
         return Math.max(0, breakUntil - System.currentTimeMillis());
     }
 
+    /**
+     * A tag has connected and the mob's boss bar is still up — the server is
+     * auto-attacking it. Checked against the live bar (not the cached flag) so a
+     * controller that pauses combat still sees the kill land.
+     */
+    public boolean isCooking() {
+        return connected && target != null && stats.bossBarMatches(targetMob);
+    }
+
+    /** Start of the current cook (tag time), or -1 when not cooking. */
+    public long cookStartMs() {
+        return connected ? tagAt : -1;
+    }
+
+    public long cookElapsedMs() {
+        return connected ? System.currentTimeMillis() - tagAt : 0;
+    }
+
+    /** Remaining time on the current mob from the live boss-bar HP and the measured DPS, or null. */
+    public Double liveEtaMs() {
+        if (!connected || targetMob == null) return null;
+        Double hp = stats.currentHpFor(targetMob);
+        if (hp == null || currentDps == null || currentDps <= 0) return null;
+        return hp / currentDps * 1000.0;
+    }
+
     /** Match any whitelist entry against the full name or any single line of it (NPCs use multi-line plates). */
     private boolean radarWhitelisted(String name) {
         // SidebarParser.strip normalizes unicode small caps (NPC plates on this

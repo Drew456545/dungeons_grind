@@ -318,6 +318,64 @@ public class YCBotChallengeConfig {
     /** Look-at-menu pause after Rebirth GUI opens, before Esc or diamond click. */
     public int rebirthLookMinMs = 800;
     public int rebirthLookMaxMs = 2000;
+
+    // --- Enchants during long kills (SWORD ENCHANTER, right-click with the sword) ---
+
+    /** Visit the enchanter during long kills and Max-Upgrade the first unlocked, non-maxed, affordable enchant per tab. */
+    public boolean enchantsEnabled = true;
+    /** Only when the mob's predicted remaining time is at least this (fresh-stage 50–120s kills; never the 4s ones). */
+    public int enchantMinEtaMs = 45_000;
+    /** Cook this long before opening the menu (the DPS/ETA read needs a few samples). */
+    public int enchantCookSettleMs = 3_000;
+    /** Log-normal gap between visits, re-rolled after every visit — never a fixed interval. */
+    public int enchantVisitGapMinMs = 150_000;
+    public int enchantVisitGapMaxMs = 330_000;
+    /** Chance to simply not bother on a qualifying kill. */
+    public double enchantSkipChance = 0.25;
+    /** A visit needs at least one tab currency to have grown this much since the last visit. */
+    public double enchantMinBalanceGrowthPct = 0.10;
+    /** Wrap the visit up (finish the click in flight, close) once the mob has this little time left. */
+    public int enchantWrapUpEtaMs = 5_000;
+    /** Time allowed for the GUI to appear after the right-click / an enchant click. */
+    public int enchantOpenTimeoutMs = 2_500;
+    /** Human pauses: look at the menu, after a tab click, after a purchase. */
+    public int enchantLookMinMs = 800;
+    public int enchantLookMaxMs = 2_000;
+    public int enchantTabSettleMinMs = 400;
+    public int enchantTabSettleMaxMs = 900;
+    public int enchantBuySettleMinMs = 1_200;
+    public int enchantBuySettleMaxMs = 2_500;
+    /** Hard cap on one visit; the menu is closed when it elapses. */
+    public int enchantMaxMenuMs = 40_000;
+    public int enchantMaxBuysPerVisit = 6;
+    /** Open the menu via the interaction manager instead of a synthetic use-key press (fallback). */
+    public boolean enchantOpenViaInteract = false;
+    /** After this many aborted visits in a row (menu never opens, GUI keeps vanishing) stop trying until the next toggle. */
+    public int enchantMaxConsecutiveAborts = 3;
+    /**
+     * A container's slot contents arrive a tick after its screen opens. Any container
+     * younger than this is left alone (neither enchanter nor captcha) so a hand-opened
+     * enchanter is never classified while still empty.
+     */
+    public int guiRecognizeGraceMs = 300;
+    /** Tab button names, in the order they are visited; each is also the sidebar currency it spends. */
+    public List<String> enchantTabs = List.of("souls", "essence", "shards");
+    /** Lore line that identifies the enchanter GUI by content (its title is formatting-only). */
+    public String enchantSignaturePattern = "/activation chance/";
+    /** "Level: 1,321 / 2,000" → current / max. */
+    public String enchantLevelPattern = "/\\blevel:\\s*(?<cur>[\\d,]+)\\s*\\/\\s*(?<max>[\\d,]+)/";
+    /** "Price: 7,105,000 Souls" → amount + currency (the currency word is never swallowed as a suffix). */
+    public String enchantPricePattern =
+        "/\\bprice:\\s*(?<amount>[\\d,.]+(?:\\s*(?!souls|essence|shards)[A-Za-z]{1,4})?)\\s*(?<currency>souls|essence|shards)/";
+    /** "LOCKED (Requires Sword Level 50)" — never clicked. */
+    public String enchantLockedPattern = "/^\\W*locked\\b/";
+    /** Max Upgrade hopper lore "* Levels: 1" → levels the click would buy (0 = unaffordable). */
+    public String enchantMaxLevelsPattern = "/\\blevels:\\s*(?<n>[\\d,]+)/";
+    public String enchantMaxUpgradeName = "max upgrade";
+    /** The sub-GUI title ("Soul Magnet Upgrade") — that one IS plain text. */
+    public String enchantUpgradeTitlePattern = "/\\bupgrade\\s*$/";
+    /** The held item counts as the sword when its name or lore matches. */
+    public String enchantSwordPattern = "/\\bsword\\b|enchants:/";
     /** Legacy: inert since the kill-driven scheduler replaced the fixed buy timer. */
     public int upgradePeriodMinMs = 132_000;
     public int upgradePeriodMaxMs = 240_000;
@@ -525,7 +583,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 12;
+    public static final int CURRENT_CONFIG_VERSION = 13;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -637,6 +695,19 @@ public class YCBotChallengeConfig {
             resetTtkOnEnable = fresh.resetTtkOnEnable;
             changed = true;
         }
+        if (configVersion < 13) {
+            // v13: enchant upgrades during long kills — evidence-based lore patterns.
+            enchantTabs = fresh.enchantTabs;
+            enchantSignaturePattern = fresh.enchantSignaturePattern;
+            enchantLevelPattern = fresh.enchantLevelPattern;
+            enchantPricePattern = fresh.enchantPricePattern;
+            enchantLockedPattern = fresh.enchantLockedPattern;
+            enchantMaxLevelsPattern = fresh.enchantMaxLevelsPattern;
+            enchantMaxUpgradeName = fresh.enchantMaxUpgradeName;
+            enchantUpgradeTitlePattern = fresh.enchantUpgradeTitlePattern;
+            enchantSwordPattern = fresh.enchantSwordPattern;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -683,6 +754,31 @@ public class YCBotChallengeConfig {
         if (zoneOverSwordRatio <= 0) zoneOverSwordRatio = 1.25;
         if (commandCooldownMs < 0) commandCooldownMs = 1100;
         if (rebirthLookMaxMs < rebirthLookMinMs) rebirthLookMaxMs = rebirthLookMinMs;
+        YCBotChallengeConfig freshEnchant = new YCBotChallengeConfig();
+        if (enchantTabs == null || enchantTabs.isEmpty()) enchantTabs = freshEnchant.enchantTabs;
+        if (enchantSignaturePattern == null || enchantSignaturePattern.isBlank()) enchantSignaturePattern = freshEnchant.enchantSignaturePattern;
+        if (enchantLevelPattern == null || enchantLevelPattern.isBlank()) enchantLevelPattern = freshEnchant.enchantLevelPattern;
+        if (enchantPricePattern == null || enchantPricePattern.isBlank()) enchantPricePattern = freshEnchant.enchantPricePattern;
+        if (enchantLockedPattern == null || enchantLockedPattern.isBlank()) enchantLockedPattern = freshEnchant.enchantLockedPattern;
+        if (enchantMaxLevelsPattern == null || enchantMaxLevelsPattern.isBlank()) enchantMaxLevelsPattern = freshEnchant.enchantMaxLevelsPattern;
+        if (enchantMaxUpgradeName == null || enchantMaxUpgradeName.isBlank()) enchantMaxUpgradeName = freshEnchant.enchantMaxUpgradeName;
+        if (enchantUpgradeTitlePattern == null || enchantUpgradeTitlePattern.isBlank()) enchantUpgradeTitlePattern = freshEnchant.enchantUpgradeTitlePattern;
+        if (enchantSwordPattern == null || enchantSwordPattern.isBlank()) enchantSwordPattern = freshEnchant.enchantSwordPattern;
+        if (enchantMinEtaMs < 0) enchantMinEtaMs = 45_000;
+        if (enchantCookSettleMs < 0) enchantCookSettleMs = 3_000;
+        if (enchantVisitGapMinMs < 0) enchantVisitGapMinMs = 150_000;
+        if (enchantVisitGapMaxMs < enchantVisitGapMinMs) enchantVisitGapMaxMs = enchantVisitGapMinMs;
+        if (enchantSkipChance < 0 || enchantSkipChance > 1) enchantSkipChance = 0.25;
+        if (enchantMinBalanceGrowthPct < 0) enchantMinBalanceGrowthPct = 0;
+        if (enchantWrapUpEtaMs < 0) enchantWrapUpEtaMs = 5_000;
+        if (enchantOpenTimeoutMs < 500) enchantOpenTimeoutMs = 2_500;
+        if (enchantLookMaxMs < enchantLookMinMs) enchantLookMaxMs = enchantLookMinMs;
+        if (enchantTabSettleMaxMs < enchantTabSettleMinMs) enchantTabSettleMaxMs = enchantTabSettleMinMs;
+        if (enchantBuySettleMaxMs < enchantBuySettleMinMs) enchantBuySettleMaxMs = enchantBuySettleMinMs;
+        if (enchantMaxMenuMs < 5_000) enchantMaxMenuMs = 40_000;
+        if (enchantMaxBuysPerVisit < 1) enchantMaxBuysPerVisit = 6;
+        if (enchantMaxConsecutiveAborts < 1) enchantMaxConsecutiveAborts = 3;
+        if (guiRecognizeGraceMs < 0) guiRecognizeGraceMs = 300;
         if (expectedTeleportAfterRebirthMs < 0) expectedTeleportAfterRebirthMs = 8000;
         if (moneyCurrency == null || moneyCurrency.isBlank() || moneyCurrency.equalsIgnoreCase("chicken")) {
             moneyCurrency = "money";

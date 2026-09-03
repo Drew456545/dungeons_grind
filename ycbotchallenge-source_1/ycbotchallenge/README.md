@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.9.8.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.9.9.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -49,6 +49,14 @@ Chat-driven, zero-spam, buy-or-wait. `/swordmax`, `/zone max` and `/rebirth` are
 **Cook timeout.** `maxCookMs` (90s) abandons a tagged mob only once its boss-bar HP has also stopped dropping for `cookStallMs` (15s). Fresh-stage mobs can legitimately take that long (the Goat in the logs died at 89.8s; 0.9.6 abandoned the next one at 90.0s, one second before it died, and lost the kill credit and its 6.48B).
 
 The sidebar is reread every second: the money row feeds the buy path directly, other currencies (`sidebarCurrencies`) are logged, and snapshots publish every `scoreboardSnapshotMs` (5s). `debugSidebar` defaults to **true** while parsers are tuned from live evidence — every new sidebar row lands in the JSONL as `sidebar_raw`. Money values in the JSONL are suffixed strings (`75.1B`), not scientific notation. Config knobs auto-migrate (`configVersion` 11 forces the 0.9.7 defaults: success patterns, zone gate, eval triggers, cooldown relaxation, stall-aware cook timeout, `minKillsAfterAffordable` 0).
+
+### Enchants during long kills
+
+The server auto-attacks a tagged mob until it dies, so a fresh-stage 50–120s kill is idle time. When the mob's predicted remaining time is at least `enchantMinEtaMs` (45s), the bot right-clicks with the sword to open the **SWORD ENCHANTER**, walks the `enchantTabs` (souls → essence → shards, each spending its own sidebar currency), and for the **first** enchant in slot order that is not `LOCKED`, not maxed, and affordable, opens its `<Name> Upgrade` GUI and clicks **Max Upgrade** (buys level 1 upward for an unowned enchant). Then the next enchant, then the next tab. No optimisation by design.
+
+Evidence-based details: the enchanter's title is formatting-only (a font glyph draws the words), so the GUI is recognised by its item tooltips (`enchantSignaturePattern`, "ACTIVATION CHANCE") — and a hand-opened enchanter is therefore never mistaken for a captcha (0.9.8 paused on every manual open). Enchant state comes from the tooltips: `Level: 1,321 / 2,000`, `Price: 7,105,000 Souls`, `LOCKED (Requires Sword Level 50)`; the Max Upgrade hopper's `* Levels: 1` / `* Price: …` decides the final click. The sword's own tooltip (only owned enchants) is logged once per visit as `sword_lore`, never used for decisions.
+
+Realism: one visit per qualifying kill, gaps re-rolled log-normal in `enchantVisitGapMin/MaxMs` (2.5–5.5 min), a `enchantSkipChance` (25%) roll, and only when a tab currency grew `enchantMinBalanceGrowthPct` (10%) since the last visit. Every step waits a humanized pause (`enchantLook…`, `enchantTabSettle…`, `enchantBuySettle…`). If the mob is about to die (`enchantWrapUpEtaMs`) the purchase in flight completes and the menu closes; `enchantMaxMenuMs` (40s) and `enchantMaxBuysPerVisit` (6) cap a visit. Events: `enchant_visit_start`, `enchant_menu_open`, `enchant_tab`, `enchant_scan` (the grid with levels/prices), `enchant_pick`, `enchant_upgrade`, `enchant_skip` (cadence / rolled-skip / no-growth / no-sword / none-affordable / max-unaffordable / tab-missing), `enchant_wrap_up`, `enchant_reopen`, `enchant_abort`, `enchant_menu_close`. `enchantsEnabled: false` turns it off; `enchantOpenViaInteract` swaps the synthetic use-key press for a direct interact call if a server build ignores the key.
 
 ### Stop protocol + TTK
 
@@ -107,7 +115,7 @@ Defaults are tuned to Sonar (what the hackathon runs): detection matches its "en
 
 ## How it detects progression
 
-Rebirths: sidebar counter going up = rebirth; counter dropping = reset = ascension (plus chat-message patterns as a second signal, same for prestige). Boosts: boss bar titles, tracked as start/end and stamped into every event's context. Balances: the sidebar rows (`balance` on change, `scoreboard_snapshot` every 5s); the reward summary feeds only the income rate. Zone: own teleport, boss-bar mob level, respawn broadcast or a sidebar Zone row. Log events: `scoreboard_snapshot`, `balance`, `income`, `income_summary`, `upgrade_plan` / `upgrade_skip` (with `via` = kill/money/timer, `ttkMs`, `zoneGate`, `swordFloor`/`zoneFloor`), `upgrade_send`, `upgrade_chat`, `upgrade_result` (`paid`, `extraLevel` for multi-level `/swordmax`), `upgrade_maxed`, `upgrade_response_raw`, `zone_benchmark`, `zone_teleport`, `zone_change`, `boss_level`, `ttk_reset`, `economy_reset`, `target_abandoned` (`sinceHpDropMs`), `focus_start` (plus ninja noise: `misclick`, `target_mispick`, `sprint_hit_slip`, `distracted`, `break_start`, `aim_regime`).
+Rebirths: sidebar counter going up = rebirth; counter dropping = reset = ascension (plus chat-message patterns as a second signal, same for prestige). Boosts: boss bar titles, tracked as start/end and stamped into every event's context. Balances: the sidebar rows (`balance` on change, `scoreboard_snapshot` every 5s); the reward summary feeds only the income rate. Zone: own teleport, boss-bar mob level, respawn broadcast or a sidebar Zone row. Log events: `scoreboard_snapshot`, `balance`, `income`, `income_summary`, `upgrade_plan` / `upgrade_skip` (with `via` = kill/money/timer, `ttkMs`, `zoneGate`, `swordFloor`/`zoneFloor`), `upgrade_send`, `upgrade_chat`, `upgrade_result` (`paid`, `extraLevel` for multi-level `/swordmax`), `upgrade_maxed`, `upgrade_response_raw`, `zone_benchmark`, `zone_teleport`, `zone_change`, `boss_level`, `ttk_reset`, `economy_reset`, `target_abandoned` (`sinceHpDropMs`), `focus_start`, `enchant_*` (see Enchants during long kills) (plus ninja noise: `misclick`, `target_mispick`, `sprint_hit_slip`, `distracted`, `break_start`, `aim_regime`).
 
 ## Building from source
 

@@ -196,6 +196,7 @@ public final class EconomyChecks {
         n += eq("sword unlock kind", ChatClassifier.kindOf(SWORD_UNLOCK, null), "sword");
         n += eq("sword unlock is not a fail",
             failRes.stream().anyMatch(p -> p.matcher(SWORD_UNLOCK).find()), false);
+        n += enchantLore();
 
         // Gap semantics: price = balance at fail + gap (the amount shrinks as you earn).
         n += eq("price = bal + gap", Economy.priceFromFail(781.04e9, 1.09e12), 1.87104e12, 1e6);
@@ -384,6 +385,87 @@ public final class EconomyChecks {
         n += eq("no spend is settled", Economy.sidebarSettled(5_000, 0, 2500), true);
         n += eq("spend still lagging", Economy.sidebarSettled(3_000, 2_000, 2500), false);
         n += eq("spend settled", Economy.sidebarSettled(5_000, 2_000, 2500), true);
+        return n;
+    }
+
+    /**
+     * SWORD ENCHANTER tooltips, verbatim from the 2026-09-03 screenshots. Every
+     * enchant is listed whether owned or not; LOCKED and maxed ones are never clicked.
+     */
+    private static int enchantLore() {
+        int n = 0;
+        EnchantLore lore = new EnchantLore(CFG);
+        List<String> rage = List.of(
+            "ACTIVATION CHANCE: 0.000%", "Description:", "| Chance to deal a large amount of",
+            "| damage while attacking a mob.", "|", "| Damage: 5.00x", "| Type: Damage",
+            "Information:", "| Level: 0 / 100", "| Price: 20,000,000 Souls",
+            "LOCKED (Requires Sword Level 50)");
+        List<String> magnet = List.of(
+            "ACTIVATION CHANCE: 0.361%", "Description:", "| Chance to multiply souls",
+            "| gained from soul greed.", "|", "| Type: Souls", "Information:",
+            "| Level: 1,321 / 2,000", "| Price: 7,105,000 Souls", "[CLICK HERE TO UPGRADE THIS ENCHANT]");
+        List<String> greed = List.of(
+            "ACTIVATION CHANCE: 100.000%", "Description:", "| Gain a large amount of essence",
+            "| while swinging your sword.", "|", "| Amount: 2,200", "| Type: Essence",
+            "Information:", "| Level: 1,000 / 1,000", "| Price: 5,100,000 Souls",
+            "[CLICK HERE TO UPGRADE THIS ENCHANT]");
+        List<String> maxUp = List.of(
+            "Click here to purchase the", "max amount of levels you can.", "", "* Levels: 1",
+            "* Price: 7,730,000 Souls", "", "Click to upgrade enchant.");
+
+        EnchantLore.Item r = lore.parse("Rage Enchant", rage);
+        n += eq("rage is enchant", r.isEnchant(), true);
+        n += eq("rage level", r.level(), 0);
+        n += eq("rage max", r.maxLevel(), 100);
+        n += eq("rage price", r.price(), 20e6, 1);
+        n += eq("rage currency", r.currency(), "souls");
+        n += eq("rage locked", r.locked(), true);
+        n += eq("rage not upgradable", r.upgradable(), false);
+        n += eq("rage signature", r.signature(), true);
+
+        EnchantLore.Item m = lore.parse("Soul Magnet Enchant", magnet);
+        n += eq("magnet level", m.level(), 1321);
+        n += eq("magnet max", m.maxLevel(), 2000);
+        n += eq("magnet price", m.price(), 7.105e6, 1);
+        n += eq("magnet upgradable", m.upgradable(), true);
+        n += eq("magnet not locked", m.locked(), false);
+
+        EnchantLore.Item g = lore.parse("Essence Greed Enchant", greed);
+        n += eq("greed maxed", g.maxed(), true);
+        n += eq("greed not upgradable", g.upgradable(), false);
+
+        // Same tooltip once the sword reaches level 50: LOCKED line gone ⇒ level-0 enchant is buyable.
+        EnchantLore.Item r50 = lore.parse("Rage Enchant", rage.subList(0, rage.size() - 1));
+        n += eq("rage unlocked at 50 is upgradable", r50.upgradable(), true);
+
+        // Policy: first upgradable affordable in slot order; maxed/locked skipped; attempted skipped.
+        List<EnchantLore.Item> grid = List.of(g, r, m);
+        n += eq("choose magnet at 8M", EnchantLore.chooseEnchant(grid, 8e6, java.util.Set.of()) == m, true);
+        n += eq("choose none at 5M", EnchantLore.chooseEnchant(grid, 5e6, java.util.Set.of()) == null, true);
+        n += eq("choose skips attempted",
+            EnchantLore.chooseEnchant(grid, 8e6, java.util.Set.of("Soul Magnet Enchant")) == null, true);
+        n += eq("choose rage once unlocked",
+            EnchantLore.chooseEnchant(List.of(g, r50, m), 25e6, java.util.Set.of()) == r50, true);
+
+        EnchantLore.Item mu = lore.parse("Max Upgrade", maxUp);
+        n += eq("max upgrade item", mu.maxUpgrade(), true);
+        n += eq("max upgrade levels", mu.maxLevels(), 1);
+        n += eq("max upgrade price", mu.maxPrice(), 7.73e6, 1);
+        n += eq("max upgrade not enchant", mu.isEnchant(), false);
+
+        // Tabs and screens.
+        n += eq("souls tab", lore.parse("SOULS", List.of()).tab(), "souls");
+        n += eq("essence tab small caps", lore.parse("ᴇꜱꜱᴇɴᴄᴇ", List.of()).tab(), "essence");
+        n += eq("enchant is not a tab", m.tab() == null, true);
+        n += eq("upgrade title", lore.isUpgradeTitle("Soul Magnet Upgrade"), true);
+        n += eq("upgrade title colored", lore.isUpgradeTitle("§aSoul Magnet Upgrade"), true);
+        n += eq("enchanter title (glyph, formatting only) is not upgrade", lore.isUpgradeTitle("§f§r§f§r"), false);
+        n += eq("null title", lore.isUpgradeTitle(null), false);
+        n += eq("small-caps level line",
+            lore.parse("x", List.of("| ʟᴇᴠᴇʟ: 5 / 100", "| ᴘʀɪᴄᴇ: 1,000 ꜱᴏᴜʟꜱ")).upgradable(), true);
+        n += eq("sword by name", lore.isSword("Golden Sword", List.of()), true);
+        n += eq("sword by lore", lore.isSword("Thing", List.of("Enchants: (9)", "| Speed MAX")), true);
+        n += eq("not a sword", lore.isSword("Rusty Key", List.of("Open a crate")), false);
         return n;
     }
 

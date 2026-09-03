@@ -29,12 +29,15 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private StatsTracker stats;
     private CombatController combat;
     private UpgradeController upgrades;
+    private EnchantController enchants;
     private CaptchaSolver captchaSolver;
     private EventLogger logger;
     private KeyBinding toggleKey;
     private int tickCounter = 0;
     private long lastStatusAt = 0;
     private long guiRetryBlockUntil = 0;
+    /** When the current container screen first appeared (0 = none open); see guiRecognizeGraceMs. */
+    private long guiSeenAt = 0;
 
     @Override
     public void onInitializeClient() {
@@ -44,6 +47,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         stats = new StatsTracker(config);
         combat = new CombatController(config, stats);
         upgrades = new UpgradeController(config, stats);
+        enchants = new EnchantController(config, stats);
         MouseDriver.INSTANCE.configure(config, null);
         captchaSolver = new CaptchaSolver(config, new CaptchaSolver.Callbacks() {
             @Override public void onSolved(MinecraftClient client) {
@@ -65,7 +69,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
         HudElementRegistry.addLast(
             Identifier.of("ycbotchallenge", "hud"),
-            (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver, upgrades).render(context));
+            (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver, upgrades, enchants).render(context));
 
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             stats.onGameMessage(message, overlay);
@@ -113,9 +117,24 @@ public class YCBotChallengeClient implements ClientModInitializer {
             upgrades.tick(client, combat);
             return;
         }
+        if (enchants.isBusy()) {
+            enchants.tick(client, combat);
+            return;
+        }
         String screenTitle = client.currentScreen != null && client.currentScreen.getTitle() != null
             ? client.currentScreen.getTitle().getString() : "";
         if (RebirthScreens.isRebirthGui(screenTitle)) {
+            combat.releaseKeys(client);
+            return;
+        }
+        // The SWORD ENCHANTER's title is formatting-only (font glyph), so it is
+        // recognised by its contents — which arrive a tick after the screen opens, hence
+        // the grace. Opened by hand it is never a captcha: idle until it is closed.
+        boolean handled = client.currentScreen instanceof HandledScreen;
+        long nowGui = System.currentTimeMillis();
+        if (!handled) guiSeenAt = 0;
+        else if (guiSeenAt == 0) guiSeenAt = nowGui;
+        if (handled && (nowGui - guiSeenAt < config.guiRecognizeGraceMs || enchants.isOurGui(client))) {
             combat.releaseKeys(client);
             return;
         }
@@ -135,6 +154,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
         }
 
         if (upgrades.tick(client, combat)) {
+            return;
+        }
+        if (enchants.tick(client, combat)) {
             return;
         }
 
@@ -184,6 +206,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         }
         combat.reset(client);
         upgrades.reset(client);
+        enchants.reset(client);
         MouseDriver.INSTANCE.cancel();
         if ("gui".equals(source)) {
             // if this screen (or a sibling) is still around after the solve, next
@@ -238,6 +261,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 stats.setLogger(logger);
                 combat.setLogger(logger);
                 upgrades.setLogger(logger);
+                enchants.setLogger(logger);
                 captchaSolver.setLogger(logger);
                 MouseDriver.INSTANCE.configure(config, logger);
                 logger.log("session_start",
@@ -250,6 +274,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             if (client != null) {
                 combat.reset(client);
                 upgrades.reset(client);
+                enchants.reset(client);
             }
             MouseDriver.INSTANCE.cancel();
             captchaSolver.cancel();
@@ -268,6 +293,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             stats.setLogger(null);
             combat.setLogger(null);
             upgrades.setLogger(null);
+            enchants.setLogger(null);
             captchaSolver.setLogger(null);
             MouseDriver.INSTANCE.configure(config, null);
         }

@@ -173,7 +173,13 @@ public class StatsTracker {
      * estimate back over the live row.
      */
     public Double money() {
-        String key = moneyKey();
+        return currency(moneyKey());
+    }
+
+    /** Any sidebar currency by name ("souls", "essence", "shards", …): live row first, else the last snapshot. */
+    public Double currency(String name) {
+        if (name == null || name.isBlank()) return null;
+        String key = name.toLowerCase(Locale.ROOT);
         Double side = liveBals.get(key);
         if (side != null) return side;
         return snapshotBals.get(key);
