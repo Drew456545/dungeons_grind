@@ -152,6 +152,8 @@ public class StatsTracker {
     public volatile String giveawayPrize = null;
     public volatile int giveawaysJoined = 0;
     public volatile int giveawaysWon = 0;
+    /** Bumped on each of our own wins; the controller types a reply on the seq. */
+    public volatile int giveawayWonSeq = 0;
 
     /** Rolling per-kill durations (tag -> death), ms. */
     public final ArrayDeque<Long> killDurations = new ArrayDeque<>();
@@ -986,7 +988,7 @@ public class StatsTracker {
             for (Pattern p : giveawayWonRes) {
                 if (p.matcher(text).find()) {
                     boolean us = stateUser != null && text.toLowerCase(Locale.ROOT).contains(stateUser.toLowerCase(Locale.ROOT));
-                    if (us) giveawaysWon++;
+                    if (us) { giveawaysWon++; giveawayWonSeq++; }
                     log("giveaway_result", "raw", text, "us", us, "won", giveawaysWon);
                     known = true;
                     break;

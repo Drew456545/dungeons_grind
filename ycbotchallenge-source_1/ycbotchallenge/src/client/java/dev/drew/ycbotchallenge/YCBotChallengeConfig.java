@@ -439,6 +439,16 @@ public class YCBotChallengeConfig {
     public List<String> giveawayJoinedPatterns = List.of("you have joined the giveaway");
     public List<String> giveawayWonPatterns = List.of("has won the giveaway");
     /**
+     * After our own win ("Ihazekids69420 has won the giveaway for", 2026-09-03) say
+     * something, like anyone would: one of these, picked at random, typed after a
+     * short delay. Off, or a one-entry list, if a fixed phrase is preferred.
+     */
+    public boolean giveawayWinReplyEnabled = true;
+    public double giveawayWinReplyChance = 0.9;
+    public List<String> giveawayWinMessages = List.of("lfg", "gg", "LFG", "ggs", "lets gooo", "W", "ty ty", "lfgggg", "gg ez");
+    public int giveawayWinReplyDelayMinMs = 1500;
+    public int giveawayWinReplyDelayMaxMs = 6000;
+    /**
      * Rebirth upgrades: each rebirth grants points spent in /rebirth → nether star
      * ("REBIRTH UPGRADES", lore "| Current Points: N") → "Upgrades" menu. Order is
      * Drew's: enchant proc (enchanted book), damage (red dye), essence (magma cream),
@@ -824,7 +834,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 21;
+    public static final int CURRENT_CONFIG_VERSION = 22;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1019,6 +1029,11 @@ public class YCBotChallengeConfig {
             rebirthUpgradeMaxedPattern = fresh.rebirthUpgradeMaxedPattern;
             changed = true;
         }
+        if (configVersion < 22) {
+            // v22: a typed reply after winning a giveaway.
+            giveawayWinMessages = fresh.giveawayWinMessages;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1104,6 +1119,10 @@ public class YCBotChallengeConfig {
         if (giveawayAnnouncePatterns == null) giveawayAnnouncePatterns = fresh.giveawayAnnouncePatterns;
         if (giveawayJoinedPatterns == null) giveawayJoinedPatterns = fresh.giveawayJoinedPatterns;
         if (giveawayWonPatterns == null) giveawayWonPatterns = fresh.giveawayWonPatterns;
+        if (giveawayWinMessages == null) giveawayWinMessages = fresh.giveawayWinMessages;
+        if (giveawayWinReplyChance < 0 || giveawayWinReplyChance > 1) giveawayWinReplyChance = fresh.giveawayWinReplyChance;
+        if (giveawayWinReplyDelayMinMs < 0) giveawayWinReplyDelayMinMs = 0;
+        if (giveawayWinReplyDelayMaxMs < giveawayWinReplyDelayMinMs) giveawayWinReplyDelayMaxMs = giveawayWinReplyDelayMinMs;
         if (rebirthUpgradeOrder == null || rebirthUpgradeOrder.isEmpty()) rebirthUpgradeOrder = fresh.rebirthUpgradeOrder;
         if (rebirthUpgradesItemPattern == null || rebirthUpgradesItemPattern.isBlank()) rebirthUpgradesItemPattern = fresh.rebirthUpgradesItemPattern;
         if (rebirthPointsPattern == null || rebirthPointsPattern.isBlank()) rebirthPointsPattern = fresh.rebirthPointsPattern;

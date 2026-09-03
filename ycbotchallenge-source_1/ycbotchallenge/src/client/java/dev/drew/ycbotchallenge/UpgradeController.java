@@ -23,7 +23,7 @@ import net.minecraft.util.math.Vec3d;
  */
 public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
-    private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY }
+    private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY, CHAT }
 
     private record PendingCmd(String text, Kind kind, long notBefore, boolean followUp) {}
 
@@ -43,6 +43,9 @@ public class UpgradeController {
     /** Giveaways: last announcement handled, and the deadline for the queued /giveaway. */
     private int lastGiveawaySeq = 0;
     private long giveawayDeadline = 0;
+    /** Win reply: last win handled, and the deadline for the queued chat line. */
+    private int lastWonSeq = 0;
+    private long chatDeadline = 0;
     /** Income at the moment of the last send; the upgrade_gain evidence compares it with the rate later. */
     private Double incomeAtSend = null;
     private String gainKind = null;
@@ -187,6 +190,7 @@ public class UpgradeController {
             }
             maybeQueueRebirthProbe(combat, now);
             maybeQueueGiveaway(now);
+            maybeQueueWinReply(now);
             if (gainAt != 0) {
                 if (gainKillsAt < 0) gainKillsAt = combat.kills;
                 if (now >= gainAt) {
@@ -214,6 +218,11 @@ public class UpgradeController {
             if (head != null && head.kind() == Kind.GIVEAWAY && now > giveawayDeadline) {
                 queue.poll();
                 if (logger != null) logger.log("giveaway_skip", "reason", "window", "lateMs", now - giveawayDeadline);
+                head = queue.peek();
+            }
+            if (head != null && head.kind() == Kind.CHAT && now > chatDeadline) {
+                queue.poll();
+                if (logger != null) logger.log("giveaway_reply_skip", "reason", "window", "text", head.text());
                 head = queue.peek();
             }
             if (head != null) {
@@ -323,6 +332,12 @@ public class UpgradeController {
                     return false;
                 }
                 if (ts != ChatTyper.State.DONE) return true;
+                if (pendingKind == Kind.CHAT) {
+                    lastSendAt = now;
+                    if (logger != null) logger.log("giveaway_reply", "text", pending, "typos", typer.typos());
+                    finish();
+                    return false;
+                }
                 if (pendingKind == Kind.GIVEAWAY) {
                     // Not an economy command: no price bookkeeping, no response window.
                     lastSendAt = now;
@@ -565,6 +580,25 @@ public class UpgradeController {
         giveawayDeadline = stats.giveawaySeenAt + cfg.giveawayWindowMs;
         queue.add(new PendingCmd(cfg.giveawayCommand, Kind.GIVEAWAY, now + delay, false));
         if (logger != null) logger.log("giveaway_plan", "prize", stats.giveawayPrize, "delayMs", delay, "seq", seq);
+    }
+
+    /** We won ("<name> has won the giveaway for"): say one of the configured lines after a beat. */
+    private void maybeQueueWinReply(long now) {
+        int seq = stats.giveawayWonSeq;
+        if (seq == lastWonSeq) return;
+        lastWonSeq = seq;
+        if (!cfg.giveawayWinReplyEnabled || cfg.giveawayWinMessages == null || cfg.giveawayWinMessages.isEmpty()) return;
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        if (rng.nextDouble() >= cfg.giveawayWinReplyChance) {
+            if (logger != null) logger.log("giveaway_reply_skip", "reason", "chance");
+            return;
+        }
+        String msg = cfg.giveawayWinMessages.get(rng.nextInt(cfg.giveawayWinMessages.size()));
+        if (msg == null || msg.isBlank()) return;
+        long delay = HumanTiming.logNormalMs(cfg.giveawayWinReplyDelayMinMs, Math.max(cfg.giveawayWinReplyDelayMinMs + 1, cfg.giveawayWinReplyDelayMaxMs));
+        chatDeadline = now + 30_000;
+        queue.add(new PendingCmd(msg.trim(), Kind.CHAT, now + delay, false));
+        if (logger != null) logger.log("giveaway_reply_plan", "text", msg.trim(), "delayMs", delay, "won", stats.giveawaysWon);
     }
 
     /** Rebirth cost only grows: once the balance passes the old price (plus a rolled margin), try the GUI. */
