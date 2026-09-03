@@ -139,8 +139,13 @@ public class EnchantController {
                         "menuItems", reopened ? null : EnchantScreens.menuItems(h, lore));
                     phase = Phase.LOOK;
                     phaseUntil = now + HumanTiming.logNormalMs(cfg.enchantLookMinMs, cfg.enchantLookMaxMs);
-                } else if (k == EnchantScreens.Kind.OTHER || k == EnchantScreens.Kind.UPGRADE) {
-                    abort(client, "wrong-gui", false);
+                } else if (k == EnchantScreens.Kind.UPGRADE) {
+                    abort(client, "wrong-gui", true);
+                } else if (k == EnchantScreens.Kind.OTHER) {
+                    // The enchanter's slots arrive a tick or two after its screen (16:31
+                    // log: aborted "wrong-gui" 0.2s after the click and left the menu open,
+                    // idling the bot until toggled). Unrecognised = not yet, until the timeout.
+                    if (now >= phaseUntil) abort(client, "wrong-gui", true);
                 } else if (now >= phaseUntil) {
                     abort(client, "no-gui", false);
                 }

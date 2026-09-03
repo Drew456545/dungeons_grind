@@ -583,6 +583,19 @@ public class YCBotChallengeConfig {
      * enchanter is never classified while still empty.
      */
     public int guiRecognizeGraceMs = 300;
+    /**
+     * One of our own menus (enchanter, Rebirth GUI, Upgrades) open this long with no
+     * controller driving it is closed (stray_gui_close) instead of idling the bot
+     * until the toggle key; 0 = never. 16:31 log: an enchanter left open by an early
+     * abort parked the bot for 90s.
+     */
+    public int strayGuiCloseMs = 8000;
+    /**
+     * A sidebar money drop of 99%+ counts as a rebirth (money-collapse) only when the
+     * new value is below this; a bigger "collapse" is a suffix read on the wrong scale
+     * (T → Q → Qa on this server) and is logged suffix_scale_suspect instead.
+     */
+    public double moneyCollapseMaxValue = 1e12;
     /** Tab button names, in the order they are visited; each is also the sidebar currency it spends. */
     public List<String> enchantTabs = List.of("souls", "essence", "shards");
     /** Lore line that identifies the enchanter GUI by content (its title is formatting-only). */
@@ -834,7 +847,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 22;
+    public static final int CURRENT_CONFIG_VERSION = 23;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1034,6 +1047,10 @@ public class YCBotChallengeConfig {
             giveawayWinMessages = fresh.giveawayWinMessages;
             changed = true;
         }
+        if (configVersion < 23) {
+            // v23: Qa = 1e18 (server order K M B T Q Qa Qi ...), stray own-GUI closer.
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1222,6 +1239,9 @@ public class YCBotChallengeConfig {
         if (enchantMaxBuysPerVisit < 1) enchantMaxBuysPerVisit = 6;
         if (enchantMaxConsecutiveAborts < 1) enchantMaxConsecutiveAborts = 3;
         if (guiRecognizeGraceMs < 0) guiRecognizeGraceMs = 300;
+        if (strayGuiCloseMs < 0) strayGuiCloseMs = 0;
+        if (strayGuiCloseMs > 0 && strayGuiCloseMs < 1000) strayGuiCloseMs = 1000;
+        if (moneyCollapseMaxValue <= 0) moneyCollapseMaxValue = 1e12;
         if (expectedTeleportAfterRebirthMs < 0) expectedTeleportAfterRebirthMs = 8000;
         if (moneyCurrency == null || moneyCurrency.isBlank() || moneyCurrency.equalsIgnoreCase("chicken")) {
             moneyCurrency = "money";

@@ -19,7 +19,13 @@ public final class Amounts {
     private static final Pattern TOKEN = Pattern.compile(
         "([\\d,]+(?:\\.\\d+)?)(?:\\s*([A-Za-z]{1,4}))?(?![A-Za-z])");
 
-    /** Built-in idle-game suffix table (case-insensitive keys). */
+    /**
+     * Built-in suffix table (case-insensitive keys) in EnchantedMC's order:
+     * K M B T Q Qa Qi Sx Sp Oc No Dc. "1.25Q" was a quadrillion in the 0.9.6 fail
+     * line and Drew reports T → Q → Qa, so Qa is a quintillion (0.9.19: Qa used to
+     * alias Q here, which would have read a Qa balance 1000× too small and tripped
+     * the money-collapse rebirth detector). Override any of these under suffixScales.
+     */
     private static final Map<String, Double> BUILTIN = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     static {
         BUILTIN.put("K", 1e3);
@@ -27,13 +33,13 @@ public final class Amounts {
         BUILTIN.put("B", 1e9);
         BUILTIN.put("T", 1e12);
         BUILTIN.put("Q", 1e15);
-        BUILTIN.put("QA", 1e15);
-        BUILTIN.put("QI", 1e18);
-        BUILTIN.put("SX", 1e21);
-        BUILTIN.put("SP", 1e24);
-        BUILTIN.put("OC", 1e27);
-        BUILTIN.put("NO", 1e30);
-        BUILTIN.put("DC", 1e33);
+        BUILTIN.put("QA", 1e18);
+        BUILTIN.put("QI", 1e21);
+        BUILTIN.put("SX", 1e24);
+        BUILTIN.put("SP", 1e27);
+        BUILTIN.put("OC", 1e30);
+        BUILTIN.put("NO", 1e33);
+        BUILTIN.put("DC", 1e36);
     }
     /** Config-provided overrides/additions (uppercase keys). */
     private static final Map<String, Double> EXTRA = new ConcurrentHashMap<>();
@@ -49,6 +55,14 @@ public final class Amounts {
         overrides.forEach((k, v) -> {
             if (k != null && v != null && v > 0) EXTRA.put(k.toUpperCase(Locale.ROOT), v);
         });
+    }
+
+    /** The suffix letters of an amount string ("1.25Qa" → "Qa", "58" → ""), for the evidence log. */
+    public static String suffixOf(String raw) {
+        if (raw == null) return "";
+        Matcher m = TOKEN.matcher(raw.replace("$", "").trim());
+        if (!m.find() || m.group(2) == null) return "";
+        return m.group(2);
     }
 
     /** Scale for a suffix, or null if unknown (empty suffix => 1.0). */
@@ -96,8 +110,8 @@ public final class Amounts {
         }
     }
 
-    private static final double[] FORMAT_SCALES = {1e33, 1e30, 1e27, 1e24, 1e21, 1e18, 1e15, 1e12, 1e9, 1e6, 1e3};
-    private static final String[] FORMAT_LABELS = {"Dc", "No", "Oc", "Sp", "Sx", "Qi", "Qa", "T", "B", "M", "K"};
+    private static final double[] FORMAT_SCALES = {1e36, 1e33, 1e30, 1e27, 1e24, 1e21, 1e18, 1e15, 1e12, 1e9, 1e6, 1e3};
+    private static final String[] FORMAT_LABELS = {"Dc", "No", "Oc", "Sp", "Sx", "Qi", "Qa", "Q", "T", "B", "M", "K"};
 
     public static String format(double v) {
         double a = Math.abs(v);

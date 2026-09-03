@@ -143,6 +143,8 @@ public class StatsTracker {
     private final List<Pattern> captchaHintRes = new ArrayList<>();
     /** Evidence net for unclassified server lines (chat_raw). */
     private final RawChatNet rawNet;
+    /** Amount suffixes seen on the sidebar so far (amount_suffix logged on first sight, with the previous row). */
+    private final Set<String> suffixesSeen = new HashSet<>();
     // Giveaways (0.9.17): announcement seq for the controller, prize, outcome counters.
     private final List<Pattern> giveawayAnnounceRes = new ArrayList<>();
     private final List<Pattern> giveawayJoinedRes = new ArrayList<>();
@@ -591,17 +593,30 @@ public class StatsTracker {
     private void applyCurrency(String name, String raw, double value, String line) {
         String key = name.toLowerCase(Locale.ROOT);
         Double prev = liveBals.put(key, value);
-        liveRaw.put(key, raw);
+        String prevRaw = liveRaw.put(key, raw);
         balances.put(key, raw);
+        // Suffix evidence: the first "Qa" (or anything new) is logged next to the row it
+        // followed, so a wrong scale in the table shows up as a 1000x jump in the log.
+        String sfx = Amounts.suffixOf(raw).toUpperCase(Locale.ROOT);
+        if (!sfx.isEmpty() && suffixesSeen.add(sfx)) {
+            log("amount_suffix", "currency", key, "suffix", sfx, "raw", raw, "parsed", Amounts.format(value),
+                "prevRaw", prevRaw, "prevParsed", prev != null ? Amounts.format(prev) : null,
+                "scale", Amounts.scaleFor(sfx));
+        }
         if (key.equals(moneyKey())) {
             long nowMs = System.currentTimeMillis();
             lastSidebarMoneyAt = nowMs;
             // Money collapsing to ~zero while we didn't just buy anything = a rebirth
             // wiped the balance (the sidebar rebirth counter is the primary signal;
-            // this covers boards where that row isn't always rendered).
+            // this covers boards where that row isn't always rendered). A collapse
+            // lands near zero: a value still above moneyCollapseMaxValue is a suffix
+            // read 1000x too small, not a rebirth.
             if (prev != null && prev >= 1e9 && value <= Math.max(1e6, prev * 0.01)
-                && nowMs - lastSpendAt > 10_000) {
+                && value < cfg.moneyCollapseMaxValue && nowMs - lastSpendAt > 10_000) {
                 rebirthReset("money-collapse");
+            } else if (prev != null && prev >= 1e9 && value <= prev * 0.01 && value >= cfg.moneyCollapseMaxValue) {
+                log("suffix_scale_suspect", "raw", raw, "prevRaw", prevRaw, "parsed", Amounts.format(value),
+                    "prevParsed", Amounts.format(prev));
             }
         }
         boolean changed = prev == null || Math.abs(prev - value) > 1e-6;

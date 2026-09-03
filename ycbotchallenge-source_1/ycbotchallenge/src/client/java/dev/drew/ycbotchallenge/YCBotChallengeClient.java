@@ -139,21 +139,28 @@ public class YCBotChallengeClient implements ClientModInitializer {
             rebirthUpgrades.tick(client, combat);
             return;
         }
-        String screenTitle = client.currentScreen != null && client.currentScreen.getTitle() != null
-            ? client.currentScreen.getTitle().getString() : "";
-        if (RebirthScreens.isRebirthGui(screenTitle)) {
-            combat.releaseKeys(client);
-            return;
-        }
         // The SWORD ENCHANTER's title is formatting-only (font glyph), so it is
         // recognised by its contents — which arrive a tick after the screen opens, hence
-        // the grace. Opened by hand it is never a captcha: idle until it is closed.
+        // the grace. Our own menus (enchanter, Rebirth GUI, Upgrades) are never a captcha;
+        // but one nobody is driving (an aborted visit left it open, or it was opened by
+        // hand while the bot runs) is closed after strayGuiCloseMs instead of idling the
+        // bot forever (16:31 log: 90s on the enchanter until Drew toggled).
         boolean handled = client.currentScreen instanceof HandledScreen;
         long nowGui = System.currentTimeMillis();
         if (!handled) guiSeenAt = 0;
         else if (guiSeenAt == 0) guiSeenAt = nowGui;
-        if (handled && (nowGui - guiSeenAt < config.guiRecognizeGraceMs || enchants.isOurGui(client)
-            || rebirthUpgrades.isOurGui(client))) {
+        String screenTitle = client.currentScreen != null && client.currentScreen.getTitle() != null
+            ? client.currentScreen.getTitle().getString() : "";
+        boolean ownGui = handled && (RebirthScreens.isRebirthGui(screenTitle) || enchants.isOurGui(client)
+            || rebirthUpgrades.isOurGui(client));
+        if (ownGui && config.strayGuiCloseMs > 0 && nowGui - guiSeenAt >= config.strayGuiCloseMs) {
+            if (logger != null) logger.log("stray_gui_close", "title", screenTitle, "ageMs", nowGui - guiSeenAt);
+            EnchantScreens.closeGui(client);
+            guiSeenAt = 0;
+            combat.releaseKeys(client);
+            return;
+        }
+        if (ownGui || (handled && nowGui - guiSeenAt < config.guiRecognizeGraceMs)) {
             combat.releaseKeys(client);
             return;
         }

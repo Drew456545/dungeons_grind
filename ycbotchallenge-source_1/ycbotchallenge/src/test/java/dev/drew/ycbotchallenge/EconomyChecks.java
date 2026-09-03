@@ -85,6 +85,16 @@ public final class EconomyChecks {
         n += eq("parens (1.09T)", Amounts.parse("(1.09T)"), 1.09e12, 1e6);
         n += eq("235 SHARDS not suffix", Amounts.parse("235 SHARDS"), 235.0, 1e-6);
         n += eq("format B", Amounts.format(131.56e9), "131.56B");
+        // Server suffix order K M B T Q Qa Qi (Drew: T -> Q -> Qa); 0.9.19 fixes Qa = 1e18.
+        n += eq("2Q", Amounts.parse("2Q"), 2e15, 1e6);
+        n += eq("1.5Qa", Amounts.parse("1.5Qa"), 1.5e18, 1e9);
+        n += eq("3Qi", Amounts.parse("3Qi"), 3e21, 1e12);
+        n += eq("4Sx", Amounts.parse("4Sx"), 4e24, 1e15);
+        n += eq("format Q", Amounts.format(1.25e15), "1.25Q");
+        n += eq("format Qa", Amounts.format(1.5e18), "1.5Qa");
+        n += eq("suffix of 1.25Qa", Amounts.suffixOf("1.25Qa"), "Qa");
+        n += eq("suffix of $29.99T", Amounts.suffixOf("$29.99T"), "T");
+        n += eq("suffix of 58", Amounts.suffixOf("58"), "");
 
         // Boss-bar HP (verbatim titles from the 20:52 / 22:02 logs). Higher stages use
         // suffixes; the old digits-only parser read "82.04M" as 82 and broke the DPS slope.
