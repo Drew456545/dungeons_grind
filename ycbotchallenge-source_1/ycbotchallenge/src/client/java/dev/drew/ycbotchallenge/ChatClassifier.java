@@ -25,6 +25,18 @@ public final class ChatClassifier {
         return stripped.indexOf('\u00BB') >= 0 || stripped.charAt(0) == '[';
     }
 
+    /**
+     * A chat line may trigger the captcha path only when it is a server line: never
+     * action-bar text, never our own [YCBotChallenge] messages, never player chat or
+     * broadcasts. 2026-09-03: "» next time just captcha him" from another player
+     * matched "captcha" and the bot typed a guess into public chat.
+     */
+    public static boolean captchaLineEligible(String text, boolean overlay) {
+        if (text == null || text.isEmpty() || overlay) return false;
+        if (text.startsWith("[YCBotChallenge]")) return false;
+        return !isPlayerOrBroadcast(text);
+    }
+
     /** Strip §/& formatting and collapse whitespace (same rules as the sidebar). */
     public static String clean(String raw) {
         return SidebarParser.strip(raw);

@@ -36,6 +36,14 @@ public class UpgradeController {
     private String pending;
     /** Types the command through the chat screen like a person (shared with the captcha solver). */
     private final ChatTyper typer;
+    /** Kind the rebirth horizon blocked at the last eval (HUD "saving"), null when none. */
+    private String horizonBlocked = null;
+    /** Income at the moment of the last send; the upgrade_gain evidence compares it with the rate later. */
+    private Double incomeAtSend = null;
+    private String gainKind = null;
+    private Double gainBefore = null;
+    private long gainAt = 0;
+    private int gainKillsAt = -1;
     private Kind pendingKind = Kind.SWORD;
     private boolean pendingFollowUp = false;
     private final ArrayDeque<PendingCmd> queue = new ArrayDeque<>();
@@ -94,6 +102,9 @@ public class UpgradeController {
         if (rate != null) sb.append("  +").append(Amounts.format(rate)).append("/min");
         if (stats.rebirthTarget != null) {
             sb.append("  rb ").append(Amounts.format(stats.rebirthTarget));
+            Double etaMin = Economy.rebirthEtaMin(bal, stats.rebirthTarget, rate);
+            if (etaMin != null && etaMin > 0) sb.append("  eta ").append(formatEta(etaMin * 60_000.0));
+            if (horizonBlocked != null) sb.append("  §7(saving; ").append(horizonBlocked).append(" waits)§r");
         }
         if (phase != Phase.IDLE) {
             sb.append("  §e").append(phase.name().toLowerCase(Locale.ROOT));
@@ -134,6 +145,8 @@ public class UpgradeController {
         typer.cancel(client);
         phase = Phase.IDLE;
         pending = null;
+        horizonBlocked = null;
+        gainAt = 0;
         queue.clear();
         startupProbed = false;
         lastKillCount = 0;
@@ -166,6 +179,22 @@ public class UpgradeController {
                 seedDelayMs = HumanTiming.logNormalMs(cfg.rebirthSeedDelayMinMs, Math.max(cfg.rebirthSeedDelayMinMs + 1, cfg.rebirthSeedDelayMaxMs));
             }
             maybeQueueRebirthProbe(combat, now);
+            if (gainAt != 0) {
+                if (gainKillsAt < 0) gainKillsAt = combat.kills;
+                if (now >= gainAt) {
+                    Double after = stats.incomePerMinute();
+                    if (logger != null) {
+                        logger.log("upgrade_gain", "kind", gainKind,
+                            "before", gainBefore != null ? Amounts.format(gainBefore) : null,
+                            "after", after != null ? Amounts.format(after) : null,
+                            "ratio", gainBefore != null && after != null && gainBefore > 0
+                                ? Math.round(100.0 * after / gainBefore) / 100.0 : null,
+                            "kills", combat.kills - gainKillsAt,
+                            "windowMs", cfg.rebirthHorizonGainWindowMs);
+                    }
+                    gainAt = 0;
+                }
+            }
             if (rebirthAffordable()) {
                 dropNonRebirthQueue();
                 if (decision != null && !"rebirth".equals(decision)) {
@@ -231,6 +260,10 @@ public class UpgradeController {
             updateAffordableMarks(combat.kills);
             String kind = decideKind(combat.kills);
             if (kind == null) {
+                if (horizonBlocked != null) {
+                    skipEval("rebirth-horizon", horizonBlocked);
+                    return false;
+                }
                 boolean zoneGated = !Economy.zoneAllowed(evalTtkMs, cfg.zoneMaxTtkMs)
                     && !stats.zoneMaxed && (knownAffordable("zone") || stats.zoneTarget == null);
                 skipEval(zoneGated ? "zone-gated" : "unaffordable", null);
@@ -554,6 +587,16 @@ public class UpgradeController {
             knownAffordable("sword"), knownAffordable("zone"),
             stats.swordTarget, stats.zoneTarget, cfg.zoneOverSwordRatio);
         if (buy != null) {
+            if (!horizonAllows(buy)) {
+                // The pricier kind failed the horizon; the cheaper one may still pay off.
+                String other = "zone".equals(buy) ? "sword" : "zone";
+                boolean otherOpen = "zone".equals(other) ? zoneOpen : !stats.swordMaxed;
+                if (otherOpen && knownAffordable(other) && horizonAllows(other)) {
+                    return extraKillsOk(other, kills) ? other : null;
+                }
+                horizonBlocked = buy;
+                return null;
+            }
             return extraKillsOk(buy, kills) ? buy : null;
         }
         String pref = Economy.preferredKind(!stats.swordMaxed, zoneOpen,
@@ -577,6 +620,22 @@ public class UpgradeController {
 
     private boolean rebirthAffordable() {
         return Economy.knownAffordable(stats.rebirthTarget, stats.money());
+    }
+
+    private double horizonGain(String kind) {
+        return "zone".equals(kind) ? cfg.rebirthHorizonZoneGain : cfg.rebirthHorizonSwordGain;
+    }
+
+    /**
+     * Rebirth horizon: a known-price sword/zone is bought only when it pays for itself
+     * before the rebirth ({@link Economy#rebirthHorizonAllows}). Clears the blocked mark;
+     * the caller sets it when nothing else can be bought.
+     */
+    private boolean horizonAllows(String kind) {
+        horizonBlocked = null;
+        if (!cfg.rebirthHorizonEnabled || kind == null || "rebirth".equals(kind)) return true;
+        return Economy.rebirthHorizonAllows(targetOf(kind), stats.money(), stats.rebirthTarget,
+            stats.incomePerMinute(), horizonGain(kind));
     }
 
     private boolean knownAffordable(String kind) {
@@ -664,12 +723,25 @@ public class UpgradeController {
             "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
             "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,
             "zoneFloor", stats.lastPrice("zone") != null ? Amounts.format(stats.lastPrice("zone")) : null,
-            "rebirthTarget", stats.rebirthTarget != null ? Amounts.format(stats.rebirthTarget) : null);
+            "rebirthTarget", stats.rebirthTarget != null ? Amounts.format(stats.rebirthTarget) : null,
+            "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
+            "rebirthEtaMin", tenth(Economy.rebirthEtaMin(bal, stats.rebirthTarget, stats.incomePerMinute())),
+            "buyEtaMin", kind == null ? null
+                : tenth(Economy.buyEtaMin(remaining, bal, stats.rebirthTarget, stats.incomePerMinute(), horizonGain(kind))),
+            "gain", kind == null ? null : horizonGain(kind),
+            "gapPct", kind != null && remaining != null && bal != null && stats.rebirthTarget != null
+                && stats.rebirthTarget - bal > 0
+                ? Math.round(1000.0 * remaining / (stats.rebirthTarget - bal)) / 10.0 : null);
+    }
+
+    private static Double tenth(Double v) {
+        return v == null ? null : Math.round(v * 10.0) / 10.0;
     }
 
     private void begin(MinecraftClient client, CombatController combat, long now, PendingCmd cmd) {
         pendingKind = cmd.kind();
         pending = cmd.text();
+        incomeAtSend = stats.incomePerMinute();
         pendingFollowUp = cmd.followUp();
         combat.releaseKeys(client);
         combat.wantsUpgradeWindow = false;
@@ -687,6 +759,14 @@ public class UpgradeController {
             swordsSinceZone++;
         } else if (pendingKind == Kind.ZONE) {
             swordsSinceZone = 0;
+        }
+        if (stats.lastSendSucceeded && (pendingKind == Kind.SWORD || pendingKind == Kind.ZONE)
+            && cfg.rebirthHorizonGainWindowMs > 0) {
+            // Evidence for the horizon gain knobs: income now vs. a few minutes from now.
+            gainKind = pendingKind.name().toLowerCase(Locale.ROOT);
+            gainBefore = incomeAtSend;
+            gainAt = System.currentTimeMillis() + cfg.rebirthHorizonGainWindowMs;
+            gainKillsAt = -1;
         }
         phase = Phase.IDLE;
         pending = null;

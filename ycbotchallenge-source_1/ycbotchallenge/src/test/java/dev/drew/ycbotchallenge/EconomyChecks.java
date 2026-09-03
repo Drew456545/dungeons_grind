@@ -54,6 +54,7 @@ public final class EconomyChecks {
         n += stateStore();
         n += captcha();
         n += ignoredMobs();
+        n += rebirthHorizon();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -570,6 +571,40 @@ public final class EconomyChecks {
             System.err.println("FAIL stateStore: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /** 0.9.15 rebirth horizon: numbers verbatim from the 2026-09-03 upgrade_plan lines. */
+    private static int rebirthHorizon() {
+        int n = 0;
+        // 14-52: zone 8 for 415.21T at bal 425.19T, rebirth 900T, 108.79T/min: payback ~10 min vs 4.4 min to rebirth.
+        n += eq("horizon: zone 8 before 900T rebirth", Economy.rebirthHorizonAllows(415.21e12, 425.19e12, 900e12, 108.79e12, 1.3), false);
+        // 14-52: sword 266.33T at bal 272.53T, 102.51T/min: same shape.
+        n += eq("horizon: sword before 900T rebirth", Economy.rebirthHorizonAllows(266.33e12, 272.53e12, 900e12, 102.51e12, 1.25), false);
+        // 02-23: zone 7 for 7.55T at bal 7.71T, rebirth 30T, 2.39T/min: the rebirth landed 14 min later, staying was 9.
+        n += eq("horizon: zone 7 before 30T rebirth", Economy.rebirthHorizonAllows(7.55e12, 7.71e12, 30e12, 2.39e12, 1.3), false);
+        // 03-36: zone 6 for 137.26B at bal 137.5B with the 900T rebirth far away: fine.
+        n += eq("horizon: zone 6 far from rebirth", Economy.rebirthHorizonAllows(137.26e9, 137.5e9, 900e12, 75.44e9, 1.3), true);
+        // 03-36: early snowball, zone for 145.7K against a 30T gap.
+        n += eq("horizon: early snowball", Economy.rebirthHorizonAllows(145.7e3, 145.7e3, 30e12, 410.95e3, 1.3), true);
+        n += eq("horizon: unknown income", Economy.rebirthHorizonAllows(415e12, 425e12, 900e12, null, 1.3), true);
+        n += eq("horizon: unknown rebirth", Economy.rebirthHorizonAllows(415e12, 425e12, null, 108e12, 1.3), true);
+        n += eq("horizon: unknown price", Economy.rebirthHorizonAllows(null, 425e12, 900e12, 108e12, 1.3), true);
+        n += eq("horizon: gain 1.0 is off", Economy.rebirthHorizonAllows(415e12, 425e12, 900e12, 108e12, 1.0), true);
+        n += eq("horizon: rebirth covered", Economy.rebirthHorizonAllows(415e12, 950e12, 900e12, 108e12, 1.3), true);
+        // Break-even: P < G*(g-1); gap 350T, g 1.4 -> 140T is not sooner, 139T is.
+        n += eq("horizon: at break-even", Economy.rebirthHorizonAllows(140e12, 0.0, 350e12, 10e12, 1.4), false);
+        n += eq("horizon: just under", Economy.rebirthHorizonAllows(139e12, 0.0, 350e12, 10e12, 1.4), true);
+        n += eq("rebirth eta", Economy.rebirthEtaMin(425.19e12, 900e12, 108.79e12), 4.3645, 0.001);
+        n += eq("rebirth eta covered", Economy.rebirthEtaMin(950e12, 900e12, 108.79e12), 0.0, 1e-9);
+        n += eq("rebirth eta unknown", Economy.rebirthEtaMin(425e12, 900e12, null) == null, true);
+        n += eq("buy eta", Economy.buyEtaMin(415.21e12, 425.19e12, 900e12, 108.79e12, 1.3), 6.293, 0.001);
+        // Chat captcha guard: the player line that made the bot type "qwe" into public chat.
+        n += eq("captcha: player line ignored",
+            ChatClassifier.captchaLineEligible("[\u2727R193\u2727] [\u2629nightmare\u2629]    snusie  \u00bb next time just captcha him", false), false);
+        n += eq("captcha: server line eligible", ChatClassifier.captchaLineEligible("Please enter the text in chat to verify", false), true);
+        n += eq("captcha: overlay ignored", ChatClassifier.captchaLineEligible("enter the text in chat", true), false);
+        n += eq("captcha: own line ignored", ChatClassifier.captchaLineEligible("[YCBotChallenge] captcha detected", false), false);
         return n;
     }
 

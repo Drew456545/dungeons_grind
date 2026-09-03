@@ -378,6 +378,20 @@ public class YCBotChallengeConfig {
      * TTK is HUD-only; this ratio is the buy switch.
      */
     public double zoneOverSwordRatio = 1.25;
+    /**
+     * Rebirth horizon (0.9.15): a sword/zone is lost at the rebirth, so it is bought
+     * only if it pays for itself first: price < remaining gap x (gain - 1), where gain
+     * is the income multiplier expected from the buy. Logs 2026-09-03: the 415T zone 8
+     * against a 475T gap at 109T/min delayed the rebirth ~2 min; zone 7 for 7.55T
+     * against a 22T gap ~5 min. Early-snowball buys (K-B against a T gap) always pass.
+     */
+    public boolean rebirthHorizonEnabled = true;
+    /** Income multiplier assumed for the next zone right after the buy (lvl6->7 and lvl7->8 measured 1.2-1.4). */
+    public double rebirthHorizonZoneGain = 1.3;
+    /** Income multiplier assumed for the next sword tier (TTK 4.0s -> 3.1s measured ~1.3). */
+    public double rebirthHorizonSwordGain = 1.25;
+    /** After a sword/zone success, log the observed income ratio (upgrade_gain) once this long later; 0 = off. */
+    public int rebirthHorizonGainWindowMs = 180_000;
     /** Minimum gap between any two typed commands (server: "again in less than 1 second"). */
     public int commandCooldownMs = 1100;
     /** Look-at-menu pause after Rebirth GUI opens, before Esc or diamond click. */
@@ -733,7 +747,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 18;
+    public static final int CURRENT_CONFIG_VERSION = 19;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -905,6 +919,10 @@ public class YCBotChallengeConfig {
             ignoreMobPatterns = fresh.ignoreMobPatterns;
             changed = true;
         }
+        if (configVersion < 19) {
+            // v19: rebirth horizon (knobs default from the initializers; version bump records the rule).
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -981,6 +999,10 @@ public class YCBotChallengeConfig {
         if (zoneCommand == null || zoneCommand.isBlank()) zoneCommand = "/zone max";
         if (rebirthCommand == null || rebirthCommand.isBlank()) rebirthCommand = "/rebirth";
         if (zoneOverSwordRatio <= 0) zoneOverSwordRatio = 1.25;
+        if (rebirthHorizonZoneGain < 1.0) rebirthHorizonZoneGain = 1.3;
+        if (rebirthHorizonSwordGain < 1.0) rebirthHorizonSwordGain = 1.25;
+        if (rebirthHorizonGainWindowMs < 0) rebirthHorizonGainWindowMs = 0;
+        if (rebirthHorizonGainWindowMs > 0 && rebirthHorizonGainWindowMs < 30_000) rebirthHorizonGainWindowMs = 30_000;
         if (commandCooldownMs < 0) commandCooldownMs = 1100;
         if (rebirthLookMaxMs < rebirthLookMinMs) rebirthLookMaxMs = rebirthLookMinMs;
         if (postRebirthSettleMinMs < 0) postRebirthSettleMinMs = 4_000;

@@ -884,9 +884,11 @@ public class StatsTracker {
         boolean ours = text.startsWith("[YCBotChallenge]");
         // Action-bar text is never the captcha prompt (and repeats every tick).
         if (!overlay && !ours) {
+            boolean eligible = ChatClassifier.captchaLineEligible(text, overlay);
             for (Pattern p : captchaRes) {
                 if (p.matcher(text).find()) {
-                    captchaMessage = text;
+                    if (eligible) captchaMessage = text;
+                    else log("captcha_chat_ignored", "raw", text, "why", "player-or-broadcast");
                     break;
                 }
             }

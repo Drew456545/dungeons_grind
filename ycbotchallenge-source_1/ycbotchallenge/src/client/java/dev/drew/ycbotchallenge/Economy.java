@@ -221,6 +221,42 @@ public final class Economy {
         return false;
     }
 
+    /**
+     * Rebirth horizon (0.9.15): a sword/zone bought before a rebirth is lost with it,
+     * so it must pay for itself first. With income I per minute, price P, remaining gap
+     * G = R - bal and an income multiplier g from the buy, staying rebirths in G/I
+     * minutes and buying in (G + P)/(I*g); buy only when that is sooner, i.e.
+     * P < G*(g - 1). Logs 2026-09-03: the 415T zone 8 against a 475T gap at
+     * 109T/min delayed the rebirth ~2 min; the 7.55T zone 7 against a 22T gap ~5 min;
+     * every early-snowball buy (K-B prices against a T gap) passes. Unknown numbers,
+     * a covered rebirth or a gain of 1.0 = no opinion (true).
+     */
+    public static boolean rebirthHorizonAllows(Double price, Double bal, Double rebirthTarget,
+                                               Double incomePerMin, double gain) {
+        if (price == null || bal == null || rebirthTarget == null || incomePerMin == null) return true;
+        if (gain <= 1.0 || incomePerMin <= 0 || price <= 0) return true;
+        double gap = rebirthTarget - bal;
+        if (gap <= 0) return true;
+        double stayEta = gap / incomePerMin;
+        double buyEta = (gap + price) / (incomePerMin * gain);
+        return buyEta < stayEta;
+    }
+
+    /** Minutes to the rebirth at the current income; 0 when covered, null when unknown. */
+    public static Double rebirthEtaMin(Double bal, Double rebirthTarget, Double incomePerMin) {
+        if (bal == null || rebirthTarget == null) return null;
+        if (bal >= rebirthTarget) return 0.0;
+        if (incomePerMin == null || incomePerMin <= 0) return null;
+        return (rebirthTarget - bal) / incomePerMin;
+    }
+
+    /** Minutes to the rebirth if the buy is made now and income multiplies by {@code gain}; null when unknown. */
+    public static Double buyEtaMin(Double price, Double bal, Double rebirthTarget, Double incomePerMin, double gain) {
+        if (price == null || bal == null || rebirthTarget == null || incomePerMin == null) return null;
+        if (incomePerMin <= 0 || gain <= 0) return null;
+        return Math.max(0, rebirthTarget - bal + price) / (incomePerMin * gain);
+    }
+
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);
