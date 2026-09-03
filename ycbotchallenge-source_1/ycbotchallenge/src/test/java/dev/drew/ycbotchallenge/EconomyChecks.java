@@ -1101,11 +1101,13 @@ public final class EconomyChecks {
         // Two slips, one right at the end: still exact.
         k = ChatTyper.Keys.start();
         int i = 0;
+        java.util.Set<Integer> slipped = new java.util.HashSet<>();
         while (!ChatTyper.done(k, cmd)) {
-            boolean slip = k.typoAt() < 0 && (k.next() == 3 || k.next() == cmd.length() - 1);
+            boolean slip = k.typoAt() < 0 && (k.next() == 3 || k.next() == cmd.length() - 1) && slipped.add(k.next());
             k = ChatTyper.step(k, cmd, slip, 'q');
             if (++i > 100) break;
         }
+        n += eq("two slips happened", slipped.size(), 2);
         n += eq("two slips, exact", k.typed(), cmd);
         n += eq("no slip path", ChatTyper.step(ChatTyper.Keys.start(), "ab", false, 'x').typed(), "a");
         n += eq("past the end is a no-op", ChatTyper.step(new ChatTyper.Keys("ab", 2, -1), "ab", false, 'x').typed(), "ab");
