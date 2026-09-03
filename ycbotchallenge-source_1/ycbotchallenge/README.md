@@ -6,7 +6,7 @@ Built and compiled against Minecraft 1.21.11 / yarn 1.21.11+build.6 / Fabric API
 
 ## Install
 
-Drop `ycbotchallenge-0.9.9.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
+Drop `ycbotchallenge-0.9.10.jar` into your `mods/` folder alongside Fabric Loader (>= 0.16) and Fabric API for 1.21.11. Client-side only — nothing needed on the server.
 
 ## Use
 
@@ -50,6 +50,17 @@ Chat-driven, zero-spam, buy-or-wait. `/swordmax`, `/zone max` and `/rebirth` are
 
 The sidebar is reread every second: the money row feeds the buy path directly, other currencies (`sidebarCurrencies`) are logged, and snapshots publish every `scoreboardSnapshotMs` (5s). `debugSidebar` defaults to **true** while parsers are tuned from live evidence — every new sidebar row lands in the JSONL as `sidebar_raw`. Money values in the JSONL are suffixed strings (`75.1B`), not scientific notation. Config knobs auto-migrate (`configVersion` 11 forces the 0.9.7 defaults: success patterns, zone gate, eval triggers, cooldown relaxation, stall-aware cook timeout, `minKillsAfterAffordable` 0).
 
+### 0.9.10: de-fingerprinting the loop
+
+A timing pass over every 2026-09-02/03 log found server-visible regularities; each has a fix and a knob:
+
+- **No success follow-up.** 0.9.x re-sent the same command 3.5–4.9s after every success to learn the next price (8/8, spread 10%). Now the next tier stays unknown until the balance passes the last paid price × (1 + a growth rolled per success in `retryPriceGrowthMinPct/MaxPct`, 0.2–0.8), logged as `retryAt` on `upgrade_result`.
+- **No enable ritual.** Learned prices persist per **username** in `config/ycbotchallenge-state.json` (`state_loaded` / `state_saved`; wiped to the rebirth floor on a rebirth), so a restart never probes. An unknown account gets one `/rebirth` seed per session only after `rebirthSeedMinKillsMin/Max` (5–20) kills **and** `rebirthSeedDelayMin/MaxMs` (2–10 min). After a rebirth the old cost is a floor: one deferred re-probe learns the next goal after `rebirthReprobeMinKillsMin/Max` (15–40) kills and `rebirthReprobeDelayMin/MaxMs` (5–15 min) (`upgrade_plan via=reprobe`), or earlier if money passes the floor × (1 + roll ≤ `rebirthRetryFloorGrowthMaxPct`) (`via=retry-floor`).
+- **Rebirth settle.** After our own teleport the bot stands `postRebirthSettleMin/MaxMs` (4–9s; zone advances `postZoneSettleMin/MaxMs` 2–5s), glances around (`postTeleportLookChance`, `mouse_flick reason=settle-look`), and only then retargets (`settle_start` / `settle_end`). 0.9.9 tagged a stale mob one tick after the rebirth teleport.
+- **Buy hesitation on long saves.** With `buyHesitationChance` (0.3) an affordable buy is held `buyHesitationMin/MaxMs` (30s–3min) — only when the price has been known for `buyHesitationMinSaveMs` (2 min) and the balance is under `cooldownRelaxBalanceMult` × price. Never in the post-rebirth snowball (back to zone 1, `/swordmax` levels lost, enchants kept, balance 10×/min), never for rebirth, never twice in a row (`upgrade_hesitate`, `upgrade_skip reason=hesitate`). `buyNoticeDelayMaxMs` is 15s.
+- **Reaction floor** `reactionDelayMinMs` 200 (was 120). **Bimodal breaks:** `breakShortChance` (0.7) of `breakShortMin/MaxMs` (20–60s), else `breakLongMinutesMin/Max` (5–15 min); `break_start kind=short|long`.
+- **Aim and movement.** The re-aim threshold scales with distance (`reacquireFarMult` ×3 at `reacquireFarBlocks` beyond reach, base inside `reacquireFinalBlocks`) — no more 300ms correction chains while walking. Turns over `bigTurnDeg` (60°) land `bigTurnShortMin/MaxPct` (8–15%) short and get a settle flick (`mouse_flick short=true` then `settle=true`); `flickMaxDurationMs` 1100 replaces the 700ms wall. Per-target reach is jittered (`reachJitterPct` 0.2) with an occasional overshoot (`overshootChance`). Long cooks get glances (`cookGlanceAfterMs`, every `cookGlanceMin/MaxMs`; `reason=glance` / `glance-back`). The enchanter's first tab is skipped `enchantSkipFirstTabChance` of the time.
+
 ### Enchants during long kills
 
 The server auto-attacks a tagged mob until it dies, so a fresh-stage 50–120s kill is idle time. When the mob's predicted remaining time is at least `enchantMinEtaMs` (45s), the bot right-clicks with the sword to open the **SWORD ENCHANTER**, walks the `enchantTabs` (souls → essence → shards, each spending its own sidebar currency), and for the **first** enchant in slot order that is not `LOCKED`, not maxed, and affordable, opens its `<Name> Upgrade` GUI and clicks **Max Upgrade** (buys level 1 upward for an unowned enchant). Then the next enchant, then the next tab. No optimisation by design.
@@ -76,7 +87,7 @@ Realism: one visit per qualifying kill, gaps re-rolled log-normal in `enchantVis
 - `upgradeMinIntervalMs` (60s) — backstop ceiling between sends of the same kind. Unaffordable evals do not send.
 - `buyNoticeDelayMinMs/MaxMs` (2–8s) — humanized delay between becoming affordable and typing.
 - `successSilenceMs` (3000) — no fail line this long after a send = purchase succeeded.
-- `retryPriceGrowthPct` (0) — unknown-price retry fires when the balance passes old price × (1 + this).
+- `retryPriceGrowthMinPct/MaxPct` (0.2–0.8) — unknown-price retry fires when the balance passes old price × (1 + a growth rolled per success). `retryPriceGrowthPct` is legacy.
 - `upgradeResponseWindowMs` (4000) — replies are only attributable to our send within this window.
 - `expectedTeleportAfterZoneMs` (8000) — stop-protocol exemption after our own `/zone max`.
 - `upgradeSpendSettleMs` (2500) — ignore the sidebar this long after a buy (board lags after spending).

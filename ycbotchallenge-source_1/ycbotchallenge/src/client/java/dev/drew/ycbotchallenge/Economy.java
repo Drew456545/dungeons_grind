@@ -143,6 +143,42 @@ public final class Economy {
         return killsNow - affordableAtKill >= minExtra;
     }
 
+    /**
+     * Re-aim threshold that grows with distance: a person walking at a mob 8 blocks
+     * out does not micro-correct every 300ms; the aim only has to be right inside
+     * {@code finalBlocks} of reach. Returns {@code base} there, up to
+     * {@code base × farMult} at {@code farBlocks} beyond reach and further.
+     */
+    public static double reacquireThresholdDeg(double base, double dist, double reach,
+                                               double farMult, double farBlocks, double finalBlocks) {
+        double beyond = dist - reach;
+        if (beyond <= finalBlocks) return base;
+        double f = 1.0 + (Math.max(1.0, farMult) - 1.0) * Math.min(1.0, beyond / Math.max(0.1, farBlocks));
+        return base * f;
+    }
+
+    /** Breaks are bimodal (a short stretch or a real walk-away), never always 1–4 minutes. */
+    public static String breakKind(double roll, double shortChance) {
+        return roll < shortChance ? "short" : "long";
+    }
+
+    /**
+     * Buy hesitation only for long saves: the price must have been known for at least
+     * {@code minSaveMs}, and the balance must not dwarf it (that is the post-rebirth
+     * snowball, where every upgrade is cheap and waiting is a real loss).
+     */
+    public static boolean hesitationApplies(long priceSeenAt, long now, int minSaveMs,
+                                            Double bal, Double price, double relaxMult) {
+        if (priceSeenAt <= 0 || now - priceSeenAt < Math.max(0, minSaveMs)) return false;
+        if (bal != null && price != null && price > 0 && relaxMult > 0 && bal >= relaxMult * price) return false;
+        return true;
+    }
+
+    /** A deferred probe (/rebirth seed or re-probe) is due after both a kill count and a delay. */
+    public static boolean probeDue(int killsSince, int minKills, long msSince, long minDelayMs) {
+        return killsSince >= Math.max(0, minKills) && msSince >= Math.max(0, minDelayMs);
+    }
+
     /** True once {@code settleMs} have passed since a spend (or there was no spend). */
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;

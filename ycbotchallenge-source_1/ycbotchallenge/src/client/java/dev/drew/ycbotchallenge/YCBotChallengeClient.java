@@ -45,6 +45,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         config = YCBotChallengeConfig.load(configPath);
         Amounts.configure(config.suffixScales);
         stats = new StatsTracker(config);
+        stats.setStateStore(new StateStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-state.json")));
         combat = new CombatController(config, stats);
         upgrades = new UpgradeController(config, stats);
         enchants = new EnchantController(config, stats);
@@ -252,6 +253,11 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 stats.onEnable();
                 combat.lastPredictedTtkMs = null;
             }
+        }
+        if (on && client != null && client.getSession() != null) {
+            // Learned prices are per account (Drew runs an alt): load this user's, so no
+            // /rebirth or /swordmax probe is needed to relearn what the server already said.
+            stats.attachUser(client.getSession().getUsername());
         }
         if (on) {
             if (logger == null) {

@@ -30,6 +30,8 @@ public final class MouseDriver {
     private long lastChainAt;
 
     private long lastTremorMs;
+    /** The previous flick was a shortened big turn; the next intent is its settle. */
+    private boolean settlePending;
 
     // agility regime: subtle tempo variance so no single Fitts regression fits a session
     private double regimeMult = 1.0;
@@ -85,12 +87,25 @@ public final class MouseDriver {
         double dist = Math.sqrt(dy * dy + dp * dp);
         if (dist < 0.35) return; // already there — don't twitch
 
-        // Occasional small overshoot: land just past the point, a later intent can correct.
-        if (dist > 8.0 && rng.nextDouble() < 0.28) {
+        // Big turns are two movements for a person: a fast coarse swing that lands
+        // short, then a settle flick — the caller's reacquire supplies it next tick
+        // (logged with settle=true). Otherwise: occasional small overshoot, a later
+        // intent can correct.
+        boolean shortened = false;
+        if (dist > cfg.bigTurnDeg) {
+            double lo = Math.max(0, cfg.bigTurnShortMinPct);
+            double hi = Math.max(lo, cfg.bigTurnShortMaxPct);
+            double shortPct = lo + rng.nextDouble() * (hi - lo);
+            dy -= (float) (dy * shortPct);
+            dp -= (float) (dp * shortPct);
+            shortened = true;
+        } else if (dist > 8.0 && rng.nextDouble() < 0.28) {
             double extra = 0.04 + rng.nextDouble() * 0.06;
             dy += (float) (dy * extra);
             dp += (float) (dp * extra * 0.6);
         }
+        boolean settleFlick = settlePending;
+        settlePending = shortened;
 
         float endYaw = curYaw + dy;
         float endPitch = MathHelper.clamp(curPitch + dp, -89f, 89f);
@@ -115,8 +130,8 @@ public final class MouseDriver {
         // Fitts-ish: bigger flicks take longer; agility shortens them.
         // Tuned so a 30° snap lands in ~350ms at agility 1.0 — players acquire fast.
         double duration = (70.0 + 110.0 * Math.log(dist / 6.0 + 1.0) / Math.log(2)) / agility;
-        duration *= 0.85 + rng.nextDouble() * 0.40;
-        pathDurationMs = Math.round(MathHelper.clamp(duration, 90, 700));
+        duration *= 0.85 + rng.nextDouble() * 0.45;
+        pathDurationMs = Math.round(MathHelper.clamp(duration, 90, Math.max(200, cfg.flickMaxDurationMs)));
 
         y0 = curYaw; p0 = curPitch;
         y3 = endYaw; p3 = endPitch;
@@ -141,7 +156,9 @@ public final class MouseDriver {
                 "reason", reason,
                 "distDeg", Math.round(dist * 10.0) / 10.0,
                 "durationMs", pathDurationMs,
-                "chained", chaining);
+                "chained", chaining,
+                "settle", settleFlick,
+                "short", shortened);
         }
     }
 

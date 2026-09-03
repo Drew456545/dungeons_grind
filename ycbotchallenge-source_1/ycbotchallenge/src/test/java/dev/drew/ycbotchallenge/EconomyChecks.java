@@ -50,6 +50,8 @@ public final class EconomyChecks {
         n += choose();
         n += gates();
         n += rebirth();
+        n += realism();
+        n += stateStore();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -466,6 +468,70 @@ public final class EconomyChecks {
         n += eq("sword by name", lore.isSword("Golden Sword", List.of()), true);
         n += eq("sword by lore", lore.isSword("Thing", List.of("Enchants: (9)", "| Speed MAX")), true);
         n += eq("not a sword", lore.isSword("Rusty Key", List.of("Open a crate")), false);
+        return n;
+    }
+
+    /** 0.9.10 de-fingerprinting helpers. */
+    private static int realism() {
+        int n = 0;
+        // Re-aim threshold: base inside the final 1.5 blocks, ×3 four blocks out, capped.
+        n += eq("reacquire at reach", Economy.reacquireThresholdDeg(3.0, 3.0, 3.0, 3.0, 4.0, 1.5), 3.0, 1e-9);
+        n += eq("reacquire at reach+1", Economy.reacquireThresholdDeg(3.0, 4.0, 3.0, 3.0, 4.0, 1.5), 3.0, 1e-9);
+        n += eq("reacquire at reach+2", Economy.reacquireThresholdDeg(3.0, 5.0, 3.0, 3.0, 4.0, 1.5), 6.0, 1e-9);
+        n += eq("reacquire at reach+4", Economy.reacquireThresholdDeg(3.0, 7.0, 3.0, 3.0, 4.0, 1.5), 9.0, 1e-9);
+        n += eq("reacquire far capped", Economy.reacquireThresholdDeg(3.0, 20.0, 3.0, 3.0, 4.0, 1.5), 9.0, 1e-9);
+        n += eq("reacquire mult<1 is base", Economy.reacquireThresholdDeg(3.0, 20.0, 3.0, 0.5, 4.0, 1.5), 3.0, 1e-9);
+        // Bimodal breaks.
+        n += eq("break short", Economy.breakKind(0.1, 0.7), "short");
+        n += eq("break long", Economy.breakKind(0.9, 0.7), "long");
+        // Hesitation only on long saves, never in the snowball.
+        n += eq("hesitate: price just learned", Economy.hesitationApplies(100_000, 130_000, 120_000, 1e12, 0.9e12, 3.0), false);
+        n += eq("hesitate: long save", Economy.hesitationApplies(0 + 1, 400_000, 120_000, 1e12, 0.9e12, 3.0), true);
+        n += eq("hesitate: snowball (bal 5x price)", Economy.hesitationApplies(1, 400_000, 120_000, 5e12, 0.9e12, 3.0), false);
+        n += eq("hesitate: unknown seen-at", Economy.hesitationApplies(0, 400_000, 120_000, 1e12, 0.9e12, 3.0), false);
+        // Deferred probes need both the kills and the delay.
+        n += eq("probe: kills only", Economy.probeDue(20, 15, 60_000, 300_000), false);
+        n += eq("probe: delay only", Economy.probeDue(3, 15, 900_000, 300_000), false);
+        n += eq("probe: both", Economy.probeDue(20, 15, 900_000, 300_000), true);
+        // Unknown-price retry with a rolled growth (replaces the follow-up re-send).
+        n += eq("retry below floor×1.2", Economy.retryUnknownAllowed(1.0e12, 1.1e12, 0.2), false);
+        n += eq("retry at floor×1.2", Economy.retryUnknownAllowed(1.0e12, 1.2e12, 0.2), true);
+        return n;
+    }
+
+    /** Learned prices persist per username (Drew runs an alt) and survive a restart. */
+    private static int stateStore() {
+        int n = 0;
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-state", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            StateStore s = new StateStore(tmp);
+            n += eq("empty store", s.get("Ihazekids69420") == null, true);
+            StateStore.Entry e = new StateStore.Entry();
+            e.swordTarget = 6.21e12;
+            e.rebirthLastPrice = 30e12;
+            e.rebirths = 2;
+            s.put("Ihazekids69420", e);
+            StateStore.Entry alt = new StateStore.Entry();
+            alt.swordTarget = 41.4e9;
+            s.put("AltAccount", alt);
+            // Reload from disk: per-user isolation and values intact.
+            StateStore r = new StateStore(tmp);
+            n += eq("main sword", r.get("ihazekids69420").swordTarget, 6.21e12, 1e6);
+            n += eq("main rebirth floor", r.get("IHAZEKIDS69420").rebirthLastPrice, 30e12, 1e6);
+            n += eq("main rebirths", r.get("Ihazekids69420").rebirths, 2);
+            n += eq("alt sword", r.get("altaccount").swordTarget, 41.4e9, 1e3);
+            n += eq("alt has no rebirth floor", r.get("altaccount").rebirthLastPrice == null, true);
+            r.remove("Ihazekids69420");
+            StateStore r2 = new StateStore(tmp);
+            n += eq("main removed", r2.get("Ihazekids69420") == null, true);
+            n += eq("alt survives removal", r2.get("AltAccount") != null, true);
+            n += eq("null user", r2.get(null) == null, true);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL stateStore: " + ex);
+            n++;
+        }
         return n;
     }
 

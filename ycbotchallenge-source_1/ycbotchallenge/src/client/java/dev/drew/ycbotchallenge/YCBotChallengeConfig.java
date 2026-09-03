@@ -13,7 +13,8 @@ public class YCBotChallengeConfig {
     public double reach = 3.0;
     public double targetRange = 50.0;
     public int tapCooldownMs = 300;
-    public int reactionDelayMinMs = 120;
+    /** Reaction to a kill before the next target: 0.9.x floored at 120ms, which is faster than people notice a bar vanish. */
+    public int reactionDelayMinMs = 200;
     public int reactionDelayMaxMs = 350;
     public double idleChancePerMinute = 0.5;
     public int idleMinMs = 800;
@@ -316,8 +317,45 @@ public class YCBotChallengeConfig {
     /** Minimum gap between any two typed commands (server: "again in less than 1 second"). */
     public int commandCooldownMs = 1100;
     /** Look-at-menu pause after Rebirth GUI opens, before Esc or diamond click. */
-    public int rebirthLookMinMs = 800;
-    public int rebirthLookMaxMs = 2000;
+    public int rebirthLookMinMs = 600;
+    public int rebirthLookMaxMs = 3500;
+
+    // --- 0.9.10: rebirth settle, lazy /rebirth knowledge, hesitation, de-fingerprinting ---
+
+    /** Stand and look around after our own teleport before targeting: rebirth (zone 1 reload) vs zone advance. */
+    public int postRebirthSettleMinMs = 4_000;
+    public int postRebirthSettleMaxMs = 9_000;
+    public int postZoneSettleMinMs = 2_000;
+    public int postZoneSettleMaxMs = 5_000;
+    public double postTeleportLookChance = 0.8;
+    /**
+     * Unknown-price retry after a success: try again once the balance passes the last
+     * paid price × (1 + a growth rolled in this range per success) — replaces the
+     * fixed retryPriceGrowthPct and the 3.5–4.9s follow-up re-send.
+     */
+    public double retryPriceGrowthMinPct = 0.20;
+    public double retryPriceGrowthMaxPct = 0.80;
+    /** After a rebirth the old cost is a floor; retry the GUI once money passes it × (1 + roll in [0, this]). */
+    public double rebirthRetryFloorGrowthMaxPct = 0.5;
+    /** Unknown account: the one /rebirth seed per session waits for both a rolled kill count and a delay. */
+    public int rebirthSeedMinKillsMin = 5;
+    public int rebirthSeedMinKillsMax = 20;
+    public int rebirthSeedDelayMinMs = 120_000;
+    public int rebirthSeedDelayMaxMs = 600_000;
+    /** After a rebirth: one deferred /rebirth re-probe learns the next goal ("at some point"). */
+    public int rebirthReprobeMinKillsMin = 15;
+    public int rebirthReprobeMinKillsMax = 40;
+    public int rebirthReprobeDelayMinMs = 300_000;
+    public int rebirthReprobeDelayMaxMs = 900_000;
+    /**
+     * Buy hesitation on long saves: with this chance an affordable buy is held for a
+     * random 30s–3min. Only when the price has been known for buyHesitationMinSaveMs and
+     * the balance is under cooldownRelaxBalanceMult × price (never in the post-rebirth snowball).
+     */
+    public double buyHesitationChance = 0.30;
+    public int buyHesitationMinMs = 30_000;
+    public int buyHesitationMaxMs = 180_000;
+    public int buyHesitationMinSaveMs = 120_000;
 
     // --- Enchants during long kills (SWORD ENCHANTER, right-click with the sword) ---
 
@@ -441,7 +479,7 @@ public class YCBotChallengeConfig {
     public double retryPriceGrowthPct = 0.0;
     /** Humanized "notice" delay between becoming affordable and typing the buy. */
     public int buyNoticeDelayMinMs = 2000;
-    public int buyNoticeDelayMaxMs = 8000;
+    public int buyNoticeDelayMaxMs = 15000;
     /** Stop-protocol exemption window after our own /zone max (advancing teleports you). */
     public int expectedTeleportAfterZoneMs = 8000;
     /** Same exemption after a successful rebirth diamond click (GUI closes and teleports). */
@@ -548,8 +586,34 @@ public class YCBotChallengeConfig {
     public boolean breaksResetOnToggle = true;
     public int focusMinutesMin = 45;
     public int focusMinutesMax = 90;
+    /** Legacy (pre-0.9.10 uniform 1–4 min breaks); inert. */
     public int breakMinutesMin = 1;
     public int breakMinutesMax = 4;
+    /** Breaks are bimodal: a short stretch (breakShortChance) or a real walk-away of several minutes. */
+    public double breakShortChance = 0.7;
+    public int breakShortMinMs = 20_000;
+    public int breakShortMaxMs = 60_000;
+    public int breakLongMinutesMin = 5;
+    public int breakLongMinutesMax = 15;
+    /** Re-aim threshold grows with distance (× reacquireFarMult at reacquireFarBlocks beyond reach); base inside reacquireFinalBlocks. */
+    public double reacquireFarMult = 3.0;
+    public double reacquireFarBlocks = 4.0;
+    public double reacquireFinalBlocks = 1.5;
+    /** Turns over this many degrees are two movements: a coarse swing landing 8–15% short, then a settle flick. */
+    public double bigTurnDeg = 60.0;
+    public double bigTurnShortMinPct = 0.08;
+    public double bigTurnShortMaxPct = 0.15;
+    /** Ceiling on one flick's duration (0.9.x capped every big turn at exactly 700ms). */
+    public int flickMaxDurationMs = 1100;
+    /** Per-target reach is reach × (1 − U(0, this)); occasionally hold W a tick too long (overshootChance). */
+    public double reachJitterPct = 0.2;
+    public double overshootChance = 0.1;
+    /** During long cooks (WATCH/HESITATE styles) glance away and back every 10–25s once the cook has run this long. */
+    public int cookGlanceAfterMs = 10_000;
+    public int cookGlanceMinMs = 10_000;
+    public int cookGlanceMaxMs = 25_000;
+    /** Skip clicking the enchanter's first tab with this chance (it opens there already). */
+    public double enchantSkipFirstTabChance = 0.5;
     /** "ignore" = ghost filter untouched; "sometimes" = attack movers with movingTargetAttackChance. */
     public String movingTargetPolicy = "ignore";
     public double movingTargetAttackChance = 0.15;
@@ -583,7 +647,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 13;
+    public static final int CURRENT_CONFIG_VERSION = 14;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -708,6 +772,23 @@ public class YCBotChallengeConfig {
             enchantSwordPattern = fresh.enchantSwordPattern;
             changed = true;
         }
+        if (configVersion < 14) {
+            // v14: rebirth settle, lazy persisted /rebirth knowledge, no follow-up re-send,
+            // buy hesitation, reaction floor, bimodal breaks, aim/movement realism.
+            if (reactionDelayMinMs == 120) reactionDelayMinMs = fresh.reactionDelayMinMs;
+            if (buyNoticeDelayMaxMs == 8000) buyNoticeDelayMaxMs = fresh.buyNoticeDelayMaxMs;
+            retryPriceGrowthMinPct = Math.max(fresh.retryPriceGrowthMinPct, retryPriceGrowthPct);
+            retryPriceGrowthMaxPct = Math.max(retryPriceGrowthMinPct, fresh.retryPriceGrowthMaxPct);
+            rebirthLookMinMs = fresh.rebirthLookMinMs;
+            rebirthLookMaxMs = fresh.rebirthLookMaxMs;
+            breakShortChance = fresh.breakShortChance;
+            breakShortMinMs = fresh.breakShortMinMs;
+            breakShortMaxMs = fresh.breakShortMaxMs;
+            breakLongMinutesMin = fresh.breakLongMinutesMin;
+            breakLongMinutesMax = fresh.breakLongMinutesMax;
+            flickMaxDurationMs = fresh.flickMaxDurationMs;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -754,6 +835,44 @@ public class YCBotChallengeConfig {
         if (zoneOverSwordRatio <= 0) zoneOverSwordRatio = 1.25;
         if (commandCooldownMs < 0) commandCooldownMs = 1100;
         if (rebirthLookMaxMs < rebirthLookMinMs) rebirthLookMaxMs = rebirthLookMinMs;
+        if (postRebirthSettleMinMs < 0) postRebirthSettleMinMs = 4_000;
+        if (postRebirthSettleMaxMs < postRebirthSettleMinMs) postRebirthSettleMaxMs = postRebirthSettleMinMs;
+        if (postZoneSettleMinMs < 0) postZoneSettleMinMs = 2_000;
+        if (postZoneSettleMaxMs < postZoneSettleMinMs) postZoneSettleMaxMs = postZoneSettleMinMs;
+        if (postTeleportLookChance < 0 || postTeleportLookChance > 1) postTeleportLookChance = 0.8;
+        if (retryPriceGrowthMinPct < 0) retryPriceGrowthMinPct = 0;
+        if (retryPriceGrowthMaxPct < retryPriceGrowthMinPct) retryPriceGrowthMaxPct = retryPriceGrowthMinPct;
+        if (rebirthRetryFloorGrowthMaxPct < 0) rebirthRetryFloorGrowthMaxPct = 0;
+        if (rebirthSeedMinKillsMin < 0) rebirthSeedMinKillsMin = 0;
+        if (rebirthSeedMinKillsMax < rebirthSeedMinKillsMin) rebirthSeedMinKillsMax = rebirthSeedMinKillsMin;
+        if (rebirthSeedDelayMinMs < 0) rebirthSeedDelayMinMs = 0;
+        if (rebirthSeedDelayMaxMs < rebirthSeedDelayMinMs) rebirthSeedDelayMaxMs = rebirthSeedDelayMinMs;
+        if (rebirthReprobeMinKillsMin < 0) rebirthReprobeMinKillsMin = 0;
+        if (rebirthReprobeMinKillsMax < rebirthReprobeMinKillsMin) rebirthReprobeMinKillsMax = rebirthReprobeMinKillsMin;
+        if (rebirthReprobeDelayMinMs < 0) rebirthReprobeDelayMinMs = 0;
+        if (rebirthReprobeDelayMaxMs < rebirthReprobeDelayMinMs) rebirthReprobeDelayMaxMs = rebirthReprobeDelayMinMs;
+        if (buyHesitationChance < 0 || buyHesitationChance > 1) buyHesitationChance = 0.30;
+        if (buyHesitationMinMs < 0) buyHesitationMinMs = 0;
+        if (buyHesitationMaxMs < buyHesitationMinMs) buyHesitationMaxMs = buyHesitationMinMs;
+        if (buyHesitationMinSaveMs < 0) buyHesitationMinSaveMs = 0;
+        if (breakShortChance < 0 || breakShortChance > 1) breakShortChance = 0.7;
+        if (breakShortMinMs < 1000) breakShortMinMs = 20_000;
+        if (breakShortMaxMs < breakShortMinMs) breakShortMaxMs = breakShortMinMs;
+        if (breakLongMinutesMin < 1) breakLongMinutesMin = 5;
+        if (breakLongMinutesMax < breakLongMinutesMin) breakLongMinutesMax = breakLongMinutesMin;
+        if (reacquireFarMult < 1) reacquireFarMult = 1;
+        if (reacquireFarBlocks <= 0) reacquireFarBlocks = 4.0;
+        if (reacquireFinalBlocks < 0) reacquireFinalBlocks = 0;
+        if (bigTurnDeg <= 0) bigTurnDeg = 60.0;
+        if (bigTurnShortMinPct < 0) bigTurnShortMinPct = 0;
+        if (bigTurnShortMaxPct < bigTurnShortMinPct) bigTurnShortMaxPct = bigTurnShortMinPct;
+        if (flickMaxDurationMs < 200) flickMaxDurationMs = 1100;
+        if (reachJitterPct < 0 || reachJitterPct > 0.9) reachJitterPct = 0.2;
+        if (overshootChance < 0 || overshootChance > 1) overshootChance = 0.1;
+        if (cookGlanceAfterMs < 0) cookGlanceAfterMs = 10_000;
+        if (cookGlanceMinMs < 1000) cookGlanceMinMs = 10_000;
+        if (cookGlanceMaxMs < cookGlanceMinMs) cookGlanceMaxMs = cookGlanceMinMs;
+        if (enchantSkipFirstTabChance < 0 || enchantSkipFirstTabChance > 1) enchantSkipFirstTabChance = 0.5;
         YCBotChallengeConfig freshEnchant = new YCBotChallengeConfig();
         if (enchantTabs == null || enchantTabs.isEmpty()) enchantTabs = freshEnchant.enchantTabs;
         if (enchantSignaturePattern == null || enchantSignaturePattern.isBlank()) enchantSignaturePattern = freshEnchant.enchantSignaturePattern;

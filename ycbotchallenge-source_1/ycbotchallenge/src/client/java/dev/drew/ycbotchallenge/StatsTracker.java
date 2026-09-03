@@ -51,6 +51,22 @@ public class StatsTracker {
     private Double swordLastPrice = null;
     private Double zoneLastPrice = null;
     private Double rebirthLastPrice = null;
+    /** When each kind's current price was first learned — hesitation applies only to long saves. */
+    private long swordPriceSeenAt = 0;
+    private long zonePriceSeenAt = 0;
+    private long rebirthPriceSeenAt = 0;
+    /** Per-success rolled growth before an unknown-price retry, so the margin is never the same twice. */
+    private double swordRetryGrowth = 0;
+    private double zoneRetryGrowth = 0;
+    private double rebirthRetryGrowth = 0;
+    /** Last rebirth seen by any signal; the controller schedules the deferred /rebirth re-probe from it. */
+    public volatile long lastRebirthAt = 0;
+    /** Learned prices persisted per username (see StateStore). */
+    private StateStore stateStore;
+    private String stateUser;
+    private long stateDirtyAt = 0;
+    /** Why the next expected teleport happens ("zone" advance or "rebirth") — picks the settle length. */
+    private String expectTeleportReason = "zone";
     /** Trailing income rate from "Reward Summary" money lines (EMA, per ms) and the window they cover. */
     private double summaryRatePerMs = 0;
     private long summaryWindowMs = 60_000;
@@ -277,11 +293,89 @@ public class StatsTracker {
         // not on the /rebirth seed (Esc after the gap line does not move you).
         if ("zone".equals(kind)) {
             expectTeleportUntil = now + Math.max(0, cfg.expectedTeleportAfterZoneMs);
+            expectTeleportReason = "zone";
         }
     }
 
+    /** Rebirth diamond click: the teleport that follows is a rebirth, not a zone advance. */
     public void armTeleport(int ms) {
         expectTeleportUntil = System.currentTimeMillis() + Math.max(0, ms);
+        expectTeleportReason = "rebirth";
+    }
+
+    /** Reason of the teleport just consumed by the stop protocol; resets to "zone". */
+    public String consumeTeleportReason() {
+        String r = expectTeleportReason;
+        expectTeleportReason = "zone";
+        return r;
+    }
+
+    // --- persisted per-user state ---
+
+    public void setStateStore(StateStore store) { this.stateStore = store; }
+
+    /** Bot enabled as this username: load what the server already taught us for this account. */
+    public void attachUser(String username) {
+        stateUser = username;
+        if (stateStore == null || username == null) return;
+        StateStore.Entry e = stateStore.get(username);
+        if (e == null) { log("state_loaded", "user", username, "found", false); return; }
+        if (swordTarget == null) swordTarget = e.swordTarget;
+        if (zoneTarget == null) zoneTarget = e.zoneTarget;
+        if (rebirthTarget == null) rebirthTarget = e.rebirthTarget;
+        if (swordLastPrice == null) swordLastPrice = e.swordLastPrice;
+        if (zoneLastPrice == null) zoneLastPrice = e.zoneLastPrice;
+        if (rebirthLastPrice == null) rebirthLastPrice = e.rebirthLastPrice;
+        long now = System.currentTimeMillis();
+        if (swordTarget != null && swordPriceSeenAt == 0) swordPriceSeenAt = now;
+        if (zoneTarget != null && zonePriceSeenAt == 0) zonePriceSeenAt = now;
+        if (rebirthTarget != null && rebirthPriceSeenAt == 0) rebirthPriceSeenAt = now;
+        log("state_loaded", "user", username, "found", true, "savedAt", e.savedAt,
+            "swordTarget", fmt(swordTarget), "zoneTarget", fmt(zoneTarget), "rebirthTarget", fmt(rebirthTarget),
+            "swordFloor", fmt(swordLastPrice), "zoneFloor", fmt(zoneLastPrice), "rebirthFloor", fmt(rebirthLastPrice));
+    }
+
+    private static String fmt(Double v) { return v != null ? Amounts.format(v) : null; }
+
+    private void markStateDirty() {
+        if (stateDirtyAt == 0) stateDirtyAt = System.currentTimeMillis();
+    }
+
+    /** Debounced write-through of the learned prices (called from poll). */
+    private void flushState(long now) {
+        if (stateDirtyAt == 0 || now - stateDirtyAt < 2000) return;
+        stateDirtyAt = 0;
+        if (stateStore == null || stateUser == null) return;
+        StateStore.Entry e = new StateStore.Entry();
+        e.swordTarget = swordTarget;
+        e.zoneTarget = zoneTarget;
+        e.rebirthTarget = rebirthTarget;
+        e.swordLastPrice = swordLastPrice;
+        e.zoneLastPrice = zoneLastPrice;
+        e.rebirthLastPrice = rebirthLastPrice;
+        e.rebirths = rebirths;
+        stateStore.put(stateUser, e);
+        log("state_saved", "user", stateUser);
+    }
+
+    /** When the current price of a kind was learned (0 = unknown). */
+    public long priceSeenAt(String kind) {
+        if ("zone".equals(kind)) return zonePriceSeenAt;
+        if ("rebirth".equals(kind)) return rebirthPriceSeenAt;
+        return swordPriceSeenAt;
+    }
+
+    /** Rolled growth margin for the unknown-price retry of a kind. */
+    public double retryGrowth(String kind) {
+        if ("zone".equals(kind)) return zoneRetryGrowth;
+        if ("rebirth".equals(kind)) return rebirthRetryGrowth;
+        return swordRetryGrowth;
+    }
+
+    private double rollGrowth(double minPct, double maxPct) {
+        double lo = Math.max(0, minPct);
+        double hi = Math.max(lo, maxPct);
+        return lo + java.util.concurrent.ThreadLocalRandom.current().nextDouble() * (hi - lo);
     }
 
     public boolean lastSendSucceeded = false;
@@ -406,6 +500,7 @@ public class StatsTracker {
         }
         Double rate = incomePerMinute();
         long nowMs = System.currentTimeMillis();
+        flushState(nowMs);
         if (rate != null && nowMs - lastIncomeLogAt > 15_000) {
             lastIncomeLogAt = nowMs;
             Double bal = money();
@@ -533,6 +628,10 @@ public class StatsTracker {
      * economy so the loop re-discovers post-rebirth prices from scratch.
      */
     private void rebirthReset(String via) {
+        // The rebirth cost only grows, so the price we just paid (or last learned) is a
+        // floor for the next one — kept so the controller retries the GUI at a sane point
+        // instead of re-probing /rebirth seconds after rebirthing.
+        Double rebirthFloor = rebirthTarget != null ? rebirthTarget : rebirthLastPrice;
         swordTarget = null;
         zoneTarget = null;
         rebirthTarget = null;
@@ -541,7 +640,13 @@ public class StatsTracker {
         rebirthGap = null;
         swordLastPrice = null;
         zoneLastPrice = null;
-        rebirthLastPrice = null;
+        rebirthLastPrice = rebirthFloor;
+        rebirthRetryGrowth = rollGrowth(0, cfg.rebirthRetryFloorGrowthMaxPct);
+        swordPriceSeenAt = 0;
+        zonePriceSeenAt = 0;
+        rebirthPriceSeenAt = 0;
+        lastRebirthAt = System.currentTimeMillis();
+        markStateDirty();
         swordMaxed = false;
         zoneMaxed = false;
         swordSeeded = false;
@@ -906,22 +1011,23 @@ public class StatsTracker {
         if ("zone".equals(kind)) {
             zoneGap = gap;
             zoneExploratorySent = false;
-            if (price != null) zoneTarget = price;
+            if (price != null) { if (zoneTarget == null) zonePriceSeenAt = now; zoneTarget = price; }
             else zoneLastPrice = zoneLastPrice == null ? gap : Math.max(zoneLastPrice, gap);
             lastZoneFailAt = now;
         } else if ("rebirth".equals(kind)) {
             rebirthGap = gap;
             rebirthExploratorySent = false;
-            if (price != null) rebirthTarget = price;
+            if (price != null) { if (rebirthTarget == null) rebirthPriceSeenAt = now; rebirthTarget = price; }
             else rebirthLastPrice = rebirthLastPrice == null ? gap : Math.max(rebirthLastPrice, gap);
             lastRebirthFailAt = now;
         } else {
             swordGap = gap;
             swordExploratorySent = false;
-            if (price != null) swordTarget = price;
+            if (price != null) { if (swordTarget == null) swordPriceSeenAt = now; swordTarget = price; }
             else swordLastPrice = swordLastPrice == null ? gap : Math.max(swordLastPrice, gap);
             lastSwordFailAt = now;
         }
+        markStateDirty();
         log("upgrade_chat", "kind", kind,
             "gap", Amounts.format(gap),
             "target", price != null ? Amounts.format(price) : null,
@@ -967,21 +1073,29 @@ public class StatsTracker {
         }
         Double price = zone ? zoneTarget : swordTarget;
         Double retryFloor = paid != null ? paid : (price != null ? price : lastSendBal);
+        double growth = rollGrowth(cfg.retryPriceGrowthMinPct, cfg.retryPriceGrowthMaxPct);
         if (zone) {
             zoneLastPrice = retryFloor != null ? retryFloor : zoneLastPrice;
+            zoneRetryGrowth = growth;
             zoneTarget = null;
             zoneGap = null;
+            zonePriceSeenAt = 0;
             zoneExploratorySent = false;
         } else {
             swordLastPrice = retryFloor != null ? retryFloor : swordLastPrice;
+            swordRetryGrowth = growth;
             swordTarget = null;
             swordGap = null;
+            swordPriceSeenAt = 0;
             swordExploratorySent = false;
             swordBuysThisZone++;
         }
+        markStateDirty();
+        Double floor = zone ? zoneLastPrice : swordLastPrice;
         log("upgrade_result", "kind", kind, "success", true, "fail", false,
             "paid", paid != null ? Amounts.format(paid) : (price != null ? Amounts.format(price) : null),
-            "via", via);
+            "via", via,
+            "retryAt", floor != null ? Amounts.format(floor * (1.0 + growth)) : null);
     }
 
     private static boolean anyMatch(List<Pattern> res, String text) {

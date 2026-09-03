@@ -171,6 +171,30 @@ public class CombatController {
         return connected ? System.currentTimeMillis() - tagAt : 0;
     }
 
+    // --- post-teleport settle ---
+    private long settleUntil = 0;
+    private String settleReason = null;
+    private int settleLooksLeft = 0;
+    private long nextSettleLookAt = 0;
+    private boolean settlePendingRetarget = false;
+
+    private void beginSettle(long now, String reason) {
+        boolean rebirth = "rebirth".equals(reason);
+        long dur = rebirth
+            ? HumanTiming.logNormalMs(cfg.postRebirthSettleMinMs, Math.max(cfg.postRebirthSettleMinMs + 1, cfg.postRebirthSettleMaxMs))
+            : HumanTiming.logNormalMs(cfg.postZoneSettleMinMs, Math.max(cfg.postZoneSettleMinMs + 1, cfg.postZoneSettleMaxMs));
+        settleUntil = now + dur;
+        settleReason = reason;
+        settleLooksLeft = ThreadLocalRandom.current().nextDouble() < cfg.postTeleportLookChance ? HumanTiming.ticks(1, 2) : 0;
+        nextSettleLookAt = now + HumanTiming.logNormalMs(500, 1500);
+        settlePendingRetarget = true;
+        if (logger != null) logger.log("settle_start", "reason", reason, "durationMs", dur, "looks", settleLooksLeft);
+    }
+
+    public boolean isSettling() {
+        return System.currentTimeMillis() < settleUntil;
+    }
+
     /** Remaining time on the current mob from the live boss-bar HP and the measured DPS, or null. */
     public Double liveEtaMs() {
         if (!connected || targetMob == null) return null;
@@ -292,9 +316,11 @@ public class CombatController {
                         // Our own /zone max advance — not a staff pull, and it must NOT
                         // arm the radar (zones legitimately contain stationary NPCs).
                         stats.clearTeleportExpected();
-                        if (logger != null) logger.log("zone_teleport", "blocks", Math.round(jumped));
+                        String why = stats.consumeTeleportReason();
+                        if (logger != null) logger.log("zone_teleport", "blocks", Math.round(jumped), "reason", why);
                         stats.onZoneAdvance("teleport");
                         lastPredictedTtkMs = null;
+                        beginSettle(now, why);
                         lastTickPos = null;
                         releaseKeys(client);
                         return;
@@ -349,6 +375,26 @@ public class CombatController {
             lookIssued = false;
         }
 
+        // Post-teleport settle: after a rebirth or zone advance a person stands for a
+        // few seconds and looks around before picking a mob. 0.9.9 tagged a stale
+        // Donkey one tick after the rebirth teleport, before the new zone had loaded.
+        if (now < settleUntil) {
+            releaseKeys(client);
+            if (settleLooksLeft > 0 && now >= nextSettleLookAt && !MouseDriver.INSTANCE.isBusy()) {
+                float yaw = client.player.getYaw() + (float) ((rng.nextDouble() * 2 - 1) * 40.0);
+                float pitch = MathHelper.clamp(client.player.getPitch() + (float) ((rng.nextDouble() * 2 - 1) * 8.0), -30f, 40f);
+                MouseDriver.INSTANCE.lookTo(client, yaw, pitch, "settle-look");
+                settleLooksLeft--;
+                nextSettleLookAt = now + HumanTiming.logNormalMs(700, 1800);
+            }
+            return;
+        }
+        if (settlePendingRetarget) {
+            settlePendingRetarget = false;
+            retargetForZone(client);
+            if (logger != null) logger.log("settle_end", "reason", settleReason);
+        }
+
         // break scheduler: human-length breaks between focus blocks
         if (cfg.ninja && cfg.breaksEnabled) {
             if (now < breakUntil) { releaseKeys(client); return; }
@@ -361,11 +407,16 @@ public class CombatController {
             lastFocusTickAt = now;
             focusRemainingMs -= dt;
             if (focusRemainingMs <= 0) {
-                breakUntil = now + HumanTiming.logNormalMs(
-                    cfg.breakMinutesMin * 60_000, Math.max(cfg.breakMinutesMin * 60_000 + 1, cfg.breakMinutesMax * 60_000));
+                // Bimodal: mostly a short stretch, sometimes a real walk-away — never always 1–4 min.
+                String kind = Economy.breakKind(rng.nextDouble(), cfg.breakShortChance);
+                long dur = "short".equals(kind)
+                    ? HumanTiming.logNormalMs(cfg.breakShortMinMs, Math.max(cfg.breakShortMinMs + 1, cfg.breakShortMaxMs))
+                    : HumanTiming.logNormalMs(cfg.breakLongMinutesMin * 60_000,
+                        Math.max(cfg.breakLongMinutesMin * 60_000 + 1, cfg.breakLongMinutesMax * 60_000));
+                breakUntil = now + dur;
                 focusRemainingMs = focusMs();
                 lastFocusTickAt = 0;
-                if (logger != null) logger.log("break_start", "durationMs", breakUntil - now, "nextFocusMs", focusRemainingMs);
+                if (logger != null) logger.log("break_start", "kind", kind, "durationMs", dur, "nextFocusMs", focusRemainingMs);
                 releaseKeys(client);
                 return;
             }
@@ -516,6 +567,8 @@ public class CombatController {
             tagHp = stats.currentHpFor(targetMob);
             lastHpSeen = tagHp;
             lastHpDropAt = now;
+            nextGlanceAt = 0;
+            glanceOut = false;
             cookLeash = rng.nextDouble(cfg.cookLeashMinBlocks, Math.max(cfg.cookLeashMinBlocks + 0.01, cfg.cookLeashMaxBlocks));
             rollTrackStyle(client);
             lookIssued = false;
@@ -541,7 +594,7 @@ public class CombatController {
             clicksThisTarget++; // a whiff counts; a lucky early land is how connects happen
         }
 
-        if (dist > cfg.reach) {
+        if (dist > effectiveReach()) {
             if (cfg.movement) moveToward(client, dist, true);
             return;
         }
@@ -603,6 +656,8 @@ public class CombatController {
             lastHpSeen = currentHp;
         }
 
+        if (trackStyle == TrackStyle.WATCH || trackStyle == TrackStyle.HESITATE) tickGlance(client, now);
+
         boolean handoffDue = currentEtaMs != null && currentEtaMs <= cfg.handoffLeadMs;
         // Fallback: if we've been cooking a while with no DPS signal at all, start
         // looking for the next mob anyway so we never stall on a boss-bar-less mob.
@@ -652,6 +707,44 @@ public class CombatController {
         }
     }
 
+    // --- idle glances during long cooks ---
+    private long nextGlanceAt = 0;
+    private boolean glanceOut = false;
+    private long glanceBackAt = 0;
+
+    /**
+     * A person standing through a 30–120s kill looks around now and then: a small
+     * yaw/pitch glance, then back to the mob. Never during handoffs (a next target
+     * is being pre-aimed) and only once the cook has run a while.
+     */
+    private void tickGlance(MinecraftClient client, long now) {
+        if (nextTarget != null || target == null) return;
+        if (now - tagAt < cfg.cookGlanceAfterMs) return;
+        if (MouseDriver.INSTANCE.isBusy()) return;
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        if (glanceOut) {
+            if (now < glanceBackAt) return;
+            lookIssued = false;
+            MouseDriver.INSTANCE.lookAtEntity(client, target, aimHeightFrac, 0f, "glance-back");
+            lookIssued = true;
+            lookEntityId = target.getId();
+            glanceOut = false;
+            nextGlanceAt = now + HumanTiming.logNormalMs(cfg.cookGlanceMinMs, Math.max(cfg.cookGlanceMinMs + 1, cfg.cookGlanceMaxMs));
+            return;
+        }
+        if (nextGlanceAt == 0) {
+            nextGlanceAt = now + HumanTiming.logNormalMs(cfg.cookGlanceMinMs, Math.max(cfg.cookGlanceMinMs + 1, cfg.cookGlanceMaxMs));
+            return;
+        }
+        if (now < nextGlanceAt) return;
+        float sign = rng.nextBoolean() ? 1f : -1f;
+        float yaw = client.player.getYaw() + sign * (float) (5.0 + rng.nextDouble() * 15.0);
+        float pitch = MathHelper.clamp(client.player.getPitch() + (float) ((rng.nextDouble() * 2 - 1) * (3.0 + rng.nextDouble() * 5.0)), -30f, 40f);
+        MouseDriver.INSTANCE.lookTo(client, yaw, pitch, "glance");
+        glanceOut = true;
+        glanceBackAt = now + HumanTiming.logNormalMs(600, 1500);
+    }
+
     private void tickScan(MinecraftClient client) {
         if (MouseDriver.INSTANCE.isBusy()) return;
         if (scanStep < scanCount && scanYaw != null) {
@@ -691,7 +784,15 @@ public class CombatController {
     private void moveToward(MinecraftClient client, double dist, boolean allowSprint) {
         // Coast in: let go once we'd slide into reach anyway. If we come up a
         // little short the next tick just nudges W again — a normal-looking step.
-        if (dist - cfg.reach <= coastDistance(client)) { releaseKeys(client); return; }
+        // Occasionally we hold W a tick too long and overshoot, as people do.
+        if (dist - effectiveReach() <= coastDistance(client)) {
+            if (overshootTicks > 0) {
+                overshootTicks--;
+            } else {
+                releaseKeys(client);
+                return;
+            }
+        }
         float err = lastYawErrSigned;
         int oct = Math.round(err / 45f);
         if (oct == -4) oct = 4;
@@ -722,7 +823,7 @@ public class CombatController {
         client.options.rightKey.setPressed(right);
 
         boolean aligned = Math.abs(err) < cfg.sprintAlignMaxDeg;
-        double toGo = dist - cfg.reach;
+        double toGo = dist - effectiveReach();
         boolean wantSprint = allowSprint && cfg.sprint && forward && aligned && toGo > cfg.sprintMinDistance;
         tapSprint(client, wantSprint);
         boolean hopping = allowSprint && cfg.sprintJump && client.player.isSprinting() && aligned && toGo > cfg.sprintJumpMinDistance;
@@ -796,9 +897,20 @@ public class CombatController {
         }
     }
 
+    /** Per-target reach: people do not stop at exactly the same distance every time. */
+    private double targetReach = -1;
+    private int overshootTicks = 0;
+
+    private double effectiveReach() {
+        return targetReach > 0 ? targetReach : cfg.reach;
+    }
+
     private void rollAimPoint(MinecraftClient client) {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
         aimHeightFrac = (float) (0.42 + rng.nextDouble() * 0.32);
+        double jitter = MathHelper.clamp(cfg.reachJitterPct, 0.0, 0.9);
+        targetReach = cfg.reach * (1.0 - rng.nextDouble() * jitter);
+        overshootTicks = rng.nextDouble() < cfg.overshootChance ? 1 : 0;
         approachYawOffset = (float) ((rng.nextDouble() * 2 - 1) * cfg.approachYawOffsetMaxDeg / speedFactor(client));
         lookEntityId = Integer.MIN_VALUE;
         lookIssued = false;
@@ -843,7 +955,7 @@ public class CombatController {
         float lead = 0f;
         if ("approach".equals(reason) && approachYawOffset != 0f) {
             double distXZ = client.player.distanceTo(e);
-            double t = MathHelper.clamp((distXZ - cfg.reach) / 8.0, 0.0, 1.0);
+            double t = MathHelper.clamp((distXZ - effectiveReach()) / 8.0, 0.0, 1.0);
             lead = approachYawOffset * (float) t;
         }
         MouseDriver.INSTANCE.lookAtEntity(client, e, aimHeightFrac, lead, reason);
@@ -855,7 +967,11 @@ public class CombatController {
         if (e == null || !lookIssued) return;
         if (MouseDriver.INSTANCE.isBusy() && !(cfg.ninja && cfg.mouseChaining)) return;
         double err = MouseDriver.aimErrorDeg(client, e, aimHeightFrac);
-        if (err > cfg.lookReacquireDeg) {
+        // Far out, a person tolerates a lot of drift and fixes the aim near arrival —
+        // the 0.9.x fixed 3° threshold produced 2–4 corrections at 300ms spacing per approach.
+        double threshold = Economy.reacquireThresholdDeg(cfg.lookReacquireDeg, client.player.distanceTo(e),
+            effectiveReach(), cfg.reacquireFarMult, cfg.reacquireFarBlocks, cfg.reacquireFinalBlocks);
+        if (err > threshold) {
             lookIssued = false;
             maybeLook(client, e, reason);
         }

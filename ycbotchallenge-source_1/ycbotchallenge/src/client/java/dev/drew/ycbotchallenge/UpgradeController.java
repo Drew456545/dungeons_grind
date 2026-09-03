@@ -46,6 +46,22 @@ public class UpgradeController {
     private long lastZoneSendAt;
     private long lastRebirthSendAt;
     private boolean startupProbed = false;
+    // Lazy /rebirth knowledge: one seed per session for an unknown account, one
+    // deferred re-probe after each rebirth — never the enable ritual.
+    private long enabledAt = 0;
+    private int killsAtEnable = 0;
+    private int seedKillsNeeded = -1;
+    private long seedDelayMs = 0;
+    private boolean rebirthSeedSent = false;
+    private long seenRebirthAt = 0;
+    private int killsAtRebirth = 0;
+    private int reprobeKillsNeeded = -1;
+    private long reprobeDelayMs = 0;
+    private boolean reprobeSent = false;
+    // Buy hesitation on long saves.
+    private long hesitatingUntil = 0;
+    private String hesitateKind = null;
+    private String lastHesitatedKind = null;
     private int lastKillCount = 0;
     private long evalAt = Long.MAX_VALUE;
     private String decision = null;
@@ -146,11 +162,12 @@ public class UpgradeController {
             if (combat.isOnBreak()) return false;
             if (!startupProbed) {
                 startupProbed = true;
-                if (!stats.seeded("rebirth")) {
-                    queue.add(new PendingCmd(cfg.rebirthCommand, Kind.REBIRTH,
-                        now + HumanTiming.logNormalMs(800, 2000), false));
-                }
+                enabledAt = now;
+                killsAtEnable = combat.kills;
+                seedKillsNeeded = HumanTiming.ticks(cfg.rebirthSeedMinKillsMin, Math.max(cfg.rebirthSeedMinKillsMin, cfg.rebirthSeedMinKillsMax));
+                seedDelayMs = HumanTiming.logNormalMs(cfg.rebirthSeedDelayMinMs, Math.max(cfg.rebirthSeedDelayMinMs + 1, cfg.rebirthSeedDelayMaxMs));
             }
+            maybeQueueRebirthProbe(combat, now);
             if (rebirthAffordable()) {
                 dropNonRebirthQueue();
                 if (decision != null && !"rebirth".equals(decision)) {
@@ -223,6 +240,10 @@ public class UpgradeController {
             }
             if (!Economy.cooldownElapsed(now, lastSendFor(kind), capFor(kind), false)) {
                 skipEval("cooldown", kind);
+                return false;
+            }
+            if (hesitate(kind, now)) {
+                skipEval("hesitate", kind);
                 return false;
             }
             decision = kind;
@@ -356,7 +377,9 @@ public class UpgradeController {
                 }
                 boolean maxed = pendingKind == Kind.ZONE ? stats.zoneMaxed : stats.swordMaxed;
                 if (!stats.lastSendSucceeded && !maxed) stats.onUpgradeSuccess(kind, now);
-                if (!maxed) queueFollowUp(now);
+                // No follow-up re-send: the next tier's price is learned lazily when the
+                // balance passes the rolled retry floor (0.9.x re-sent the same command
+                // 3.5–4.9s after every success — the loop's clearest fingerprint).
                 finish();
                 return false;
             }
@@ -378,7 +401,6 @@ public class UpgradeController {
                     if (stats.lastSendSucceeded || (lastSendAt > 0 && !stats.failSince("rebirth", lastSendAt)
                         && stats.rebirths != null)) {
                         if (!stats.lastSendSucceeded) stats.onUpgradeSuccess("rebirth", now);
-                        queueRebirthSeed(now);
                         finish();
                         return false;
                     }
@@ -436,7 +458,6 @@ public class UpgradeController {
         boolean guiGone = !rebirthGuiOpen(client);
         if (stats.lastSendSucceeded || guiGone) {
             if (!stats.lastSendSucceeded) stats.onUpgradeSuccess("rebirth", now);
-            queueRebirthSeed(now);
             finish();
             return false;
         }
@@ -469,23 +490,76 @@ public class UpgradeController {
         }
     }
 
-    private void queueFollowUp(long now) {
-        if (rebirthAffordable()) return;
-        long wait = pendingKind == Kind.ZONE
-            ? HumanTiming.logNormalMs(800, 2000)
-            : HumanTiming.logNormalMs(400, 1200);
-        wait = Math.max(wait, Math.max(400, cfg.commandCooldownMs));
-        queue.add(new PendingCmd(pending, pendingKind, now + wait, true));
-    }
-
     private void dropNonRebirthQueue() {
         queue.removeIf(c -> c.kind() != Kind.REBIRTH);
     }
 
-    private void queueRebirthSeed(long now) {
-        long wait = HumanTiming.logNormalMs(1500, 4000);
-        wait = Math.max(wait, Math.max(cfg.commandCooldownMs, cfg.expectedTeleportAfterRebirthMs / 4));
-        queue.add(new PendingCmd(cfg.rebirthCommand, Kind.REBIRTH, now + wait, true));
+    private boolean rebirthQueued() {
+        for (PendingCmd c : queue) if (c.kind() == Kind.REBIRTH) return true;
+        return false;
+    }
+
+    /**
+     * Lazy /rebirth knowledge. Unknown account (nothing persisted): one seed per
+     * session, only after a rolled number of kills AND minutes of grinding. After a
+     * rebirth: one deferred re-probe on the same kind of schedule, so the next goal
+     * is learned "at some point" and never seconds after rebirthing. Either way the
+     * send is a normal post-kill lull command.
+     */
+    private void maybeQueueRebirthProbe(CombatController combat, long now) {
+        if (stats.rebirthTarget != null || rebirthQueued()) return;
+        long rb = stats.lastRebirthAt;
+        if (rb != seenRebirthAt) {
+            seenRebirthAt = rb;
+            killsAtRebirth = combat.kills;
+            reprobeKillsNeeded = HumanTiming.ticks(cfg.rebirthReprobeMinKillsMin, Math.max(cfg.rebirthReprobeMinKillsMin, cfg.rebirthReprobeMinKillsMax));
+            reprobeDelayMs = HumanTiming.logNormalMs(cfg.rebirthReprobeDelayMinMs, Math.max(cfg.rebirthReprobeDelayMinMs + 1, cfg.rebirthReprobeDelayMaxMs));
+            reprobeSent = false;
+        }
+        if (rb > 0) {
+            if (reprobeSent) return;
+            if (!Economy.probeDue(combat.kills - killsAtRebirth, reprobeKillsNeeded, now - rb, reprobeDelayMs)) return;
+            reprobeSent = true;
+            queue.add(new PendingCmd(cfg.rebirthCommand, Kind.REBIRTH, now + HumanTiming.logNormalMs(800, 2000), false));
+            if (logger != null) logger.log("upgrade_plan", "kind", "rebirth", "via", "reprobe",
+                "killsSinceRebirth", combat.kills - killsAtRebirth, "msSinceRebirth", now - rb);
+            return;
+        }
+        if (stats.lastPrice("rebirth") != null || rebirthSeedSent) return;
+        if (!Economy.probeDue(combat.kills - killsAtEnable, seedKillsNeeded, now - enabledAt, seedDelayMs)) return;
+        rebirthSeedSent = true;
+        queue.add(new PendingCmd(cfg.rebirthCommand, Kind.REBIRTH, now + HumanTiming.logNormalMs(800, 2000), false));
+        if (logger != null) logger.log("upgrade_plan", "kind", "rebirth", "via", "seed",
+            "killsSinceEnable", combat.kills - killsAtEnable, "msSinceEnable", now - enabledAt);
+    }
+
+    /** Rebirth cost only grows: once the balance passes the old price (plus a rolled margin), try the GUI. */
+    private boolean rebirthRetryDue() {
+        if (stats.rebirthTarget != null) return false;
+        return Economy.retryUnknownAllowed(stats.lastPrice("rebirth"), stats.money(), stats.retryGrowth("rebirth"));
+    }
+
+    /**
+     * Long saves only: a person who watched a price for minutes does not always buy
+     * the second it is affordable. Never in the post-rebirth snowball (balance dwarfs
+     * the price), never for rebirth, never twice in a row for the same kind.
+     */
+    private boolean hesitate(String kind, long now) {
+        if ("rebirth".equals(kind) || cfg.buyHesitationChance <= 0) return false;
+        if (hesitatingUntil > now) {
+            if (kind.equals(hesitateKind)) return true;
+            return false;
+        }
+        if (hesitateKind != null) { lastHesitatedKind = hesitateKind; hesitateKind = null; }
+        if (kind.equals(lastHesitatedKind)) { lastHesitatedKind = null; return false; }
+        if (!Economy.hesitationApplies(stats.priceSeenAt(kind), now, cfg.buyHesitationMinSaveMs,
+            stats.money(), targetOf(kind), cfg.cooldownRelaxBalanceMult)) return false;
+        if (ThreadLocalRandom.current().nextDouble() >= cfg.buyHesitationChance) return false;
+        hesitatingUntil = now + HumanTiming.logNormalMs(cfg.buyHesitationMinMs, Math.max(cfg.buyHesitationMinMs + 1, cfg.buyHesitationMaxMs));
+        hesitateKind = kind;
+        if (logger != null) logger.log("upgrade_hesitate", "kind", kind, "holdMs", hesitatingUntil - now,
+            "priceSeenMs", now - stats.priceSeenAt(kind));
+        return true;
     }
 
     private void logPlan(String kind) {
@@ -523,7 +597,7 @@ public class UpgradeController {
      * (unknown sword price beats an affordable zone), zone only through the gate.
      */
     private String decideKind(int kills) {
-        if (rebirthAffordable()) return "rebirth";
+        if (rebirthAffordable() || rebirthRetryDue()) return "rebirth";
         boolean zoneOpen = zoneOpen();
         String buy = Economy.chooseBuyKind(
             !stats.swordMaxed, zoneOpen,
@@ -547,7 +621,7 @@ public class UpgradeController {
         if (price != null) return null;
         if (!stats.seeded(kind)) return kind;
         if (stats.exploratorySent(kind)) return null;
-        if (Economy.retryUnknownAllowed(stats.lastPrice(kind), stats.money(), cfg.retryPriceGrowthPct)) return kind;
+        if (Economy.retryUnknownAllowed(stats.lastPrice(kind), stats.money(), stats.retryGrowth(kind))) return kind;
         return null;
     }
 

@@ -58,6 +58,8 @@ public class EnchantController {
     private boolean useHeld;
     private int consecutiveAborts;
     private boolean suspended;
+    private boolean firstTabDecided;
+    private boolean firstTabSkipped;
 
     public EnchantController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -144,6 +146,18 @@ public class EnchantController {
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
                 currentTab = lore.tabs().get(tabIndex);
+                // The enchanter opens on the first tab already; clicking it every visit is a tell.
+                if (tabIndex == 0 && !firstTabDecided) {
+                    firstTabDecided = true;
+                    if (ThreadLocalRandom.current().nextDouble() < cfg.enchantSkipFirstTabChance) {
+                        firstTabSkipped = true;
+                        attempted.clear();
+                        scansThisTab = 0;
+                        log("enchant_tab", "tab", currentTab, "clicked", false);
+                        phase = Phase.SCAN;
+                        return true;
+                    }
+                }
                 Integer slot = EnchantScreens.tabSlot(h, currentTab, lore);
                 if (slot == null) {
                     log("enchant_skip", "reason", "tab-missing", "tab", currentTab);
@@ -170,6 +184,12 @@ public class EnchantController {
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
                 List<EnchantScreens.SlotItem> slots = EnchantScreens.enchantItems(h, lore);
+                if (firstTabSkipped && slots.isEmpty()) {
+                    // Not on the first tab after all — click it.
+                    firstTabSkipped = false;
+                    phase = Phase.TAB_CLICK;
+                    return true;
+                }
                 List<EnchantLore.Item> items = new ArrayList<>();
                 for (EnchantScreens.SlotItem si : slots) items.add(si.item());
                 Double bal = stats.currency(currentTab);
@@ -351,6 +371,8 @@ public class EnchantController {
         wrapUp = false;
         picked = null;
         maxItem = null;
+        firstTabDecided = false;
+        firstTabSkipped = false;
         log("sword_lore", "lines", EnchantScreens.mainHandLore(client));
         log("enchant_visit_start", "etaMs", Math.round(eta), "balances", balancesNow());
         openMenu(client, now);
