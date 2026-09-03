@@ -55,6 +55,7 @@ public final class EconomyChecks {
         n += captcha();
         n += ignoredMobs();
         n += rebirthHorizon();
+        n += rebirthUpgrades();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -593,6 +594,51 @@ public final class EconomyChecks {
             System.err.println("FAIL stateStore: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /** 0.9.17: rebirth-upgrade menus (star lore verbatim from the 2026-09-03 screenshot) and giveaway packets. */
+    private static int rebirthUpgrades() {
+        int n = 0;
+        RebirthLore rl = new RebirthLore(CFG);
+        List<String> star = List.of("REBIRTH UPGRADES", "REBIRTHS",
+            "After you perform a rebirth, you'll use the rebirth points on these upgrades to help boost your progression even further.",
+            "BALANCES:", "| Current Points: 0", "[CLICK HERE TO VIEW THE REBIRTH UPGRADES]");
+        n += eq("star by lore", rl.isStar("Nether Star", star), true);
+        n += eq("star by name", rl.isStar("REBIRTH UPGRADES", List.of()), true);
+        n += eq("diamond is not the star", rl.isStar("Rebirth", List.of("Click to rebirth")), false);
+        n += eq("points 0", rl.points(star), 0);
+        n += eq("points 1,250", rl.points(List.of("BALANCES:", "| Current Points: 1,250")), 1250);
+        n += eq("points absent", rl.points(List.of("nothing")) == null, true);
+        n += eq("menu title", rl.isMenuTitle("Upgrades"), true);
+        n += eq("rebirth gui is not the menu", rl.isMenuTitle("Rebirth GUI"), false);
+        RebirthLore.Item ench = rl.parse("Enchant Proc Upgrade", List.of("Level: 2 / 10", "Cost: 3 Rebirth Points"));
+        n += eq("item level", ench.level(), 2);
+        n += eq("item max", ench.maxLevel(), 10);
+        n += eq("item cost", ench.cost(), 3);
+        n += eq("item not maxed", ench.isMaxed(), false);
+        RebirthLore.Item maxed = rl.parse("Damage Upgrade", List.of("Level: 10 / 10", "MAXED"));
+        n += eq("maxed by level", maxed.isMaxed(), true);
+        n += eq("maxed by word", rl.parse("Damage Upgrade", List.of("Maxed out!")).isMaxed(), true);
+        RebirthLore.Item unknown = rl.parse("Souls Upgrade", List.of("Boosts soul drops"));
+        n += eq("unknown level stays null", unknown.level() == null && unknown.cost() == null, true);
+        // Drew's order: enchant proc, damage, essence, souls; maxed and unaffordable ones are skipped.
+        RebirthLore.Item essence = rl.parse("Essence Upgrade", List.of("Level: 0 / 10", "Cost: 2 Rebirth Points"));
+        RebirthLore.Item souls = rl.parse("Souls Upgrade", List.of("Level: 0 / 10", "Cost: 2 Rebirth Points"));
+        RebirthLore.Item damage = rl.parse("Damage Upgrade", List.of("Level: 0 / 10", "Cost: 10 Rebirth Points"));
+        List<RebirthLore.Item> menu = List.of(essence, souls, ench, damage);
+        n += eq("enchant first", rl.choose(menu, 5).name(), "Enchant Proc Upgrade");
+        n += eq("enchant maxed -> damage if affordable", rl.choose(List.of(essence, souls, maxed, damage), 10).name(), "Damage Upgrade");
+        n += eq("damage too dear -> essence", rl.choose(List.of(essence, souls, maxed, damage), 5).name(), "Essence Upgrade");
+        n += eq("all maxed -> none", rl.choose(List.of(maxed), 5) == null, true);
+        n += eq("unknown cost is clicked", rl.choose(List.of(unknown), 1).name(), "Souls Upgrade");
+        n += eq("unknown points buys anyway", rl.choose(menu, null).name(), "Enchant Proc Upgrade");
+        n += eq("order index", rl.orderIndex(damage), 1);
+        n += eq("outside order never clicked", rl.choose(List.of(rl.parse("Mystery Box", List.of("?"))), 9) == null, true);
+        // Giveaway packet (verbatim 2026-09-03 15:52 log).
+        List<Pattern> ann = List.of(Pattern.compile(Pattern.quote("new giveaway"), Pattern.CASE_INSENSITIVE));
+        n += eq("giveaway prize", ChatClassifier.giveawayPrize(List.of("NEW GIVEAWAY (30s to enter)", "Current Lootbox", "Click to Enter!"), ann), "Current Lootbox");
+        n += eq("giveaway no prize", ChatClassifier.giveawayPrize(List.of("NEW GIVEAWAY (30s to enter)", "Click to Enter!"), ann) == null, true);
         return n;
     }
 

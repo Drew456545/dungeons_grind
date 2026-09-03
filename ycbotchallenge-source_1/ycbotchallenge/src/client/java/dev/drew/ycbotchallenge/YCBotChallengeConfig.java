@@ -411,6 +411,66 @@ public class YCBotChallengeConfig {
     public int rebirthHorizonGainWindowMs = 180_000;
     /** Minimum gap between any two typed commands (server: "again in less than 1 second"). */
     public int commandCooldownMs = 1100;
+
+    // ---- 0.9.17: server auto-rebirth, giveaways, rebirth upgrades
+    /**
+     * /autorebirth is unlocked on Drew's account (chat: "Auto rebirth has been enabled."),
+     * so the server rebirths the moment the cost is covered. The bot then never types
+     * /rebirth to rebirth; it still probes the GUI to learn the next cost for the
+     * rebirth-horizon rule. Set false on an account without it.
+     */
+    public boolean serverAutoRebirth = true;
+    /**
+     * Giveaways: the server announces "NEW GIVEAWAY (30s to enter)" / prize / "Click to
+     * Enter!" and typing /giveaway joins ("You have joined the giveaway for Current
+     * Lootbox!", 2026-09-03; Drew won a Monster Lootbox). Toggle: joining every one
+     * within seconds is its own fingerprint, so a join chance and a read delay apply.
+     */
+    public boolean giveawaysEnabled = true;
+    public String giveawayCommand = "/giveaway";
+    /** Chance to join a given giveaway at all (people miss some). */
+    public double giveawayJoinChance = 0.85;
+    /** Log-normal pause between the announcement and typing the command (reading it, finishing the swing). */
+    public int giveawayJoinDelayMinMs = 2500;
+    public int giveawayJoinDelayMaxMs = 12_000;
+    /** Give up when the command could not go out this long after the announcement (the roll is at 30s). */
+    public int giveawayWindowMs = 25_000;
+    public List<String> giveawayAnnouncePatterns = List.of("new giveaway");
+    public List<String> giveawayJoinedPatterns = List.of("you have joined the giveaway");
+    public List<String> giveawayWonPatterns = List.of("has won the giveaway");
+    /**
+     * Rebirth upgrades: each rebirth grants points spent in /rebirth → nether star
+     * ("REBIRTH UPGRADES", lore "| Current Points: N") → "Upgrades" menu. Order is
+     * Drew's: enchant proc (enchanted book), damage (red dye), essence (magma cream),
+     * souls (purple dye); each key is matched against the item name and tooltip.
+     */
+    public boolean rebirthUpgradesEnabled = true;
+    public List<String> rebirthUpgradeOrder = List.of("enchant", "damage", "essence", "soul");
+    /** The star, by name or a lore line. */
+    public String rebirthUpgradesItemPattern = "/rebirth upgrades/";
+    /** "| Current Points: 0" → 0. */
+    public String rebirthPointsPattern = "/current points:?\\s*(?<n>[\\d,]+)/";
+    /** Title of the menu the star opens (screenshot: "Upgrades"). */
+    public String rebirthUpgradesTitlePattern = "/^upgrades\\b/";
+    /** Tooltip patterns for the upgrade items (unverified until the first rebirth_upgrade_menu log; tune from it). */
+    public String rebirthUpgradeLevelPattern = "/\\blevel:?\\s*(?<cur>[\\d,]+)\\s*\\/\\s*(?<max>[\\d,]+)/";
+    public String rebirthUpgradeCostPattern = "/(?:cost|price):?\\s*(?<amount>[\\d,]+)\\s*(?:rebirth\\s*)?points?/";
+    public String rebirthUpgradeMaxedPattern = "/\\bmaxed\\b|\\bmax level\\b|\\bmaxed out\\b/";
+    /** After a rebirth (past the teleport settle), the visit waits this log-normal delay: nobody spends points the second they land. */
+    public int rebirthUpgradeDelayMinMs = 20_000;
+    public int rebirthUpgradeDelayMaxMs = 120_000;
+    /** Once per session, after a rolled kill count and delay, check for leftover points. */
+    public boolean rebirthUpgradeCheckOnEnable = true;
+    public int rebirthUpgradeEnableMinKillsMin = 5;
+    public int rebirthUpgradeEnableMinKillsMax = 15;
+    public int rebirthUpgradeEnableDelayMinMs = 60_000;
+    public int rebirthUpgradeEnableDelayMaxMs = 180_000;
+    /** Purchases per visit at most; each click waits a settle and is confirmed by the tooltip changing. */
+    public int rebirthUpgradeMaxClicks = 20;
+    public int rebirthUpgradeSettleMinMs = 400;
+    public int rebirthUpgradeSettleMaxMs = 1200;
+    public int rebirthUpgradeOpenTimeoutMs = 4000;
+    public int rebirthUpgradeMaxMenuMs = 60_000;
     /** Look-at-menu pause after Rebirth GUI opens, before Esc or diamond click. */
     public int rebirthLookMinMs = 600;
     public int rebirthLookMaxMs = 3500;
@@ -764,7 +824,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 20;
+    public static final int CURRENT_CONFIG_VERSION = 21;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -945,6 +1005,20 @@ public class YCBotChallengeConfig {
             if (captchaCaptureMode == null || "auto".equals(captchaCaptureMode)) captchaCaptureMode = fresh.captchaCaptureMode;
             changed = true;
         }
+        if (configVersion < 21) {
+            // v21: giveaways, rebirth upgrades, server auto-rebirth (patterns from the 2026-09-03 log).
+            giveawayAnnouncePatterns = fresh.giveawayAnnouncePatterns;
+            giveawayJoinedPatterns = fresh.giveawayJoinedPatterns;
+            giveawayWonPatterns = fresh.giveawayWonPatterns;
+            rebirthUpgradeOrder = fresh.rebirthUpgradeOrder;
+            rebirthUpgradesItemPattern = fresh.rebirthUpgradesItemPattern;
+            rebirthPointsPattern = fresh.rebirthPointsPattern;
+            rebirthUpgradesTitlePattern = fresh.rebirthUpgradesTitlePattern;
+            rebirthUpgradeLevelPattern = fresh.rebirthUpgradeLevelPattern;
+            rebirthUpgradeCostPattern = fresh.rebirthUpgradeCostPattern;
+            rebirthUpgradeMaxedPattern = fresh.rebirthUpgradeMaxedPattern;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1022,6 +1096,32 @@ public class YCBotChallengeConfig {
         if (rebirthCommand == null || rebirthCommand.isBlank()) rebirthCommand = "/rebirth";
         if (zoneOverSwordRatio <= 0) zoneOverSwordRatio = 1.25;
         if (swordWhileSavingMaxPct < 0) swordWhileSavingMaxPct = 0;
+        if (giveawayCommand == null || giveawayCommand.isBlank()) giveawayCommand = fresh.giveawayCommand;
+        if (giveawayJoinChance < 0 || giveawayJoinChance > 1) giveawayJoinChance = fresh.giveawayJoinChance;
+        if (giveawayJoinDelayMinMs < 0) giveawayJoinDelayMinMs = 0;
+        if (giveawayJoinDelayMaxMs < giveawayJoinDelayMinMs) giveawayJoinDelayMaxMs = giveawayJoinDelayMinMs;
+        if (giveawayWindowMs < 1000) giveawayWindowMs = fresh.giveawayWindowMs;
+        if (giveawayAnnouncePatterns == null) giveawayAnnouncePatterns = fresh.giveawayAnnouncePatterns;
+        if (giveawayJoinedPatterns == null) giveawayJoinedPatterns = fresh.giveawayJoinedPatterns;
+        if (giveawayWonPatterns == null) giveawayWonPatterns = fresh.giveawayWonPatterns;
+        if (rebirthUpgradeOrder == null || rebirthUpgradeOrder.isEmpty()) rebirthUpgradeOrder = fresh.rebirthUpgradeOrder;
+        if (rebirthUpgradesItemPattern == null || rebirthUpgradesItemPattern.isBlank()) rebirthUpgradesItemPattern = fresh.rebirthUpgradesItemPattern;
+        if (rebirthPointsPattern == null || rebirthPointsPattern.isBlank()) rebirthPointsPattern = fresh.rebirthPointsPattern;
+        if (rebirthUpgradesTitlePattern == null || rebirthUpgradesTitlePattern.isBlank()) rebirthUpgradesTitlePattern = fresh.rebirthUpgradesTitlePattern;
+        if (rebirthUpgradeLevelPattern == null) rebirthUpgradeLevelPattern = fresh.rebirthUpgradeLevelPattern;
+        if (rebirthUpgradeCostPattern == null) rebirthUpgradeCostPattern = fresh.rebirthUpgradeCostPattern;
+        if (rebirthUpgradeMaxedPattern == null) rebirthUpgradeMaxedPattern = fresh.rebirthUpgradeMaxedPattern;
+        if (rebirthUpgradeDelayMinMs < 0) rebirthUpgradeDelayMinMs = 0;
+        if (rebirthUpgradeDelayMaxMs < rebirthUpgradeDelayMinMs) rebirthUpgradeDelayMaxMs = rebirthUpgradeDelayMinMs;
+        if (rebirthUpgradeEnableMinKillsMin < 0) rebirthUpgradeEnableMinKillsMin = 0;
+        if (rebirthUpgradeEnableMinKillsMax < rebirthUpgradeEnableMinKillsMin) rebirthUpgradeEnableMinKillsMax = rebirthUpgradeEnableMinKillsMin;
+        if (rebirthUpgradeEnableDelayMinMs < 0) rebirthUpgradeEnableDelayMinMs = 0;
+        if (rebirthUpgradeEnableDelayMaxMs < rebirthUpgradeEnableDelayMinMs) rebirthUpgradeEnableDelayMaxMs = rebirthUpgradeEnableDelayMinMs;
+        if (rebirthUpgradeMaxClicks < 1) rebirthUpgradeMaxClicks = 1;
+        if (rebirthUpgradeSettleMinMs < 0) rebirthUpgradeSettleMinMs = 0;
+        if (rebirthUpgradeSettleMaxMs < rebirthUpgradeSettleMinMs) rebirthUpgradeSettleMaxMs = rebirthUpgradeSettleMinMs;
+        if (rebirthUpgradeOpenTimeoutMs < 500) rebirthUpgradeOpenTimeoutMs = 4000;
+        if (rebirthUpgradeMaxMenuMs < 5000) rebirthUpgradeMaxMenuMs = 60_000;
         if (swordWhileSavingMaxPct > 100) swordWhileSavingMaxPct = 100;
         if (zoneInstantTtkMs < 0) zoneInstantTtkMs = 0;
         if (rebirthHorizonZoneGain < 1.0) rebirthHorizonZoneGain = 1.3;

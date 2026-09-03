@@ -37,6 +37,25 @@ public final class ChatClassifier {
         return !isPlayerOrBroadcast(text);
     }
 
+    /**
+     * The prize line of a giveaway announcement packet: the first line that is not
+     * the announcement itself and not the "Click to Enter!" call to action
+     * (2026-09-03: "NEW GIVEAWAY (30s to enter)" / "Current Lootbox" / "Click to Enter!").
+     */
+    public static String giveawayPrize(List<String> lines, List<Pattern> announceRes) {
+        if (lines == null) return null;
+        for (String l : lines) {
+            if (l == null || l.isBlank()) continue;
+            String low = l.toLowerCase(Locale.ROOT);
+            if (low.contains("click to enter") || low.contains("click here")) continue;
+            boolean announce = false;
+            if (announceRes != null) for (Pattern p : announceRes) if (p.matcher(l).find()) { announce = true; break; }
+            if (announce) continue;
+            return l.trim();
+        }
+        return null;
+    }
+
     /** Strip §/& formatting and collapse whitespace (same rules as the sidebar). */
     public static String clean(String raw) {
         return SidebarParser.strip(raw);

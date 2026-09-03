@@ -13,15 +13,17 @@ public class HudOverlay {
     private final CaptchaSolver captcha;
     private final UpgradeController upgrades;
     private final EnchantController enchants;
+    private final RebirthUpgradeController rebirthUpgrades;
 
     public HudOverlay(YCBotChallengeConfig cfg, StatsTracker stats, CombatController combat, CaptchaSolver captcha,
-                      UpgradeController upgrades, EnchantController enchants) {
+                      UpgradeController upgrades, EnchantController enchants, RebirthUpgradeController rebirthUpgrades) {
         this.cfg = cfg;
         this.stats = stats;
         this.combat = combat;
         this.captcha = captcha;
         this.upgrades = upgrades;
         this.enchants = enchants;
+        this.rebirthUpgrades = rebirthUpgrades;
     }
 
     public void render(DrawContext context) {
@@ -58,6 +60,8 @@ public class HudOverlay {
             if (up != null) lines.add("§7" + up + "§r");
             String en = enchants != null ? enchants.hudLine() : null;
             if (en != null) lines.add("§d" + en + "§r");
+            String ru = rebirthUpgrades != null ? rebirthUpgrades.hudLine() : null;
+            if (ru != null) lines.add("§b" + ru + "§r");
         }
         if (on && captcha != null && captcha.vlmHudLine() != null) lines.add(captcha.vlmHudLine());
         String bals = stats.hudBalancesLine();

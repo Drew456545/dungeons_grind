@@ -143,6 +143,15 @@ public class StatsTracker {
     private final List<Pattern> captchaHintRes = new ArrayList<>();
     /** Evidence net for unclassified server lines (chat_raw). */
     private final RawChatNet rawNet;
+    // Giveaways (0.9.17): announcement seq for the controller, prize, outcome counters.
+    private final List<Pattern> giveawayAnnounceRes = new ArrayList<>();
+    private final List<Pattern> giveawayJoinedRes = new ArrayList<>();
+    private final List<Pattern> giveawayWonRes = new ArrayList<>();
+    public volatile int giveawaySeq = 0;
+    public volatile long giveawaySeenAt = 0;
+    public volatile String giveawayPrize = null;
+    public volatile int giveawaysJoined = 0;
+    public volatile int giveawaysWon = 0;
 
     /** Rolling per-kill durations (tag -> death), ms. */
     public final ArrayDeque<Long> killDurations = new ArrayDeque<>();
@@ -176,6 +185,9 @@ public class StatsTracker {
             for (String p : cfg.captchaChatHintPatterns) captchaHintRes.add(compileLoose(p));
         }
         rawNet = new RawChatNet(cfg.chatRawPerMinute);
+        if (cfg.giveawayAnnouncePatterns != null) for (String p : cfg.giveawayAnnouncePatterns) giveawayAnnounceRes.add(compileLoose(p));
+        if (cfg.giveawayJoinedPatterns != null) for (String p : cfg.giveawayJoinedPatterns) giveawayJoinedRes.add(compileLoose(p));
+        if (cfg.giveawayWonPatterns != null) for (String p : cfg.giveawayWonPatterns) giveawayWonRes.add(compileLoose(p));
         if (cfg.upgradeFailPatterns != null)
             for (String p : cfg.upgradeFailPatterns) upgradeFailRes.add(compileLoose(p));
         if (cfg.upgradeMaxedPatterns != null)
@@ -873,9 +885,34 @@ public class StatsTracker {
     public void onGameMessage(Text message, boolean overlay) {
         String rawAll = message.getString();
         if (rawAll == null || rawAll.isBlank()) return;
+        List<String> lines = new ArrayList<>();
         for (String line : rawAll.split("\\R")) {
-            onChatLine(ChatClassifier.clean(line), overlay);
+            String clean = ChatClassifier.clean(line);
+            lines.add(clean);
+            onChatLine(clean, overlay);
         }
+        if (!overlay) onGiveawayPacket(lines);
+    }
+
+    /**
+     * A giveaway announcement arrives as one multi-line packet ("NEW GIVEAWAY (30s to
+     * enter)" / prize / "Click to Enter!"); the controller types /giveaway on the seq.
+     */
+    private void onGiveawayPacket(List<String> lines) {
+        if (giveawayAnnounceRes.isEmpty()) return;
+        boolean announce = false;
+        for (String l : lines) {
+            if (l.isEmpty() || ChatClassifier.isPlayerOrBroadcast(l)) continue;
+            for (Pattern p : giveawayAnnounceRes) if (p.matcher(l).find()) { announce = true; break; }
+            if (announce) break;
+        }
+        if (!announce) return;
+        long now = System.currentTimeMillis();
+        if (now - giveawaySeenAt < 20_000) return; // countdown repeats never re-fire
+        giveawaySeenAt = now;
+        giveawayPrize = ChatClassifier.giveawayPrize(lines, giveawayAnnounceRes);
+        giveawaySeq++;
+        log("giveaway_seen", "seq", giveawaySeq, "prize", giveawayPrize, "raw", lines);
     }
 
     private void onChatLine(String text, boolean overlay) {
@@ -935,6 +972,26 @@ public class StatsTracker {
                 log("upgrade_response_raw", "raw", text, "overlay", true);
             }
             return;
+        }
+        // Giveaway outcomes (server lines only).
+        if (!ChatClassifier.isPlayerOrBroadcast(text)) {
+            for (Pattern p : giveawayJoinedRes) {
+                if (p.matcher(text).find()) {
+                    giveawaysJoined++;
+                    log("giveaway_joined", "raw", text, "joined", giveawaysJoined);
+                    known = true;
+                    break;
+                }
+            }
+            for (Pattern p : giveawayWonRes) {
+                if (p.matcher(text).find()) {
+                    boolean us = stateUser != null && text.toLowerCase(Locale.ROOT).contains(stateUser.toLowerCase(Locale.ROOT));
+                    if (us) giveawaysWon++;
+                    log("giveaway_result", "raw", text, "us", us, "won", giveawaysWon);
+                    known = true;
+                    break;
+                }
+            }
         }
         // "All mobs have been respawned in your zone." — a zone advance happened.
         if (text.toLowerCase(Locale.ROOT).contains("mobs have been respawned in your zone")) {

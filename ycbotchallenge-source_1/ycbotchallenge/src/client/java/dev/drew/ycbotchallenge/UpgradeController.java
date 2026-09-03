@@ -23,7 +23,7 @@ import net.minecraft.util.math.Vec3d;
  */
 public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
-    private enum Kind { SWORD, ZONE, REBIRTH }
+    private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY }
 
     private record PendingCmd(String text, Kind kind, long notBefore, boolean followUp) {}
 
@@ -40,6 +40,9 @@ public class UpgradeController {
     private String horizonBlocked = null;
     /** Last eval held an affordable sword back to save for the zone (upgrade_skip saving-zone, HUD). */
     private boolean savingZone = false;
+    /** Giveaways: last announcement handled, and the deadline for the queued /giveaway. */
+    private int lastGiveawaySeq = 0;
+    private long giveawayDeadline = 0;
     /** Income at the moment of the last send; the upgrade_gain evidence compares it with the rate later. */
     private Double incomeAtSend = null;
     private String gainKind = null;
@@ -183,6 +186,7 @@ public class UpgradeController {
                 seedDelayMs = HumanTiming.logNormalMs(cfg.rebirthSeedDelayMinMs, Math.max(cfg.rebirthSeedDelayMinMs + 1, cfg.rebirthSeedDelayMaxMs));
             }
             maybeQueueRebirthProbe(combat, now);
+            maybeQueueGiveaway(now);
             if (gainAt != 0) {
                 if (gainKillsAt < 0) gainKillsAt = combat.kills;
                 if (now >= gainAt) {
@@ -199,7 +203,7 @@ public class UpgradeController {
                     gainAt = 0;
                 }
             }
-            if (rebirthAffordable()) {
+            if (!cfg.serverAutoRebirth && rebirthAffordable()) {
                 dropNonRebirthQueue();
                 if (decision != null && !"rebirth".equals(decision)) {
                     decision = "rebirth";
@@ -207,6 +211,11 @@ public class UpgradeController {
                 }
             }
             PendingCmd head = queue.peek();
+            if (head != null && head.kind() == Kind.GIVEAWAY && now > giveawayDeadline) {
+                queue.poll();
+                if (logger != null) logger.log("giveaway_skip", "reason", "window", "lateMs", now - giveawayDeadline);
+                head = queue.peek();
+            }
             if (head != null) {
                 if (now < head.notBefore()) return false;
                 if (!commandReady(now)) return false;
@@ -314,6 +323,16 @@ public class UpgradeController {
                     return false;
                 }
                 if (ts != ChatTyper.State.DONE) return true;
+                if (pendingKind == Kind.GIVEAWAY) {
+                    // Not an economy command: no price bookkeeping, no response window.
+                    lastSendAt = now;
+                    if (logger != null) {
+                        logger.log("giveaway_join", "command", pending, "typos", typer.typos(),
+                            "delayMs", now - stats.giveawaySeenAt, "prize", stats.giveawayPrize);
+                    }
+                    finish();
+                    return false;
+                }
                 if (logger != null) {
                     logger.log("upgrade_send", "command", pending,
                         "kind", pendingKind.name().toLowerCase(Locale.ROOT),
@@ -524,6 +543,30 @@ public class UpgradeController {
             "killsSinceEnable", combat.kills - killsAtEnable, "msSinceEnable", now - enabledAt);
     }
 
+    /**
+     * Giveaways (0.9.17): on a new announcement roll the join chance, then queue the
+     * typed /giveaway after a reading delay; it goes out through the same still-and-type
+     * path as every command and is dropped if the window closes first.
+     */
+    private void maybeQueueGiveaway(long now) {
+        int seq = stats.giveawaySeq;
+        if (seq == lastGiveawaySeq) return;
+        lastGiveawaySeq = seq;
+        if (!cfg.giveawaysEnabled) {
+            if (logger != null) logger.log("giveaway_skip", "reason", "disabled", "prize", stats.giveawayPrize);
+            return;
+        }
+        if (ThreadLocalRandom.current().nextDouble() >= cfg.giveawayJoinChance) {
+            if (logger != null) logger.log("giveaway_skip", "reason", "chance", "prize", stats.giveawayPrize);
+            return;
+        }
+        for (PendingCmd c : queue) if (c.kind() == Kind.GIVEAWAY) return;
+        long delay = HumanTiming.logNormalMs(cfg.giveawayJoinDelayMinMs, Math.max(cfg.giveawayJoinDelayMinMs + 1, cfg.giveawayJoinDelayMaxMs));
+        giveawayDeadline = stats.giveawaySeenAt + cfg.giveawayWindowMs;
+        queue.add(new PendingCmd(cfg.giveawayCommand, Kind.GIVEAWAY, now + delay, false));
+        if (logger != null) logger.log("giveaway_plan", "prize", stats.giveawayPrize, "delayMs", delay, "seq", seq);
+    }
+
     /** Rebirth cost only grows: once the balance passes the old price (plus a rolled margin), try the GUI. */
     private boolean rebirthRetryDue() {
         if (stats.rebirthTarget != null) return false;
@@ -591,7 +634,9 @@ public class UpgradeController {
      */
     private String decideKind(int kills) {
         savingZone = false;
-        if (rebirthAffordable() || rebirthRetryDue()) return "rebirth";
+        // With /autorebirth the server rebirths the moment the cost is covered; the
+        // GUI is only ever probed to learn that cost for the horizon rule.
+        if (!cfg.serverAutoRebirth && (rebirthAffordable() || rebirthRetryDue())) return "rebirth";
         boolean zoneOpen = zoneOpen();
         if (zoneOpen && stats.zoneTarget == null) {
             // Learn the zone price before spending on a sword (one typed /zone max).
