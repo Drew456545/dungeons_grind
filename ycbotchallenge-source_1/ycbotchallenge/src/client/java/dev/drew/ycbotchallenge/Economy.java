@@ -698,6 +698,17 @@ public final class Economy {
         return base.with(Decision.WAIT, null, "no-prices", null, null, null);
     }
 
+    /**
+     * 0.9.33: the zone success line carries no amount, so the price of a /zone max is the
+     * sidebar drop right after it (balBefore - balAfter), null unless the balance fell. A
+     * kill credit inside the window shrinks it, so it feeds the retry floor and the ladder
+     * prediction (self-correcting on the next fail line), never the growth learning.
+     */
+    public static Double paidFromDelta(Double balBefore, Double balAfter) {
+        if (balBefore == null || balAfter == null) return null;
+        return balAfter < balBefore - 1e-6 ? balBefore - balAfter : null;
+    }
+
     private static boolean horizonAllows(Inputs in, Double price, double gain) {
         if (!in.horizonEnabled) return true;
         return rebirthHorizonAllows(price, in.bal, in.rebirthTarget, in.incomePerMin, gain);

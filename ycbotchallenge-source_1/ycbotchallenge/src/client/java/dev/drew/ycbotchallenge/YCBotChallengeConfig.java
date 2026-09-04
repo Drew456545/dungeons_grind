@@ -1022,6 +1022,20 @@ public class YCBotChallengeConfig {
      */
     public boolean gateUsesPrediction = false;
     /**
+     * 0.9.33: upgrade responses that were not answers to our own typed command (Drew
+     * playing by hand: "You need 8.81SS Money", "You have unlocked a new sword level for
+     * 1.24B!", "You have purchased new stage(s)!") are logged as upgrade_observed and
+     * learned like ours (price, retry floor, ladder). Off = 0.9.32 (ignored).
+     */
+    public boolean learnObservedUpgrades = true;
+    /**
+     * While the bot is off the sidebar keeps being read (the economy log stays complete)
+     * but balance/income rows are written at most this often per currency (a suffix change
+     * or a drop of half or more always logs). 80% of a 38 MB 2026-09-04 log was bot-off
+     * balance rows. 0 = every change, as before.
+     */
+    public int offBotLogIntervalMs = 30_000;
+    /**
      * Zone patience (0.9.23): the TTK a player tolerates before wanting a sword instead
      * of the next stage is a mood, not a line. Every zone change and enable rolls this
      * stage's tolerance log-normally between zoneMaxTtkMs x min and x max (zone_patience),
@@ -1474,6 +1488,9 @@ public class YCBotChallengeConfig {
             // blind sword, 15.98Q against a 4.4T zone floor), common first target on a fresh
             // stage (stageProbeCommonKills). Every new knob takes its default.
             gateUsesPrediction = fresh.gateUsesPrediction;
+            // Logging: bot flag on every row, observed (manual) upgrade lines learned,
+            // bot-off balance rows throttled (offBotLogIntervalMs), zone paid from the
+            // sidebar delta (upgrade_paid).
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;
@@ -1768,6 +1785,7 @@ public class YCBotChallengeConfig {
         if (zoneMaxTtkMs < 0) zoneMaxTtkMs = 10_000;
         if (zoneMinStageKills < 0) zoneMinStageKills = 0;
         if (ttkKeepOnReenableMs < 0) ttkKeepOnReenableMs = 0;
+        if (offBotLogIntervalMs < 0) offBotLogIntervalMs = 0;
         if (stageProbeCommonKills < 0) stageProbeCommonKills = 0;
         if (stageProbeRarityPenaltyBlocks < 0) stageProbeRarityPenaltyBlocks = 0;
         if (zonePatienceMinMult <= 0) zonePatienceMinMult = 0.6;

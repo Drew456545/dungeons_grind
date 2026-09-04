@@ -25,6 +25,14 @@ public class YCBotChallengeClient implements ClientModInitializer {
     public static boolean enabled = false;
     /** Why the bot last auto-paused (e.g. "captcha"); null after a manual re-enable. */
     public static String pausedReason = null;
+    private static long lastOnAt = 0;
+    private static long lastOffAt = 0;
+
+    /** The per-event bot flag (0.9.33): "on", "off", or "paused:<reason>" (captcha, stopped). */
+    public static String botFlag() {
+        if (enabled) return "on";
+        return pausedReason != null ? "paused:" + pausedReason : "off";
+    }
 
     private YCBotChallengeConfig config;
     private Path configPath;
@@ -403,7 +411,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             if (logger == null) {
                 logger = new EventLogger(
                     FabricLoader.getInstance().getGameDir().resolve("ycbotchallenge-logs"),
-                    config.runLabel, () -> stats.context());
+                    config.runLabel, () -> stats.context(), YCBotChallengeClient::botFlag);
                 stats.setLogger(logger);
                 combat.setLogger(logger);
                 upgrades.setLogger(logger);
@@ -418,7 +426,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
                     "username", client.getSession() != null ? client.getSession().getUsername() : null);
                 LOGGER.info("Logging to {}", logger.getFile());
             }
-            logger.log("bot_on");
+            stats.botActive = () -> enabled;
+            logger.log("bot_on", "offMs", lastOffAt > 0 ? System.currentTimeMillis() - lastOffAt : null);
+            lastOnAt = System.currentTimeMillis();
             // Maps already in the hotbar are not a captcha; only a new one is.
             captchaDetector.onEnable(client);
             captchaSolver.checkHealth(System.currentTimeMillis());
@@ -426,7 +436,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
             companions.onEnable(System.currentTimeMillis(), combat.kills);
             transcend.onEnable(System.currentTimeMillis(), combat.kills);
         } else {
-            if (logger != null) logger.log("bot_off");
+            if (logger != null) logger.log("bot_off", "onMs", lastOnAt > 0 ? System.currentTimeMillis() - lastOnAt : null);
+            lastOffAt = System.currentTimeMillis();
             stats.onDisable();
             if (client != null) {
                 combat.reset(client);

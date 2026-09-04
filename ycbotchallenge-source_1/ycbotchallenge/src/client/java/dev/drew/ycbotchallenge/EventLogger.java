@@ -23,11 +23,18 @@ public class EventLogger {
     private final String runLabel;
     private final long startedAt = System.currentTimeMillis();
     private final Supplier<JsonObject> context;
+    /** "on" / "off" / "paused:<reason>" on every row (0.9.33): the economy keeps logging while the bot is off. */
+    private final Supplier<String> botFlag;
     private BufferedWriter writer;
 
     public EventLogger(Path dir, String runLabel, Supplier<JsonObject> context) {
+        this(dir, runLabel, context, null);
+    }
+
+    public EventLogger(Path dir, String runLabel, Supplier<JsonObject> context, Supplier<String> botFlag) {
         this.runLabel = runLabel;
         this.context = context;
+        this.botFlag = botFlag;
         String stamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replace(":", "-").replace(".", "-");
         this.file = dir.resolve("events-" + runLabel + "-" + stamp + ".jsonl");
         try {
@@ -49,6 +56,10 @@ public class EventLogger {
         row.addProperty("uptimeS", Math.round((now - startedAt) / 100.0) / 10.0);
         row.addProperty("run", runLabel);
         row.addProperty("type", type);
+        if (botFlag != null) {
+            String bot = botFlag.get();
+            if (bot != null) row.addProperty("bot", bot);
+        }
         for (int i = 0; i + 1 < kv.length; i += 2) {
             String key = String.valueOf(kv[i]);
             Object val = kv[i + 1];

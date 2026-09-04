@@ -71,6 +71,7 @@ public final class EconomyChecks {
         n += companions0931();
         n += priceLadders();
         n += audit0933Decision();
+        n += logging0933();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1658,6 +1659,60 @@ public final class EconomyChecks {
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
             System.err.println("FAIL v37 migration: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    /**
+     * 0.9.33 logging: observed (manual) upgrade lines are classified from the same verbatim
+     * fixtures as our own responses, the zone price is the sidebar drop after a silent
+     * success, and every event row carries the bot flag.
+     */
+    private static int logging0933() {
+        int n = 0;
+        List<Pattern> fail = looseAll(CFG.upgradeFailPatterns);
+        List<Pattern> success = looseAll(CFG.upgradeSuccessPatterns);
+        List<Pattern> maxed = looseAll(CFG.upgradeMaxedPatterns);
+        Pattern need = loose(CFG.upgradeNeedAmountPattern);
+        ChatClassifier.UpgradeLine u = ChatClassifier.classifyUpgradeLine(SWORD_FAIL, fail, success, maxed, need);
+        n += eq("observed sword fail", u != null ? u.kind() + "/" + u.outcome() : null, "sword/fail");
+        n += eq("observed sword gap 781.04B", u != null ? u.amount() : null, 781.04e9, 1e3);
+        u = ChatClassifier.classifyUpgradeLine(ZONE_FAIL, fail, success, maxed, need);
+        n += eq("observed zone fail", u != null ? u.kind() + "/" + u.outcome() : null, "zone/fail");
+        n += eq("observed zone gap 1.25Q", u != null ? u.amount() : null, 1.25e15, 1e9);
+        u = ChatClassifier.classifyUpgradeLine(SWORD_UNLOCK_REAL, fail, success, maxed, need);
+        n += eq("observed sword success", u != null ? u.kind() + "/" + u.outcome() : null, "sword/success");
+        n += eq("observed sword paid 1.24B", u != null ? u.amount() : null, 1.24e9, 1e3);
+        u = ChatClassifier.classifyUpgradeLine(ZONE_UNLOCK, fail, success, maxed, need);
+        n += eq("observed zone success", u != null ? u.kind() + "/" + u.outcome() : null, "zone/success");
+        n += eq("observed zone success has no amount", u != null && u.amount() == null, true);
+        u = ChatClassifier.classifyUpgradeLine(REBIRTH_NEED_ICON, fail, success, maxed, need);
+        n += eq("observed rebirth fail", u != null ? u.kind() + "/" + u.outcome() : null, "rebirth/fail");
+        n += eq("observed rebirth gap 29.99T", u != null ? u.amount() : null, 29.99e12, 1e6);
+        n += eq("enchant proc is not an upgrade line", ChatClassifier.classifyUpgradeLine(ENCHANT_PROC, fail, success, maxed, need) == null, true);
+        n += eq("player shop is not an upgrade line", ChatClassifier.classifyUpgradeLine(PLAYER_SHOP, fail, success, maxed, need) == null, true);
+        n += eq("soul purchase is not an upgrade line", ChatClassifier.classifyUpgradeLine(SOUL_PURCHASE, fail, success, maxed, need) == null, true);
+        n += eq("welcome is not an upgrade line", ChatClassifier.classifyUpgradeLine(WELCOME, fail, success, maxed, need) == null, true);
+        // Zone paid from the sidebar drop (14:59: 17.33Q before, 15.98Q sword; the shape is the same for a zone).
+        n += eq("paid from delta", Economy.paidFromDelta(17.33e15, 1.35e15), 15.98e15, 1e12);
+        n += eq("a rise is not a spend", Economy.paidFromDelta(1.0e15, 1.2e15) == null, true);
+        n += eq("unknown before", Economy.paidFromDelta(null, 1.2e15) == null, true);
+        n += eq("fresh learnObservedUpgrades", CFG.learnObservedUpgrades, true);
+        n += eq("fresh offBotLogIntervalMs", CFG.offBotLogIntervalMs, 30_000);
+        // Every row carries the bot flag.
+        try {
+            java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("ycbot-log");
+            EventLogger lg = new EventLogger(dir, "test", com.google.gson.JsonObject::new, () -> "paused:captcha");
+            lg.log("probe", "kind", "zone");
+            lg.close();
+            String row = java.nio.file.Files.readString(lg.getFile());
+            n += eq("row carries bot=paused:captcha", row.contains("\"bot\":\"paused:captcha\""), true);
+            n += eq("row carries the type", row.contains("\"type\":\"probe\""), true);
+            java.nio.file.Files.deleteIfExists(lg.getFile());
+            java.nio.file.Files.deleteIfExists(dir);
+        } catch (Exception ex) {
+            System.err.println("FAIL event logger bot flag: " + ex);
             n++;
         }
         return n;

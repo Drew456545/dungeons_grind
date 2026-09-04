@@ -99,6 +99,17 @@ public class StatsTracker {
     private long upgradeChatFragAt = 0;
     public String lastUpgradeKind = null;
     private long lastUpgradeSendAt = 0;
+    /** Whether the bot is on (0.9.33): set by the client; balance/income rows are throttled while off. */
+    public java.util.function.BooleanSupplier botActive = () -> true;
+    private final Map<String, Long> lastBalanceLogAt = new HashMap<>();
+    private final Map<String, Integer> balanceLogSkips = new HashMap<>();
+    /** Sidebar-delta spend watch (0.9.33): armed by a zone success with no amount, resolved by the next money drop. */
+    private String spendWatchKind = null;
+    private Double spendWatchBalBefore = null;
+    private long spendWatchAt = 0;
+    private long spendWatchUntil = 0;
+    /** Where the zone retry floor came from: "chat" (paid line), "price" (known target), "send-bal", "delta". */
+    private String zoneLastPriceVia = null;
     private long lastSpendAt = 0;
     /** Sidebar balance at the moment of our last upgrade send (retry floor after a seed buy with no success amount). */
     private Double lastSendBal = null;
@@ -585,12 +596,15 @@ public class StatsTracker {
             double ratio = actual / previous;
             double expected = "zone".equals(kind) ? cfg.zonePriceGrowth : cfg.swordPriceGrowth;
             boolean ok = Economy.growthAccepted(ratio, expected, cfg.priceGrowthLearnBandPct);
-            if (ok) {
+            // A sidebar-delta floor is an estimate (a kill credit inside the window shrinks it):
+            // it is checked against the ladder but never teaches it (0.9.33).
+            boolean deltaBased = "zone".equals(kind) && "delta".equals(zoneLastPriceVia);
+            if (ok && !deltaBased) {
                 if ("zone".equals(kind)) zoneGrowthLearned = Economy.blendGrowth(zoneGrowthLearned, ratio, 0.3);
                 else swordGrowthLearned = Economy.blendGrowth(swordGrowthLearned, ratio, 0.3);
             }
             log("price_ratio", "kind", kind, "previous", Amounts.format(previous), "actual", Amounts.format(actual),
-                "ratio", Math.round(ratio * 1000.0) / 1000.0, "accepted", ok,
+                "ratio", Math.round(ratio * 1000.0) / 1000.0, "accepted", ok, "deltaBased", deltaBased ? true : null,
                 "growth", Math.round(priceGrowth(kind) * 1000.0) / 1000.0);
         }
     }
@@ -731,7 +745,8 @@ public class StatsTracker {
         Double rate = incomePerMinute();
         long nowMs = System.currentTimeMillis();
         flushState(nowMs);
-        if (rate != null && nowMs - lastIncomeLogAt > 15_000) {
+        long incomeEvery = botActive.getAsBoolean() ? 15_000 : Math.max(15_000, cfg.offBotLogIntervalMs);
+        if (rate != null && nowMs - lastIncomeLogAt > incomeEvery) {
             lastIncomeLogAt = nowMs;
             Double bal = money();
             log("income", "moneyPerMin", Amounts.format(rate), "balance", bal != null ? Amounts.format(bal) : null);
@@ -751,9 +766,14 @@ public class StatsTracker {
             line = SidebarParser.strip(line);
             if (line.isBlank()) continue;
             lines.add(line);
-            handleSidebarProgress(line);
         }
         Map<String, SidebarParser.Hit> hits = SidebarParser.parseCurrencies(lines, cfg.sidebarCurrencies);
+        Set<String> currencyRows = new HashSet<>();
+        for (SidebarParser.Hit hit : hits.values()) currencyRows.add(hit.line());
+        if (sidebarMoneyRe != null) for (String line : lines) if (sidebarMoneyRe.matcher(line).find()) currencyRows.add(line);
+        // Currency rows land as `balance` events; raw-logging every new value was 80% of a
+        // 38 MB bot-off log (0.9.33).
+        for (String line : lines) handleSidebarProgress(line, currencyRows.contains(line));
         for (SidebarParser.Hit hit : hits.values()) applyCurrency(hit.currency(), hit.rawAmount(), hit.value(), hit.line());
         if (sidebarMoneyRe != null) {
             for (String line : lines) {
@@ -774,8 +794,8 @@ public class StatsTracker {
         for (String line : lines) applyBalancePatterns(line);
     }
 
-    private void handleSidebarProgress(String line) {
-        if (cfg.debugSidebar) {
+    private void handleSidebarProgress(String line, boolean currencyRow) {
+        if (cfg.debugSidebar && !currencyRow) {
             if (seenSidebarLines.size() > 500) seenSidebarLines.clear();
             if (seenSidebarLines.add(line)) log("sidebar_raw", "line", line);
         }
@@ -833,11 +853,65 @@ public class StatsTracker {
             }
         }
         boolean changed = prev == null || Math.abs(prev - value) > 1e-6;
+        long nowMs = System.currentTimeMillis();
+        if (key.equals(moneyKey()) && spendWatchKind != null) {
+            if (nowMs > spendWatchUntil) {
+                log("upgrade_paid_missed", "kind", spendWatchKind, "balBefore",
+                    spendWatchBalBefore != null ? Amounts.format(spendWatchBalBefore) : null, "waitedMs", nowMs - spendWatchAt);
+                spendWatchKind = null;
+            } else if (changed && prev != null && value < prev - 1e-6) {
+                Double paid = Economy.paidFromDelta(spendWatchBalBefore, value);
+                String kind = spendWatchKind;
+                spendWatchKind = null;
+                if (paid != null) onSpendObserved(kind, paid, spendWatchBalBefore, value, nowMs - spendWatchAt, nowMs);
+            }
+        }
         if (changed) {
             if (key.equals(moneyKey())) noteBalance(value);
-            log("balance", "currency", key, "raw", raw, "parsed", Amounts.format(value), "line", line,
-                "provisional", prov ? true : null);
+            boolean on = botActive.getAsBoolean();
+            boolean drop = prev != null && value < prev * 0.5;
+            boolean sfxChanged = prevRaw == null || !Amounts.suffixOf(prevRaw).equalsIgnoreCase(Amounts.suffixOf(raw));
+            long lastAt = lastBalanceLogAt.getOrDefault(key, 0L);
+            if (on || cfg.offBotLogIntervalMs <= 0 || drop || sfxChanged || nowMs - lastAt >= cfg.offBotLogIntervalMs) {
+                int skips = balanceLogSkips.getOrDefault(key, 0);
+                lastBalanceLogAt.put(key, nowMs);
+                balanceLogSkips.put(key, 0);
+                log("balance", "currency", key, "raw", raw, "parsed", Amounts.format(value), "line", line,
+                    "provisional", prov ? true : null, "throttledSkips", skips > 0 ? skips : null);
+            } else {
+                balanceLogSkips.merge(key, 1, Integer::sum);
+            }
         }
+    }
+
+    /** Arm the sidebar-delta watch after a success line that named no amount (0.9.33, zone). */
+    private void watchSpend(String kind, Double balBefore, long now) {
+        if (balBefore == null) return;
+        spendWatchKind = kind;
+        spendWatchBalBefore = balBefore;
+        spendWatchAt = now;
+        spendWatchUntil = now + Math.max(0, cfg.upgradeSpendSettleMs) + 3000;
+    }
+
+    /**
+     * The sidebar dropped inside the watch: the drop is what the /zone max cost. It becomes
+     * the retry floor and seeds the ladder only when the floor was the balance at send
+     * (a known price is better evidence); growth learning never uses it.
+     */
+    private void onSpendObserved(String kind, double paid, Double balBefore, double balAfter, long lagMs, long now) {
+        boolean zone = "zone".equals(kind);
+        boolean replaced = false;
+        if (zone && !"chat".equals(zoneLastPriceVia) && !"price".equals(zoneLastPriceVia)) {
+            zoneLastPrice = paid;
+            zoneLastPriceVia = "delta";
+            predictTarget(kind, paid, now);
+            markStateDirty();
+            replaced = true;
+        }
+        log("upgrade_paid", "kind", kind, "paid", Amounts.format(paid), "via", "sidebar-delta",
+            "balBefore", balBefore != null ? Amounts.format(balBefore) : null, "balAfter", Amounts.format(balAfter),
+            "lagMs", lagMs, "floorReplaced", replaced,
+            "predicted", zone && zoneTarget != null ? Amounts.format(zoneTarget) : null);
     }
 
     private void applyBalancePatterns(String line) {
@@ -1276,6 +1350,7 @@ public class StatsTracker {
         // Upgrade responses: strict gate — only within the window after our own
         // send, never on player/broadcast lines, anchored patterns only.
         if (parseUpgradeResponse(text, now)) known = true;
+        else if (cfg.learnObservedUpgrades && !ours && observeUpgradeLine(text, now)) known = true;
         // Evidence net: raw-log unrecognized lines after our own sends (6s) so the
         // server's actual wording is always captured for pattern tuning.
         boolean nearSend = lastUpgradeSendAt != 0 && now - lastUpgradeSendAt <= 6_000;
@@ -1452,6 +1527,75 @@ public class StatsTracker {
     }
 
     private void onFail(String kind, double gap, String raw, long now) {
+        Double price = learnFailPrice(kind, gap, now);
+        log("upgrade_chat", "kind", kind,
+            "provisional", Amounts.provisional(Amounts.suffixOf(ChatClassifier.needAmountToken(raw, needAmountRe))) ? true : null,
+            "gap", Amounts.format(gap),
+            "target", price != null ? Amounts.format(price) : null,
+            "balance", money() != null ? Amounts.format(money()) : null,
+            "raw", raw);
+        log("upgrade_result", "kind", kind, "success", false, "fail", true, "message", raw);
+    }
+
+    /**
+     * 0.9.33: an upgrade response that was not an answer to our own send (Drew's manual
+     * /swordmax, /zone max, /rebirth) is logged as upgrade_observed and learned the same
+     * way: a fail line teaches the price, a sword success line the ladder rung, a zone
+     * success line invalidates the stale target and arms the sidebar-delta watch.
+     */
+    private boolean observeUpgradeLine(String text, long now) {
+        ChatClassifier.UpgradeLine u = ChatClassifier.classifyUpgradeLine(text, upgradeFailRes, upgradeSuccessRes,
+            upgradeMaxedRes, needAmountRe);
+        if (u == null) return false;
+        Double bal = money();
+        boolean fail = "fail".equals(u.outcome());
+        Double price = fail && u.amount() != null ? Economy.priceFromFail(u.amount(), bal) : null;
+        log("upgrade_observed", "kind", u.kind(), "outcome", u.outcome(),
+            "gap", fail && u.amount() != null ? Amounts.format(u.amount()) : null,
+            "paid", !fail && u.amount() != null ? Amounts.format(u.amount()) : null,
+            "target", price != null ? Amounts.format(price) : null,
+            "balance", bal != null ? Amounts.format(bal) : null,
+            "raw", text);
+        switch (u.outcome()) {
+            case "fail" -> { if (u.amount() != null) learnFailPrice(u.kind(), u.amount(), now); }
+            case "success" -> learnObservedSuccess(u.kind(), u.amount(), bal, now);
+            case "maxed" -> {
+                if ("zone".equals(u.kind())) { zoneMaxed = true; zoneTarget = null; zoneGap = null; }
+                else if ("sword".equals(u.kind())) { swordMaxed = true; swordTarget = null; swordGap = null; }
+            }
+            default -> { }
+        }
+        return true;
+    }
+
+    private void learnObservedSuccess(String kind, Double paid, Double bal, long now) {
+        lastSpendAt = now;
+        if ("zone".equals(kind)) {
+            zoneTarget = null;
+            zoneTargetPredicted = false;
+            zoneGap = null;
+            zonePriceSeenAt = 0;
+            zoneExploratorySent = false;
+            zoneLastPriceVia = "send-bal";
+            // The balance around the line is the only floor until the sidebar drop names the price.
+            if (bal != null) zoneLastPrice = bal;
+            watchSpend(kind, bal, now);
+        } else if ("sword".equals(kind)) {
+            swordExploratorySent = false;
+            if (paid != null) {
+                swordLastPrice = swordLastPrice == null ? paid : Math.max(swordLastPrice, paid);
+                predictTarget(kind, swordLastPrice, now);
+            } else {
+                swordTarget = null;
+                swordTargetPredicted = false;
+                swordGap = null;
+            }
+        }
+        markStateDirty();
+    }
+
+    /** The state half of a fail line (shared by our own responses and observed ones): returns the absolute price when the balance is known. */
+    private Double learnFailPrice(String kind, double gap, long now) {
         // The gap is measured against the server's balance right now; sidebar bal + gap
         // is the absolute price and self-corrects on every fail, so always re-derive it.
         Double price = Economy.priceFromFail(gap, money());
@@ -1487,13 +1631,7 @@ public class StatsTracker {
             lastSwordFailAt = now;
         }
         markStateDirty();
-        log("upgrade_chat", "kind", kind,
-            "provisional", Amounts.provisional(Amounts.suffixOf(ChatClassifier.needAmountToken(raw, needAmountRe))) ? true : null,
-            "gap", Amounts.format(gap),
-            "target", price != null ? Amounts.format(price) : null,
-            "balance", money() != null ? Amounts.format(money()) : null,
-            "raw", raw);
-        log("upgrade_result", "kind", kind, "success", false, "fail", true, "message", raw);
+        return price;
     }
 
     /**
@@ -1546,6 +1684,8 @@ public class StatsTracker {
         double growth = rollGrowth(cfg.retryPriceGrowthMinPct, cfg.retryPriceGrowthMaxPct);
         if (zone) {
             zoneLastPrice = retryFloor != null ? retryFloor : zoneLastPrice;
+            zoneLastPriceVia = paid != null ? "chat" : price != null ? "price" : "send-bal";
+            if (paid == null) watchSpend(kind, lastSendBal, now);
             zoneRetryGrowth = growth;
             zoneTarget = null;
             zoneTargetPredicted = false;
@@ -1569,6 +1709,7 @@ public class StatsTracker {
             "paid", paid != null ? Amounts.format(paid) : (price != null ? Amounts.format(price) : null),
             "via", via,
             "retryAt", floor != null ? Amounts.format(floor * (1.0 + growth)) : null,
+            "paidPending", zone && paid == null && lastSendBal != null ? true : null,
             "predicted", zone ? (zoneTarget != null ? Amounts.format(zoneTarget) : null) : (swordTarget != null ? Amounts.format(swordTarget) : null));
     }
 

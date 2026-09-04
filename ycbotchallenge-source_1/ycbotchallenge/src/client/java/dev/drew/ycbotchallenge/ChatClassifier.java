@@ -144,6 +144,31 @@ public final class ChatClassifier {
         return fallback;
     }
 
+    /** An upgrade response line seen in chat: kind (sword/zone/rebirth), outcome (fail/success/maxed), amount (gap or paid). */
+    public record UpgradeLine(String kind, String outcome, Double amount) {}
+
+    /**
+     * 0.9.33: classify a server line as an upgrade response regardless of who typed the
+     * command, so Drew's own manual /swordmax, /zone max and /rebirth answers teach the
+     * prices too (upgrade_observed). Player chat, broadcasts and lines naming no kind
+     * are null; a fail line's amount is the remaining gap, a success line's the price paid.
+     */
+    public static UpgradeLine classifyUpgradeLine(String stripped, List<Pattern> failRes, List<Pattern> successRes,
+                                                  List<Pattern> maxedRes, Pattern needAmountRe) {
+        if (stripped == null || stripped.isBlank() || isPlayerOrBroadcast(stripped)) return null;
+        String kind = kindOf(stripped, null);
+        if (kind == null) return null;
+        if (maxedRes != null) for (Pattern p : maxedRes) if (p.matcher(stripped).find()) return new UpgradeLine(kind, "maxed", null);
+        if (successRes != null) for (Pattern p : successRes) {
+            if (p.matcher(stripped).find()) return new UpgradeLine(kind, "success", successAmount(stripped, successRes));
+        }
+        boolean fail = false;
+        if (failRes != null) for (Pattern p : failRes) if (p.matcher(stripped).find()) { fail = true; break; }
+        Double gap = needAmountRe != null ? needAmount(stripped, needAmountRe) : null;
+        if (fail || gap != null) return new UpgradeLine(kind, "fail", gap);
+        return null;
+    }
+
     /** Rebirth container title (screenshot: "Rebirth GUI"). */
     public static boolean isRebirthGui(String title) {
         if (title == null || title.isBlank()) return false;
