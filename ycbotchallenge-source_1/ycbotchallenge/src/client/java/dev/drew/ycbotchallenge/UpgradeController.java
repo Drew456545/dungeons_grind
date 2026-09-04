@@ -38,6 +38,12 @@ public class UpgradeController {
     private String pending;
     /** Types the command through the chat screen like a person (shared with the captcha solver). */
     private final ChatTyper typer;
+    /**
+     * 0.9.35: the companion controller, so one economy prices the egg batch too. Set after
+     * construction (each controller needs the other) and null in the checks, which leaves
+     * the companion branch inert.
+     */
+    private CompanionController companions;
     /** Kind the rebirth horizon blocked at the last eval (HUD "saving"), null when none. */
     private String horizonBlocked = null;
     /** Last eval held an affordable sword back to save for the zone (upgrade_skip saving-zone, HUD). */
@@ -117,6 +123,8 @@ public class UpgradeController {
 
     /** The kind the rebirth horizon held back at the last eval ("zone"/"sword"), or null (0.9.28: the companion trigger reads it). */
     public String horizonBlockedKind() { return horizonBlocked; }
+
+    public void attachCompanions(CompanionController c) { companions = c; }
 
     /** The last eval's decision, or null before the first one (HUD plan row, companion trigger). */
     public Decision lastDecision() { return lastDecision; }
@@ -360,7 +368,7 @@ public class UpgradeController {
             Decision d = decide(combat, now, predicted);
             horizonBlocked = "rebirth-horizon".equals(d.reason()) ? d.kind() : null;
             savingZone = "saving-zone".equals(d.reason());
-            if (d.acts() && !Economy.firstKillsReached(combat.kills - killsAtEnable, combat.kills - killsAtRebirth, firstKillsNeeded)) {
+            if (d.actsTyped() && !Economy.firstKillsReached(combat.kills - killsAtEnable, combat.kills - killsAtRebirth, firstKillsNeeded)) {
                 lastDecision = d.hold("first-kills", null);
                 evalAt = Long.MAX_VALUE;
                 if (logger != null && now - lastFirstKillsLogAt > 20_000) {
@@ -371,9 +379,10 @@ public class UpgradeController {
                 }
                 return false;
             }
-            if (!d.acts()) {
+            if (!d.actsTyped()) {
+                // A companion buy is published for CompanionController to pick up; nothing is typed.
                 lastDecision = d;
-                skipEval(d);
+                if (d.actsCompanion()) logPlan(d); else skipEval(d);
                 return false;
             }
             String kind = d.kind();
@@ -815,6 +824,23 @@ public class UpgradeController {
         in.swordDpsMult = cfg.rebirthHorizonSwordDpsMult;
         in.swordGainFloor = cfg.rebirthHorizonSwordGain;
         in.zoneMinStageKills = cfg.zoneMinStageKills;
+        // 0.9.35: companions are priced by the same call. companions == null before the
+        // client wires it (tests, and the first ticks) leaves the branch inert.
+        in.companionsEnabled = cfg.companionsEnabled && companions != null;
+        in.companionFeasible = companions != null && companions.canVisitNow(now);
+        in.companionStage = stats.confirmedZoneLevel();
+        in.companionBatchPrice = stats.companionBatchPrice(in.companionStage);
+        in.companionGain = stats.companionGain();
+        in.companionGainVia = stats.companionGainVia();
+        in.companionVisitsThisStage = stats.companionVisitsThisStage(in.companionStage);
+        in.companionMaxVisitsPerStage = cfg.companionMaxVisitsPerStage;
+        in.companionMaxBalancePct = cfg.companionMaxBalancePct;
+        in.companionPatienceMs = (int) Math.round(cfg.companionPatienceMinutes * 60_000.0);
+        in.companionPersistCredit = cfg.companionPersistCredit;
+        in.companionMaxRebirthDelayMin = cfg.companionMaxRebirthDelayMin;
+        in.companionMaxRebirthDelayPct = cfg.companionMaxRebirthDelayPct;
+        in.companionRebirthEtaMinMax = cfg.companionRebirthEtaMinMax;
+        in.companionZoneStopped = "zone".equals(horizonBlocked) || stats.zoneMaxed;
         in.now = now;
         Decision d = Economy.decide(in);
         if ("cook".equals(d.gateVia()) && logger != null && combat.cookStartMs() != lastCookHardLogged) {
@@ -837,6 +863,7 @@ public class UpgradeController {
     private Double targetOf(String kind) {
         if ("zone".equals(kind)) return stats.zoneTarget;
         if ("rebirth".equals(kind)) return stats.rebirthTarget;
+        if (Decision.KIND_COMPANION.equals(kind)) return stats.companionBatchPrice(stats.confirmedZoneLevel());
         return stats.swordTarget;
     }
 

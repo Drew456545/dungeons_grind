@@ -68,6 +68,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
         enchants = new EnchantController(config, stats);
         rebirthUpgrades = new RebirthUpgradeController(config, stats);
         companions = new CompanionController(config, stats, upgrades);
+        // 0.9.35: each needs the other — the economy prices the batch, the controller says
+        // whether a visit can actually run.
+        upgrades.attachCompanions(companions);
         companions.setEggStore(new EggStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-eggs.json")));
         transcend = new TranscendController(config, enchants.lore());
         MouseDriver.INSTANCE.configure(config, null);

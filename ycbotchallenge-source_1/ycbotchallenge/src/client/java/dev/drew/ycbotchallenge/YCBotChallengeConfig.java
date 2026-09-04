@@ -658,17 +658,38 @@ public class YCBotChallengeConfig {
     /** "[ZONE 1 STAGE 10]" on a companion. */
     public String companionZoneStagePattern = "/\\[\\s*zone\\s*(?<zone>\\d+)\\s*stage\\s*(?<stage>\\d+)\\s*\\]/";
     /** "| Multiplier: 156.38x Money". */
-    public String companionMultiplierPattern = "/multiplier:\\s*(?<x>[\\d,.]+)\\s*x/";
+    /**
+     * 0.9.35: the multiplier carries a magnitude suffix once it passes 1000 ("Multiplier:
+     * 1.02Kx Money"), and the digits-only group stopped at "1.02" and then failed on the
+     * "K" - so every companion the account owns read as multiplier-less and companion_equip
+     * logged none. Anchored on "money" so the trailing x is unambiguous; Amounts.parse
+     * already handles "1.02K".
+     */
+    public String companionMultiplierPattern = "/multiplier:\\s*(?<x>[\\d,.]+\\s*[A-Za-z]{0,3})x\\s*money/";
     /** "| Rarity: Rare (NORMAL)". */
     public String companionRarityPattern = "/rarity:\\s*(?<r>[A-Za-z]+)/";
     public String companionEquipBestPattern = "/equip best/";
-    public String companionFusePattern = "/fuse companions/";
+    /**
+     * The item is called "Companions Fusion" ("Click here to visit the Companion Fusion
+     * Menu"), never "Fuse Companions" — the old pattern matched nothing, so in 33 logs the
+     * fuse menu was never opened once and every visit logged a misleading no-fuse-item.
+     * Fusing itself is still not automated (0.9.35); this only reaches the menu so its
+     * layout is dumped as companion_gui which=fuse.
+     */
+    public String companionFusePattern = "/fuse companions|companions?\\s+fusion|companion\\s+fusion\\s+menu/";
     public String companionEggsTitlePattern = "/^companion eggs\\b/";
     public String companionsTitlePattern = "/^companions\\b/";
-    public String companionFuseTitlePattern = "/^fuse companions\\b/";
+    public String companionFuseTitlePattern = "/^fuse companions\\b|companions?\\s*fusion/";
     public String companionCommand = "/companion";
     /** Slots of the four equip positions in the Companions GUI (screenshot: the row left of the nether star). */
+    /**
+     * Fallback only since 0.9.35: the equipped companions are the ones whose lore offers to
+     * un-equip them. The real GUI holds them at slots 1, 2, 3 and 5 (slot 4 is Equip Best,
+     * 6-7 are "Slot #N Locked", 0 is empty), so this list saw three of four and filed the
+     * fourth as storage — which let the bulk delete plan a pair an equipped companion held.
+     */
     public List<Integer> companionEquipSlots = List.of(0, 1, 2, 3);
+    public String companionUnequipPattern = "/click here to un-?equip/";
     /**
      * Sliding window (Drew): keep the newest companionKeepZones zones (the current and the
      * previous one), bulk-delete older zone/stage pairs never held by an equipped companion,
@@ -708,27 +729,55 @@ public class YCBotChallengeConfig {
     public int companionEggsMax = 10;
     public int companionMaxOpensPerVisit = 6;
     /**
-     * Trigger: a sliding window on price vs income, not the top stage (a batch there costs
-     * ~1/4 of the rebirth). Once companionStageSettleKills kills on the stage have made the
-     * income its own, a visit is due when a batch of companionEggsMin eggs costs at most
-     * companionMaxIncomeMinutes of income and companionMaxBalancePct of the balance, the
-     * stage is companionMinStageGain above the last purchase, and fewer than
-     * companionMaxVisitsPerRebirth visits happened this rebirth. Fallback: when zone buys
-     * stop (horizon / zone maxed / rebirth ETA ≤ companionRebirthEtaMinMax) with no visit
-     * this rebirth, one visit within companionEndOfRebirthMaxIncomeMinutes.
+     * Variance control, not economics (0.9.35): the ETA maths in Economy.decideCompanion is
+     * linear and would happily spend the whole wallet, and pickOpen may land a bundle that
+     * costs more than the priced batch. Whether a batch is worth buying at all is decided
+     * there; companionStageSettleKills still holds it off until the income figure is this
+     * stage's own.
      */
-    public double companionMaxIncomeMinutes = 2.0;
-    public double companionEndOfRebirthMaxIncomeMinutes = 8.0;
     public double companionMaxBalancePct = 40;
-    public int companionMinStageGain = 2;
-    public int companionMaxVisitsPerRebirth = 2;
+    public int companionMinStageGain = 0;
+    /** Runaway backstop only; the real cap is companionMaxVisitsPerStage (0.9.35). */
+    public int companionMaxVisitsPerRebirth = 8;
+
+    // ---- 0.9.35: companions are priced by the one economy (Economy.decideCompanion)
     /**
-     * 0.9.33: a cheap visit's batch (companionEggsMin eggs) must also be at most this
-     * percent of the money still needed for the next stage, and no cheap visit happens
-     * while a zone is affordable (14:22 log: 3.31SS on eggs with 1.58SS left to the zone).
-     * The end-of-rebirth visit is exempt (zone buys have stopped by then).
+     * Zone prices climb a flat x55 a stage, but income growth per stage fell to x24 at
+     * lvl14 and x18 at lvl15 in the 2026-09-04 logs: income is money/kill x kills/min and
+     * kills/min collapses as the TTK runs 1.2s -> 96s, so the x3.5 sword ladder cannot
+     * hold that line (lvl15: 41.7 bot-on minutes, thirteen sword buys, no advance). A
+     * companion batch is a direct income multiplier that ignores the TTK — measured 2.20x
+     * (7 eggs) and 1.76x (8 eggs) — and it survives the rebirth, so it is worth buying
+     * late and high. The old trigger (a batch under companionMaxIncomeMinutes of income,
+     * two stages above the last buy, twice a rebirth, never while a zone was "affordable")
+     * was a second economy that refused all of that; it is gone.
+     *
+     * companionPatienceMinutes: eggs only pre-empt when the stage is at least this far off.
+     * The zone ETA only — the sword sits on a x3.5 ladder so its ETA is nearly always short,
+     * and the rebirth being close is the reason to buy, not to refuse.
+     * companionPersistCredit: the batch may reach this rebirth up to this much slower than
+     * the sword and still win, because the sword is wiped by the rebirth and the eggs are not.
+     * companionMaxRebirthDelayMin/Pct: how far a batch may push the rebirth out when it is
+     * slower than standing still (it keeps paying on the other side, but not for free).
      */
-    public double companionMaxZoneGapPct = 25;
+    public double companionPatienceMinutes = 20.0;
+    public double companionPersistCredit = 1.25;
+    public double companionMaxRebirthDelayMin = 3.0;
+    public double companionMaxRebirthDelayPct = 25;
+    public int companionMaxVisitsPerStage = 2;
+    /** The egg ladder, measured x52.2 a stage over seven consecutive steps (44.44Q@s9 -> 904.27SS@s15). */
+    public double companionPriceGrowth = 52.2;
+    /**
+     * The income multiplier one batch brings: a prior, replaced by the per-account value
+     * learned from the income before/after each visit (companion_gain / companion_ratio).
+     * 1.5 sits deliberately under the measured 1.76x and 2.20x.
+     */
+    public double companionGainPrior = 1.5;
+    public double companionGainMin = 1.2;
+    public double companionGainMax = 3.0;
+    public int companionGainWindowMs = 180_000;
+    /** After an aborted visit the decision stops asking for a while (it cannot execute). */
+    public int companionRetryAfterAbortMs = 600_000;
 
     // ---- 0.9.33: menu manners, one policy for every container flow (GuiHuman)
     /**
@@ -1242,7 +1291,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 38;
+    public static final int CURRENT_CONFIG_VERSION = 39;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1570,6 +1619,29 @@ public class YCBotChallengeConfig {
             if (captchaVoteMinReads == 3) captchaVoteMinReads = fresh.captchaVoteMinReads;
             changed = true;
         }
+        if (configVersion < 39) {
+            // v39 (0.9.35): companions are priced by Economy.decideCompanion. The old trigger
+            // knobs (companionMaxIncomeMinutes, companionEndOfRebirthMaxIncomeMinutes,
+            // companionMaxZoneGapPct) are gone — Gson simply ignores them in an old file.
+            // The per-rebirth cap becomes a backstop and the real one is per stage: the
+            // 2026-09-04 17:21 log spent both rebirth visits on lvl15 and then refused every
+            // later batch on the stage it never left.
+            companionPatienceMinutes = fresh.companionPatienceMinutes;
+            companionPersistCredit = fresh.companionPersistCredit;
+            companionMaxRebirthDelayMin = fresh.companionMaxRebirthDelayMin;
+            companionMaxRebirthDelayPct = fresh.companionMaxRebirthDelayPct;
+            companionMaxVisitsPerStage = fresh.companionMaxVisitsPerStage;
+            companionPriceGrowth = fresh.companionPriceGrowth;
+            companionGainPrior = fresh.companionGainPrior;
+            companionGainMin = fresh.companionGainMin;
+            companionGainMax = fresh.companionGainMax;
+            companionGainWindowMs = fresh.companionGainWindowMs;
+            companionRetryAfterAbortMs = fresh.companionRetryAfterAbortMs;
+            // "two stages above the last buy" was permanent on a stage you never leave.
+            if (companionMinStageGain == 2) companionMinStageGain = fresh.companionMinStageGain;
+            if (companionMaxVisitsPerRebirth == 2) companionMaxVisitsPerRebirth = fresh.companionMaxVisitsPerRebirth;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1735,12 +1807,21 @@ public class YCBotChallengeConfig {
         if (companionEggsMin < 1) companionEggsMin = 1;
         if (companionEggsMax < companionEggsMin) companionEggsMax = companionEggsMin;
         if (companionMaxOpensPerVisit < 1) companionMaxOpensPerVisit = 1;
-        if (companionMaxIncomeMinutes < 0) companionMaxIncomeMinutes = 0;
-        if (companionEndOfRebirthMaxIncomeMinutes < companionMaxIncomeMinutes) companionEndOfRebirthMaxIncomeMinutes = companionMaxIncomeMinutes;
         if (companionMaxBalancePct < 0) companionMaxBalancePct = 0;
         if (companionMaxBalancePct > 100) companionMaxBalancePct = 100;
         if (companionMinStageGain < 0) companionMinStageGain = 0;
         if (companionMaxVisitsPerRebirth < 0) companionMaxVisitsPerRebirth = 0;
+        if (companionMaxVisitsPerStage < 0) companionMaxVisitsPerStage = 0;
+        if (companionPatienceMinutes < 0) companionPatienceMinutes = 0;
+        if (companionPersistCredit < 1.0) companionPersistCredit = 1.0;
+        if (companionMaxRebirthDelayMin < 0) companionMaxRebirthDelayMin = 0;
+        if (companionMaxRebirthDelayPct < 0) companionMaxRebirthDelayPct = 0;
+        if (companionPriceGrowth <= 1.0) companionPriceGrowth = 52.2;
+        if (companionGainPrior < 1.0) companionGainPrior = 1.0;
+        if (companionGainMin < 1.0) companionGainMin = 1.0;
+        if (companionGainMax < companionGainMin) companionGainMax = companionGainMin;
+        if (companionGainWindowMs < 1000) companionGainWindowMs = 1000;
+        if (companionRetryAfterAbortMs < 0) companionRetryAfterAbortMs = 0;
         if (companionStageSettleKills < 0) companionStageSettleKills = 0;
         if (companionDelayMinMs < 0) companionDelayMinMs = 0;
         if (companionDelayMaxMs < companionDelayMinMs) companionDelayMaxMs = companionDelayMinMs;
@@ -1860,8 +1941,6 @@ public class YCBotChallengeConfig {
         if (zoneMinStageKills < 0) zoneMinStageKills = 0;
         if (ttkKeepOnReenableMs < 0) ttkKeepOnReenableMs = 0;
         if (offBotLogIntervalMs < 0) offBotLogIntervalMs = 0;
-        if (companionMaxZoneGapPct < 0) companionMaxZoneGapPct = 0;
-        if (companionMaxZoneGapPct > 100) companionMaxZoneGapPct = 100;
         if (guiClickMinMs < 0) guiClickMinMs = 0;
         if (guiClickMaxMs < guiClickMinMs) guiClickMaxMs = guiClickMinMs;
         if (guiCloseMinMs < 0) guiCloseMinMs = 0;

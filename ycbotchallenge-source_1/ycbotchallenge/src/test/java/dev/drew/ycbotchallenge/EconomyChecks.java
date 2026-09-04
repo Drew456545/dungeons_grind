@@ -77,6 +77,7 @@ public final class EconomyChecks {
         n += gui0933();
         n += swordSkins0933();
         n += captchaHedge0934();
+        n += companions0935();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1390,21 +1391,23 @@ public final class EconomyChecks {
         n += eq("fuse title", cl.isFuseTitle("Fuse Companions"), true);
         n += eq("fuse title is not companions", cl.isCompanionsTitle("Fuse Companions"), false);
 
-        // Pick the open: largest that fits the eggs left, the income budget and the balance cap.
+        // Pick the open: largest that fits the eggs left, the money budget the decision approved
+        // (0.9.35 - it used to be minutes of income, the same knob that gated the trigger) and
+        // the balance cap.
         List<CompanionLore.OpenOption> opts = List.of(
             new CompanionLore.OpenOption(36, "1x", 1, 121.33), new CompanionLore.OpenOption(37, "3x", 3, 363.98),
             new CompanionLore.OpenOption(38, "10x", 10, 1213.3));
-        CompanionLore.OpenOption p = CompanionLore.pickOpen(opts, 7, 100.0, 2.0, 100_000.0, 40);
+        CompanionLore.OpenOption p = CompanionLore.pickOpen(opts, 7, 200.0, 100_000.0, 40);
         n += eq("tight income -> 1x", p != null ? p.count() : null, 1);
-        p = CompanionLore.pickOpen(opts, 7, 1000.0, 2.0, 100_000.0, 40);
+        p = CompanionLore.pickOpen(opts, 7, 2000.0, 100_000.0, 40);
         n += eq("room for 3x, 10x over eggs left", p != null ? p.count() : null, 3);
-        p = CompanionLore.pickOpen(opts, 10, 1000.0, 2.0, 100_000.0, 40);
+        p = CompanionLore.pickOpen(opts, 10, 2000.0, 100_000.0, 40);
         n += eq("10x fits", p != null ? p.count() : null, 10);
-        p = CompanionLore.pickOpen(opts, 10, 1000.0, 2.0, 500.0, 40);
+        p = CompanionLore.pickOpen(opts, 10, 2000.0, 500.0, 40);
         n += eq("balance cap -> 1x", p != null ? p.count() : null, 1);
-        n += eq("no income -> nothing", CompanionLore.pickOpen(opts, 7, null, 2.0, 100_000.0, 40) == null, true);
-        n += eq("no eggs left -> nothing", CompanionLore.pickOpen(opts, 0, 1000.0, 2.0, 100_000.0, 40) == null, true);
-        n += eq("too poor -> nothing", CompanionLore.pickOpen(opts, 7, 10.0, 2.0, 100_000.0, 40) == null, true);
+        n += eq("no budget -> nothing", CompanionLore.pickOpen(opts, 7, null, 100_000.0, 40) == null, true);
+        n += eq("no eggs left -> nothing", CompanionLore.pickOpen(opts, 0, 2000.0, 100_000.0, 40) == null, true);
+        n += eq("too poor -> nothing", CompanionLore.pickOpen(opts, 7, 20.0, 100_000.0, 40) == null, true);
         n += eq("income minutes", CompanionLore.incomeMinutes(363.98, 100.0), 3.6398, 1e-6);
         n += eq("income minutes unknown", CompanionLore.incomeMinutes(363.98, null) == null, true);
 
@@ -1550,7 +1553,7 @@ public final class EconomyChecks {
                 n += eq("lesson count", lesson.count(), 250);
             }
             n += eq("pickOpen skips the unparsed option",
-                CompanionLore.pickOpen(opts, 250, 1e24, 10, 1e25, 100).count(), 50);
+                CompanionLore.pickOpen(opts, 250, 1e25, 1e25, 100).count(), 50);
             List<CompanionLore.OpenOption> wrong = List.of(
                 new CompanionLore.OpenOption(38, "open: [1x companion egg]", 1, 2e21, "2S"),
                 new CompanionLore.OpenOption(42, "open: [250x companion egg]", 250, null, "1.58SS"));
@@ -1765,7 +1768,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 38", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 38);
+        n += eq("config version 39", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 39);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -1874,20 +1877,170 @@ public final class EconomyChecks {
         return n;
     }
 
+
+    /** Real amounts from the 2026-09-04 logs: O is the rung above SS. */
+    private static final double SS = 1e24, O = 1e27;
+
+    /**
+     * The lvl15 stall: 2026-09-04 17:57:13 verbatim, 36 minutes in, where the log shows
+     * "upgrade_skip ... saving-zone" — the zone 30 min out, the sword affordable but not cheap
+     * against the gap, so nothing happens. Zone prices climb x55 a stage while income growth
+     * per stage had fallen to x18 by lvl15, which is why the climb stops here at all. An egg
+     * batch is the buy: a direct income multiplier that ignores the TTK, measured 2.20x
+     * (7 eggs) and 1.76x (8), and unlike the sword and the zone it survives the rebirth.
+     */
+    private static Economy.Inputs lvl15() {
+        Economy.Inputs in = new Economy.Inputs();
+        in.bal = 11.51 * O;
+        in.rebirthTarget = 17.72 * O;
+        in.incomePerMin = 0.767 * O;      // rebirthEtaMin 8.1, as logged
+        in.zoneTarget = 34.7 * O;
+        in.zoneFloor = 631.12 * SS;
+        in.swordTarget = 10.65 * O;
+        in.swordFloor = 3.04 * O;
+        in.medianTtkMs = 5603.0;
+        in.stageMaxTtkMs = 167344.0;      // the stage the sword never fixed
+        in.stageKills = 74;
+        in.patienceMs = 13977;
+        in.companionFeasible = true;
+        in.companionStage = 15;
+        in.companionBatchPrice = 3 * 904.27 * SS;   // companionEggsMin eggs at the s15 price
+        in.companionGain = 1.5;                     // the prior, before anything is learned
+        in.now = 1_000L;
+        return in;
+    }
+
+    /** 0.9.35: companions priced by the one economy — the asymmetry, the patience horizon, the caps. */
+    private static int companions0935() {
+        int n = 0;
+
+        // The asymmetry. Same numbers: refused for a buy the rebirth wipes, allowed for one it
+        // does not. This is the whole reason a separate companion horizon rule exists.
+        n += eq("horizon vetoes a wiped buy",
+            Economy.rebirthHorizonAllows(3.31 * SS, 7.0 * SS, 10.0 * SS, 1.21 * SS, 1.8), false);
+        n += eq("companions keep paying past it",
+            Economy.companionHorizonAllows(3.31 * SS, 7.0 * SS, 10.0 * SS, 1.21 * SS, 1.8, 3.0, 25), true);
+        n += eq("a batch 10x the gap is refused by both",
+            Economy.companionHorizonAllows(30.0 * SS, 7.0 * SS, 10.0 * SS, 1.21 * SS, 1.8, 3.0, 25), false);
+        n += eq("unknown numbers: no opinion",
+            Economy.companionHorizonAllows(3.31 * SS, null, 10.0 * SS, 1.21 * SS, 1.8, 3.0, 25), true);
+
+        // The patience horizon. Zone ETA only: the sword sits on a x3.5 ladder so its ETA was
+        // 0-20 min all through the stall, and a close rebirth is the reason to buy, not to refuse.
+        n += eq("stage far off: eggs may pre-empt", Economy.companionPatienceOk(1_800_000.0, 1_200_000), true);
+        n += eq("stage minutes away: they may not", Economy.companionPatienceOk(120_000.0, 1_200_000), false);
+        n += eq("no zone price is far, not near", Economy.companionPatienceOk(null, 1_200_000), true);
+        n += eq("patience 0 disables the gate", Economy.companionPatienceOk(1.0, 0), true);
+
+        // The stall itself: what the log holds on, and what the batch turns it into.
+        Economy.Inputs baseInputs = lvl15();
+        baseInputs.companionFeasible = false;
+        Decision held = Economy.decide(baseInputs);
+        n += eq("baseline is the hold the log shows",
+            held.action() + " " + held.kind() + " " + held.reason(), "wait zone saving-zone");
+
+        Decision d = Economy.decide(lvl15());
+        n += eq("companions convert it", d.action() + " " + d.kind() + " " + d.reason(),
+            "buy companion companion-sooner");
+        n += eq("the batch is not a typed command", d.actsTyped(), false);
+        n += eq("it is handed to the companion controller", d.actsCompanion(), true);
+
+        // Slower to this rebirth than standing still, but it keeps paying past it.
+        Economy.Inputs persist = lvl15();
+        persist.bal = 13.0 * O;
+        n += eq("bought for what it keeps", Economy.decide(persist).reason(), "companion-persist");
+
+        // The further the rebirth, the MORE an income multiplier is worth - the opposite of a
+        // sword or a zone, which the rebirth wipes.
+        Economy.Inputs far = lvl15();
+        far.rebirthTarget = 400.0 * O;
+        n += eq("a distant rebirth makes it worth more", Economy.decide(far).reason(), "companion-sooner");
+
+        // ... but with the rebirth imminent, a batch that would push it out past the delay
+        // budget is refused and the hold stands.
+        Economy.Inputs late = lvl15();
+        late.bal = 15.0 * O;
+        n += eq("no batch that delays an imminent rebirth", Economy.decide(late).actsCompanion(), false);
+
+        // The two 0.9.33 log cases, now refused for the right reason: the stage is in reach.
+        Economy.Inputs t1422 = lvl15();          // 3.31SS on eggs with 1.58SS left to the zone
+        t1422.bal = 8.33 * SS;
+        t1422.rebirthTarget = 30.0 * SS;
+        t1422.incomePerMin = 2.09 * SS;
+        t1422.zoneTarget = 9.91 * SS;
+        t1422.swordTarget = 7.47 * SS;
+        t1422.companionBatchPrice = 3.31 * SS;
+        t1422.companionStage = 13;
+        t1422.medianTtkMs = 8294.0;
+        t1422.zoneFloor = null;
+        n += eq("14:22: eggs never delay a stage 0.8 min away",
+            Economy.decide(t1422).actsCompanion(), false);
+
+        Economy.Inputs t0545 = lvl15();          // 2.32SS against an 8.81SS gap
+        t0545.bal = 2.68 * SS;
+        t0545.rebirthTarget = 30.0 * SS;
+        t0545.incomePerMin = 0.94 * SS;
+        t0545.zoneTarget = 11.49 * SS;
+        t0545.swordTarget = 7.47 * SS;
+        t0545.companionBatchPrice = 2.32 * SS;
+        t0545.companionStage = 13;
+        t0545.medianTtkMs = 8294.0;
+        t0545.zoneFloor = null;
+        n += eq("05:45: same, a 9.4 min stage", Economy.decide(t0545).actsCompanion(), false);
+
+        // Caps and safety.
+        Economy.Inputs repeat = lvl15();
+        repeat.companionVisitsThisStage = 2;
+        Decision dRep = Economy.decide(repeat);
+        n += eq("the per-stage budget is spent", dRep.reason(), "companion-repeat");
+        n += eq("and nothing is bought", dRep.acts(), false);
+
+        Economy.Inputs rich = lvl15();
+        rich.companionBatchPrice = 0.6 * rich.bal;   // 60% of the wallet
+        n += eq("never most of the balance", Economy.decide(rich).actsCompanion(), false);
+
+        Economy.Inputs blocked = lvl15();
+        blocked.companionFeasible = false;
+        n += eq("an infeasible visit leaves the hold alone",
+            Economy.decide(blocked).reason(), "saving-zone");
+
+        Economy.Inputs off = lvl15();
+        off.companionsEnabled = false;
+        n += eq("the toggle really turns it off", Economy.decide(off).actsCompanion(), false);
+
+        // Regression: a fixture that says nothing about companions decides as it always did.
+        n += eq("companions are inert by default", new Economy.Inputs().companionBatchPrice == null, true);
+
+        // The egg ladder, measured x52.2 a stage over seven consecutive steps.
+        n += eq("s9 -> s10 is a ladder step", Economy.growthAccepted(2.32e21 / 44.44e18, 52.2, 30), true);
+        n += eq("s13 -> s14 too", Economy.growthAccepted(17.31e24 / 331.23e21, 52.2, 30), true);
+        n += eq("a x2 step is not", Economy.growthAccepted(2.0, 52.2, 30), false);
+        n += eq("s13 predicts s14 within 5%", Economy.predictNext(331.23e21, 52.2), 17.29e24, 0.9e24);
+
+        // Learning the gain from the two measured batches, in order.
+        n += eq("first sample is the estimate", Economy.blendGrowth(null, 2.2, 0.3), 2.2, 1e-9);
+        n += eq("second blends in", Economy.blendGrowth(2.2, 1.76, 0.3), 2.068, 1e-3);
+
+        // The new plan lines stay inside the HUD row.
+        for (String r : List.of("companion-sooner", "companion-persist", "companion-end",
+                                "companion-outbid", "companion-repeat")) {
+            String act = r.equals("companion-outbid") || r.equals("companion-repeat") ? Decision.WAIT : Decision.BUY;
+            Decision p = new Decision(act, Decision.KIND_COMPANION, r, "hard", "median", 36073.0, 13977, 23,
+                23.71 * O, "target", null, 1.76, "learned", null, 0L);
+            n += eq("plan length " + r, p.hudPlan(2.71 * O, 3.41 * O).length() <= 64, true);
+        }
+        return n;
+    }
+
     /** 0.9.33 companions: eggs never delay a stage within reach; visits, last stage and egg prices survive a restart. */
     private static int companions0933() {
         int n = 0;
-        // 14:22 log: 3.31SS on eggs with 1.58SS left to the zone; 05:45: 2.32SS against an 8.81SS gap.
-        n += eq("3.31SS batch vs 1.58SS gap: refused", CompanionLore.batchWithinZoneGap(3.31e24, 1.58e24, 25), false);
-        n += eq("2.32SS batch vs 8.81SS gap (26%): refused", CompanionLore.batchWithinZoneGap(2.32e24, 8.81e24, 25), false);
-        n += eq("0.3SS batch vs 1.58SS gap (19%): fine", CompanionLore.batchWithinZoneGap(0.3e24, 1.58e24, 25), true);
-        n += eq("unknown gap does not block", CompanionLore.batchWithinZoneGap(3.31e24, null, 25), true);
-        n += eq("covered zone (gap 0) blocks", CompanionLore.batchWithinZoneGap(1.0, 0.0, 25), false);
+        // The 0.9.33 "batch within 25% of the zone gap" proxy is gone; the same two log cases
+        // are asserted against the real decision in companions0935().
         n += eq("visits this rebirth", Economy.visitsThisRebirth(2, 9, 9), 2);
         n += eq("visits reset once the counter moved", Economy.visitsThisRebirth(2, 9, 10), 0);
         n += eq("visits kept while the counter is unknown", Economy.visitsThisRebirth(2, 9, null), 2);
         n += eq("no visits recorded", Economy.visitsThisRebirth(null, null, 9), 0);
-        n += eq("fresh companionMaxZoneGapPct", CFG.companionMaxZoneGapPct, 25.0, 1e-9);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-state", ".json");
             java.nio.file.Files.deleteIfExists(tmp);
@@ -1896,8 +2049,10 @@ public final class EconomyChecks {
             e.companionLastBoughtStage = 12;
             e.companionVisitsThisRebirth = 1;
             e.companionVisitsAtRebirths = 9;
-            e.companionEndFallbackDone = true;
             e.companionEggPriceByStage = new java.util.LinkedHashMap<>(Map.of("12", 330e21, "13", 331.23e21));
+            e.companionGainLearned = 1.76;
+            e.companionVisitsByStage = new java.util.LinkedHashMap<>(Map.of("15", 2));
+            e.companionVisitsStageRebirths = 11;
             s.put("Ihazekids69420", e);
             StateStore.Entry alt = new StateStore.Entry();
             alt.swordTarget = 41.4e9;
@@ -1907,8 +2062,9 @@ public final class EconomyChecks {
             n += eq("companion stage persisted", m.companionLastBoughtStage, 12);
             n += eq("companion visits persisted", m.companionVisitsThisRebirth, 1);
             n += eq("companion visits rebirth persisted", m.companionVisitsAtRebirths, 9);
-            n += eq("companion end visit persisted", m.companionEndFallbackDone, true);
             n += eq("companion egg price persisted", m.companionEggPriceByStage.get("13"), 331.23e21, 1e18);
+            n += eq("companion gain persisted", m.companionGainLearned, 1.76, 1e-9);
+            n += eq("companion stage visits persisted", m.companionVisitsByStage.get("15"), 2);
             n += eq("alt has no companion facts", r.get("altaccount").companionLastBoughtStage == null, true);
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {

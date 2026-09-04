@@ -27,12 +27,12 @@ import net.minecraft.util.math.Vec3d;
  * while an open is cheap against income, then /companion → Equip Best, a look at the
  * Fuse Companions GUI (logged only), and a sliding-window bulk delete of old zones.
  *
- * Trigger is a sliding window on price vs income (Drew: at the top stage a batch costs
- * ~1/4 of the rebirth): once the stage's income has settled, buy when an open is at
- * most companionMaxIncomeMinutes of income, the stage is companionMinStageGain above
- * the last purchase and the rebirth has fewer than companionMaxVisitsPerRebirth visits;
- * when zone buys stop with no visit this rebirth, one visit within
- * companionEndOfRebirthMaxIncomeMinutes. Ctrl+Shift+toggle runs it by hand.
+ * 0.9.35: the trigger is no longer here. Economy.decideCompanion prices an egg
+ * batch against the sword, the zone and the rebirth on one set of ETAs and publishes a
+ * Decision of kind "companion"; this class contributes {@link #canVisitNow} (physical
+ * feasibility and the blast-radius caps) and then executes. What it replaced was a second,
+ * weaker economy whose gates all failed closed on the stage the bot could not leave.
+ * Ctrl+Shift+toggle still runs a visit by hand.
  *
  * Every GUI is dumped verbatim (companion_gui) — the fixture net for the next version.
  */
@@ -63,8 +63,14 @@ public class CompanionController {
     // visitsThisRebirth / endFallbackDone / lastBoughtStage live in StatsTracker since 0.9.33 (persisted per user).
     private Integer lastPriceLogStage = null;
     /** Zone-gap facts of the last decide() for the skip log. */
-    private Double lastZoneGap = null;
-    private Double lastBatchPct = null;
+    // 0.9.35: the measured batch gain, the abort cooldown, and combat.kills mirrored so
+    // canVisitNow() can answer without a CombatController in hand (the economy asks first).
+    private Double gainBefore = null;
+    private long gainAt = 0;
+    private int gainEggs = 0;
+    private Integer gainStage = null;
+    private long blockedUntil = 0;
+    private int lastCombatKills = 0;
     private int zoneSeqSeen = -1;
     private int killsAtStage = 0;
     private long lastEggScanAt = 0;
@@ -231,6 +237,8 @@ public class CompanionController {
     public boolean tick(MinecraftClient client, CombatController combat) {
         if (!cfg.companionsEnabled || client.player == null || client.world == null) return false;
         long now = System.currentTimeMillis();
+        lastCombatKills = combat.kills;
+        tickGain(now);
         if (phase == Phase.IDLE) return maybeStart(client, combat, now);
 
         if (phase != Phase.WALK) combat.releaseKeys(client);
@@ -375,14 +383,16 @@ public class CompanionController {
                 int eggsLeft = eggsTarget - eggsOpened;
                 Double income = stats.incomePerMinute();
                 Double bal = stats.money();
-                double maxMinutes = "end-of-rebirth".equals(visitVia) ? cfg.companionEndOfRebirthMaxIncomeMinutes : cfg.companionMaxIncomeMinutes;
-                if ("manual".equals(visitVia)) maxMinutes = Math.max(maxMinutes, cfg.companionEndOfRebirthMaxIncomeMinutes);
-                CompanionLore.OpenOption pick = CompanionLore.pickOpen(options, eggsLeft, income, maxMinutes, bal, cfg.companionMaxBalancePct);
+                // 0.9.35: spend what the decision approved, not a minutes-of-income budget.
+                // The batch the economy priced is companionEggsMin eggs; the rolled eggsTarget
+                // only humanises the count, it may not enlarge the bill.
+                Double budget = visitBudget();
+                CompanionLore.OpenOption pick = CompanionLore.pickOpen(options, eggsLeft, budget, bal, cfg.companionMaxBalancePct);
                 if (pick == null || opensClicked >= cfg.companionMaxOpensPerVisit) {
-                    log("companion_skip", "reason", pick == null ? (options.isEmpty() ? "no-open-item" : "price") : "open-cap",
+                    log("companion_skip", "reason", pick == null ? (options.isEmpty() ? "no-open-item" : "budget") : "open-cap",
                         "eggsLeft", eggsLeft, "opens", opensClicked, "options", options.size(),
                         "incomePerMin", income != null ? Amounts.format(income) : null, "balance", bal != null ? Amounts.format(bal) : null,
-                        "maxMinutes", maxMinutes);
+                        "budget", budget != null ? Amounts.format(budget) : null, "spent", spent > 0 ? Amounts.format(spent) : null);
                     phase = Phase.CLOSE_EGG;
                     phaseUntil = now + GuiHuman.closeDelayMs(cfg);
                     return true;
@@ -586,6 +596,12 @@ public class CompanionController {
                     "deletes", deletes.size(), "visitMs", now - visitStartedAt,
                     "visitsThisRebirth", stats.companionVisitsThisRebirth(), "persisted", true);
                 consecutiveAborts = 0;
+                if (eggsOpened > 0 && gainBefore != null) {
+                    gainEggs = eggsOpened;
+                    gainAt = now + cfg.companionGainWindowMs;
+                } else {
+                    gainBefore = null;
+                }
                 finish(client, combat);
                 return false;
             }
@@ -640,16 +656,20 @@ public class CompanionController {
             log("companion_plan", "via", "manual", "stage", stats.confirmedZoneLevel());
         } else if (plannedAt == 0 && now - lastDecisionAt > 15_000) {
             lastDecisionAt = now;
-            String via = decide(combat, now);
+            String via = decide(now);
             if (via != null) {
                 long delay = HumanTiming.logNormalMs(cfg.companionDelayMinMs, Math.max(cfg.companionDelayMinMs + 1, cfg.companionDelayMaxMs));
                 plannedAt = now + delay;
                 planVia = via;
-                log("companion_plan", "via", via, "delayMs", delay, "stage", stats.confirmedZoneLevel(),
-                    "price", lastEgg != null && lastEgg.price() != null ? Amounts.format(lastEgg.price()) : null,
+                Integer stage = stats.confirmedZoneLevel();
+                Double batch = stats.companionBatchPrice(stage);
+                log("companion_plan", "via", via, "delayMs", delay, "stage", stage,
+                    "batch", batch != null ? Amounts.format(batch) : null,
+                    "perEgg", stats.companionEggPriceEstimate(stage) != null ? Amounts.format(stats.companionEggPriceEstimate(stage)) : null,
+                    "gain", Math.round(stats.companionGain() * 100.0) / 100.0, "gainVia", stats.companionGainVia(),
                     "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
-                    "visitsThisRebirth", stats.companionVisitsThisRebirth(), "lastBoughtStage", stats.companionLastBoughtStage,
-                    "zoneGap", lastZoneGap != null ? Amounts.format(lastZoneGap) : null, "batchPctOfGap", tenth(lastBatchPct));
+                    "visitsThisStage", stats.companionVisitsThisStage(stage),
+                    "visitsThisRebirth", stats.companionVisitsThisRebirth(), "lastBoughtStage", stats.companionLastBoughtStage);
             }
         }
         if (plannedAt == 0 || now < plannedAt) return false;
@@ -662,13 +682,21 @@ public class CompanionController {
             dumpPlates(client, combat);
             plannedAt = 0;
             if ("manual".equals(planVia)) return false;
-            stats.noteCompanionVisit(null, false); // do not retry every 15s; the next rebirth gets another look
+            blockedUntil = now + cfg.companionRetryAfterAbortMs;
+            stats.noteCompanionVisit(null, false); // do not retry every 15s
             return false;
         }
         plannedAt = 0;
         visitVia = planVia;
         visitStartedAt = now;
         visitStage = stats.confirmedZoneLevel();
+        // Armed before the first spend: this visit's income multiplier is the only evidence
+        // the prior is ever replaced by. A visit that starts while an earlier measurement is
+        // still open would corrupt it, so that one is abandoned rather than mixed.
+        if (gainAt != 0) { gainAt = 0; gainBefore = null; }
+        gainBefore = stats.incomePerMinute();
+        gainStage = visitStage;
+        gainEggs = 0;
         eggAim = hit.aim();
         eggsTarget = HumanTiming.ticks(cfg.companionEggsMin, Math.max(cfg.companionEggsMin, cfg.companionEggsMax));
         eggsOpened = 0;
@@ -701,61 +729,114 @@ public class CompanionController {
         return true;
     }
 
-    /** "cheap" / "end-of-rebirth" when a visit is due now, else null (skips rate-limited to the log). */
-    private String decide(CombatController combat, long now) {
-        Integer stage = stats.confirmedZoneLevel();
-        if (stage == null || lastEgg == null || lastEgg.price() == null) return null;
-        if (combat.kills - killsAtStage < cfg.companionStageSettleKills) return null;
-        Double income = stats.incomePerMinute();
-        Double bal = stats.money();
-        if (income == null || income <= 0 || bal == null) return skip("no-income", stage, null);
-        // The persisted per-egg price of this stage beats the hologram read (the first open of a
-        // visit used to be a blind probe against a possibly mis-scaled string).
-        Double known = stats.companionEggPrice(stage);
-        double perEgg = known != null ? known : lastEgg.price();
-        double batch = perEgg * Math.max(1, cfg.companionEggsMin);
-        double minutes = batch / income;
-        boolean underBalance = batch <= bal * Math.max(0, cfg.companionMaxBalancePct) / 100.0;
-        Double zoneGap = stats.zoneGapEstimate();
-        lastZoneGap = zoneGap;
-        lastBatchPct = zoneGap != null && zoneGap > 0 ? 100.0 * batch / zoneGap : null;
-        Decision last = upgrades.lastDecision();
-        boolean zoneNext = last != null && "zone".equals(last.kind()) && last.acts();
-        boolean zoneAffordable = zoneNext || Economy.knownAffordable(stats.zoneTarget, bal);
-        boolean withinGap = CompanionLore.batchWithinZoneGap(batch, zoneGap, cfg.companionMaxZoneGapPct);
-        int visits = stats.companionVisitsThisRebirth();
-        if (visits >= cfg.companionMaxVisitsPerRebirth) return skip("visits", stage, minutes);
-        Integer lastBought = stats.companionLastBoughtStage;
-        boolean stageOk = lastBought == null || stage >= lastBought + cfg.companionMinStageGain;
-        Double eta = Economy.rebirthEtaMin(bal, stats.rebirthTarget, income);
-        boolean zoneStopped = "zone".equals(upgrades.horizonBlockedKind()) || stats.zoneMaxed
-            || (eta != null && eta <= cfg.companionRebirthEtaMinMax);
-        if (minutes <= cfg.companionMaxIncomeMinutes && underBalance) {
-            if (!stageOk) return skip("stage-gain", stage, minutes);
-            // 0.9.33: eggs never delay a stage that is within reach (14:22 log: 3.31SS on eggs
-            // with 1.58SS left to the zone).
-            if (zoneAffordable && !zoneStopped) return skip("zone-affordable", stage, minutes);
-            if (!withinGap && !zoneStopped) return skip("zone-gap", stage, minutes);
-            return "cheap";
+    /**
+     * 0.9.35: the economy decides, this decides whether a visit can run. Until now this
+     * method was a second, weaker economy — it reached for the zone gap, the last decision
+     * and the horizon through back-channels and could disagree with the real one, and its
+     * "a batch costs at most companionMaxIncomeMinutes of income, two stages above the last
+     * buy, twice a rebirth, never while a zone is affordable" refused every batch the
+     * 2026-09-04 lvl15 stall wanted. Economy.decideCompanion prices it now; what is
+     * left here is physical feasibility, which the economy cannot see.
+     *
+     * @return the decision's own reason ("companion-sooner" / "companion-persist" /
+     *         "companion-end"), or null when nothing is due.
+     */
+    private String decide(long now) {
+        Decision d = upgrades.lastDecision();
+        if (d == null || !d.actsCompanion()) return null;
+        String blocked = blockedReason(now);
+        if (blocked != null) {
+            // The economy wants a batch and the visit cannot run: say so, or it is a silent refusal.
+            skip(blocked, stats.confirmedZoneLevel());
+            return null;
         }
-        if (zoneStopped && visits == 0 && !stats.companionEndFallbackDone()
-            && minutes <= cfg.companionEndOfRebirthMaxIncomeMinutes && underBalance) {
-            stats.noteCompanionEndFallback();
-            return "end-of-rebirth";
-        }
-        return skip(underBalance ? "price" : "balance", stage, minutes);
+        return d.reason();
     }
 
-    private String skip(String reason, Integer stage, Double minutes) {
+    /**
+     * Can a visit actually run? Fed back into Economy.Inputs.companionFeasible so the
+     * decision never live-locks on a buy that cannot execute. Everything here is physical or
+     * a blast-radius cap — never economics.
+     */
+    public boolean canVisitNow(long now) { return blockedReason(now) == null; }
+
+    /** Why a visit cannot run right now, or null when it can. */
+    private String blockedReason(long now) {
+        if (!cfg.companionsEnabled) return "disabled";
+        if (suspended) return "suspended";
+        if (now < blockedUntil) return "abort-cooldown";
+        if (phase != Phase.IDLE || plannedAt != 0) return "busy";
+        Integer stage = stats.confirmedZoneLevel();
+        if (stage == null) return "no-stage";
+        // The income figure must be this stage's own before any ETA about it means anything.
+        if (lastCombatKills - killsAtStage < cfg.companionStageSettleKills) return "settle-kills";
+        if (stats.incomePerMinute() == null || stats.money() == null) return "no-income";
+        if (stats.companionBatchPrice(stage) == null) return "no-egg-price";
+        // Runaway guard only; the real budget is per stage, inside the economy.
+        if (cfg.companionMaxVisitsPerRebirth > 0
+            && stats.companionVisitsThisRebirth() >= cfg.companionMaxVisitsPerRebirth) return "visits";
+        return null;
+    }
+
+    /**
+     * What this visit may still spend: the batch the economy priced, less what has gone
+     * already. A manual visit (Ctrl+Shift+toggle) is Drew asking for it, so it gets the
+     * balance cap alone.
+     */
+    private Double visitBudget() {
+        if ("manual".equals(visitVia)) {
+            Double bal = stats.money();
+            return bal == null ? null : bal * Math.max(0, cfg.companionMaxBalancePct) / 100.0;
+        }
+        Double batch = stats.companionBatchPrice(visitStage);
+        if (batch == null) return null;
+        return Math.max(0.0, batch - spent);
+    }
+
+    /**
+     * The income multiplier this batch brought: armed before the first spend, read once the
+     * rate has refilled (companionGainWindowMs). This is the whole evidence base for the
+     * prior — measured 2.20x on 7 eggs and 1.76x on 8 in the 2026-09-04 logs.
+     */
+    private void tickGain(long now) {
+        if (gainAt == 0 || now < gainAt) return;
+        long at = gainAt;
+        gainAt = 0;
+        Double after = stats.incomePerMinute();
+        Double before = gainBefore;
+        gainBefore = null;
+        if (before == null || before <= 0 || after == null || after <= 0) return;
+        double ratio = after / before;
+        log("companion_gain", "before", Amounts.format(before), "after", Amounts.format(after),
+            "ratio", Math.round(ratio * 100.0) / 100.0, "eggs", gainEggs, "stage", gainStage,
+            "windowMs", cfg.companionGainWindowMs, "at", at,
+            "equippedMultBefore", multSum(equippedBefore), "equippedMultAfter", multSum(equippedAfter),
+            "equippedMaxBefore", multMax(equippedBefore), "equippedMaxAfter", multMax(equippedAfter));
+        stats.noteCompanionGain(ratio, gainEggs, gainStage);
+    }
+
+    private static Double multSum(List<CompanionLore.Companion> cs) {
+        double t = 0;
+        boolean any = false;
+        for (CompanionLore.Companion c : cs) if (c.multiplier() != null) { t += c.multiplier(); any = true; }
+        return any ? t : null;
+    }
+
+    private static Double multMax(List<CompanionLore.Companion> cs) {
+        Double best = null;
+        for (CompanionLore.Companion c : cs) if (c.multiplier() != null && (best == null || c.multiplier() > best)) best = c.multiplier();
+        return best;
+    }
+
+    private void skip(String reason, Integer stage) {
         long now = System.currentTimeMillis();
         if (now - lastSkipLogAt > 120_000) {
             lastSkipLogAt = now;
-            log("companion_skip", "reason", reason, "stage", stage, "minutesPerBatch", tenth(minutes),
-                "visitsThisRebirth", stats.companionVisitsThisRebirth(), "lastBoughtStage", stats.companionLastBoughtStage,
-                "zoneGap", lastZoneGap != null ? Amounts.format(lastZoneGap) : null, "zoneGapVia", stats.zoneGapVia(),
-                "batchPctOfGap", tenth(lastBatchPct), "maxPct", cfg.companionMaxZoneGapPct);
+            log("companion_skip", "reason", reason, "stage", stage,
+                "visitsThisRebirth", stats.companionVisitsThisRebirth(),
+                "visitsThisStage", stats.companionVisitsThisStage(stage),
+                "lastBoughtStage", stats.companionLastBoughtStage);
         }
-        return null;
     }
 
     // ------------------------------------------------------------------ egg
@@ -984,16 +1065,26 @@ public class CompanionController {
 
     // ------------------------------------------------------------- companions
 
+    /**
+     * 0.9.35: equipped means the lore offers to un-equip it. The configured slot list said
+     * {0,1,2,3} while the real GUI equips 1, 2, 3 and 5 (4 is Equip Best, 6-7 are locked,
+     * 0 is empty), so this saw three of four and filed the fourth as storage — which let
+     * prepareDeletes plan a bulk delete over a pair an equipped companion held. The slot
+     * list is the fallback for a layout with no un-equip line.
+     */
     private void readCompanions(List<Entry> entries, boolean before) {
         List<CompanionLore.Companion> eq = new ArrayList<>();
         List<CompanionLore.Companion> st = new ArrayList<>();
         Set<Integer> equipSlots = new HashSet<>();
         if (cfg.companionEquipSlots != null) equipSlots.addAll(cfg.companionEquipSlots);
+        boolean anyUnequip = false;
+        for (Entry e : entries) if (lore.isEquipped(e.lore())) { anyUnequip = true; break; }
         Integer maxZone = null;
         for (Entry e : entries) {
             CompanionLore.Companion c = lore.companion(e.slot(), e.name(), e.lore());
             if (c == null) continue;
-            if (equipSlots.contains(e.slot())) eq.add(c); else st.add(c);
+            boolean equipped = anyUnequip ? lore.isEquipped(e.lore()) : equipSlots.contains(e.slot());
+            if (equipped) eq.add(c); else st.add(c);
             if (c.zone() != null && (maxZone == null || c.zone() > maxZone)) maxZone = c.zone();
         }
         if (before) equippedBefore = eq; else equippedAfter = eq;
@@ -1049,6 +1140,9 @@ public class CompanionController {
             "opens", opensClicked, "visitMs", System.currentTimeMillis() - visitStartedAt);
         if (isOurGui(client)) EnchantScreens.closeGui(client);
         finish(client, combat);
+        // The economy keeps asking every eval; without this it live-locks on a buy that
+        // cannot run (and canVisitNow would keep saying yes).
+        blockedUntil = System.currentTimeMillis() + cfg.companionRetryAfterAbortMs;
         if (++consecutiveAborts >= Math.max(1, cfg.companionMaxConsecutiveAborts)) {
             suspended = true;
             log("companion_suspended", "aborts", consecutiveAborts);

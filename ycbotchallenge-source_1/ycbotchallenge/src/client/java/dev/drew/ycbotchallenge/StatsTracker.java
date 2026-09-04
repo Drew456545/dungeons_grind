@@ -87,55 +87,150 @@ public class StatsTracker {
     public Integer companionLastBoughtStage = null;
     private int companionVisits = 0;
     private Integer companionVisitsAtRebirths = null;
-    private boolean companionEndFallbackDone = false;
     public final Map<String, Double> companionEggPriceByStage = new LinkedHashMap<>();
+    // 0.9.35: what a batch is worth here, and the per-stage visit budget.
+    private Double companionGainLearned = null;
+    private Double companionPriceGrowthLearned = null;
+    private final Map<String, Integer> companionVisitsByStage = new LinkedHashMap<>();
+    private Integer companionVisitsStageRebirths = null;
 
     /** Visits made this rebirth (0 once the sidebar rebirth counter moved past the one they belong to). */
     public int companionVisitsThisRebirth() {
         return Economy.visitsThisRebirth(companionVisits, companionVisitsAtRebirths, rebirths);
     }
 
-    /** Whether the once-per-rebirth end visit already happened in the current rebirth. */
-    public boolean companionEndFallbackDone() {
-        if (rebirths != null && companionVisitsAtRebirths != null && !rebirths.equals(companionVisitsAtRebirths)) return false;
-        return companionEndFallbackDone;
-    }
-
     /** A rebirth happened (controller-side signal): the per-rebirth counters start over. */
     public void companionRebirthRollover() {
         companionVisits = 0;
-        companionEndFallbackDone = false;
         companionVisitsAtRebirths = rebirths;
+        companionVisitsByStage.clear();
+        companionVisitsStageRebirths = rebirths;
         markStateDirty();
     }
 
     /** A visit ended (or was written off): count it, remember the stage when something was bought. */
     public void noteCompanionVisit(Integer stage, boolean bought) {
-        if (companionVisitsThisRebirth() == 0 && companionVisits != 0) {
-            companionVisits = 0;
-            companionEndFallbackDone = false;
-        }
+        if (companionVisitsThisRebirth() == 0 && companionVisits != 0) companionVisits = 0;
         companionVisits++;
         companionVisitsAtRebirths = rebirths;
+        noteCompanionStageVisit(stage);
         if (bought && stage != null) companionLastBoughtStage = stage;
-        markStateDirty();
-    }
-
-    public void noteCompanionEndFallback() {
-        companionEndFallbackDone = true;
-        companionVisitsAtRebirths = rebirths;
         markStateDirty();
     }
 
     /** The true per-egg price seen at a stage (sidebar delta of an open), kept for the next visit's first pick. */
     public void noteCompanionEggPrice(Integer stage, Double price) {
         if (stage == null || price == null || price <= 0) return;
+        learnCompanionPriceGrowth(stage, price);  // before the put: it compares against stage-1
         companionEggPriceByStage.put(String.valueOf(stage), price);
         markStateDirty();
     }
 
     public Double companionEggPrice(Integer stage) {
         return stage == null ? null : companionEggPriceByStage.get(String.valueOf(stage));
+    }
+
+    // ---- 0.9.35: pricing a batch, and learning what one is worth
+
+    /**
+     * The per-egg price at a stage: the one observed there, else the nearest observed stage
+     * walked along the egg ladder. Measured x52.2 a stage over seven consecutive steps
+     * (44.44Q@s9 -> 2.32QQ -> 121.33QQ -> 6.34S -> 331.23S -> 17.31SS -> 904.27SS@s15,
+     * every ratio 52.21-52.30), so a stage the bot has never stood on still has a price and
+     * the decision is available exactly when the climb stalls.
+     */
+    public Double companionEggPriceEstimate(Integer stage) {
+        if (stage == null) return null;
+        Double exact = companionEggPrice(stage);
+        if (exact != null) return exact;
+        double growth = companionPriceGrowth();
+        if (growth <= 1.0) return null;
+        Integer nearest = null;
+        double nearestPrice = 0;
+        for (Map.Entry<String, Double> e : companionEggPriceByStage.entrySet()) {
+            Integer s2 = parseStageKey(e.getKey());
+            if (s2 == null || e.getValue() == null || e.getValue() <= 0) continue;
+            if (nearest == null || Math.abs(s2 - stage) < Math.abs(nearest - stage)) {
+                nearest = s2;
+                nearestPrice = e.getValue();
+            }
+        }
+        if (nearest == null) return null;
+        return nearestPrice * Math.pow(growth, stage - nearest);
+    }
+
+    /** companionEggsMin eggs at this stage: the unit Economy.decideCompanion prices. */
+    public Double companionBatchPrice(Integer stage) {
+        Double per = companionEggPriceEstimate(stage);
+        if (per == null || per <= 0) return null;
+        return per * Math.max(1, cfg.companionEggsMin);
+    }
+
+    private static Integer parseStageKey(String k) {
+        try { return Integer.valueOf(k.trim()); } catch (RuntimeException e) { return null; }
+    }
+
+    public double companionPriceGrowth() {
+        return companionPriceGrowthLearned != null ? companionPriceGrowthLearned : cfg.companionPriceGrowth;
+    }
+
+    /**
+     * Two observed stages one step apart teach the ladder, the same way a pair of server
+     * prices teaches the sword and zone growth.
+     */
+    public void learnCompanionPriceGrowth(Integer stage, Double price) {
+        if (stage == null || price == null || price <= 0) return;
+        Double prev = companionEggPrice(stage - 1);
+        if (prev == null || prev <= 0) return;
+        double ratio = price / prev;
+        boolean ok = Economy.growthAccepted(ratio, cfg.companionPriceGrowth, cfg.priceGrowthLearnBandPct);
+        if (ok) companionPriceGrowthLearned = Economy.blendGrowth(companionPriceGrowthLearned, ratio, 0.3);
+        log("companion_price_ratio", "stage", stage, "previous", Amounts.format(prev),
+            "actual", Amounts.format(price), "ratio", Math.round(ratio * 100.0) / 100.0,
+            "accepted", ok, "growth", Math.round(companionPriceGrowth() * 100.0) / 100.0);
+    }
+
+    /** The income multiplier one batch brought (prior until a visit has been measured). */
+    public double companionGain() {
+        return companionGainLearned != null ? companionGainLearned : cfg.companionGainPrior;
+    }
+
+    public String companionGainVia() { return companionGainLearned != null ? "learned" : "config"; }
+
+    /**
+     * One measured batch: income before the visit vs after companionGainWindowMs. Only
+     * samples near the priced batch size are learned from — 2.20x on 7 eggs and 1.76x on 8
+     * show the effect does not scale simply with the count, so an off-count sample is
+     * recorded and dropped rather than corrected by a made-up law.
+     */
+    public void noteCompanionGain(double ratio, int eggs, Integer stage) {
+        boolean inBand = ratio > cfg.companionGainMin && ratio < cfg.companionGainMax;
+        boolean onCount = Math.abs(eggs - Math.max(1, cfg.companionEggsMin)) <= 2;
+        boolean ok = inBand && onCount;
+        if (ok) companionGainLearned = Economy.blendGrowth(companionGainLearned, ratio, 0.3);
+        log("companion_ratio", "ratio", Math.round(ratio * 100.0) / 100.0, "eggs", eggs, "stage", stage,
+            "accepted", ok, "inBand", inBand, "onCount", onCount,
+            "gain", Math.round(companionGain() * 100.0) / 100.0, "via", companionGainVia());
+        markStateDirty();
+    }
+
+    /** Visits already spent on this stage in the current rebirth (0.9.35: the cap Drew asked for). */
+    public int companionVisitsThisStage(Integer stage) {
+        if (stage == null) return 0;
+        if (companionVisitsStageRebirths != null && rebirths != null
+            && !companionVisitsStageRebirths.equals(rebirths)) return 0;
+        Integer n = companionVisitsByStage.get(String.valueOf(stage));
+        return n == null ? 0 : n;
+    }
+
+    private void noteCompanionStageVisit(Integer stage) {
+        if (stage == null) return;
+        if (companionVisitsStageRebirths == null || rebirths == null
+            || !companionVisitsStageRebirths.equals(rebirths)) {
+            companionVisitsByStage.clear();
+            companionVisitsStageRebirths = rebirths;
+        }
+        companionVisitsByStage.merge(String.valueOf(stage), 1, Integer::sum);
     }
     private String stateUser;
     private long stateDirtyAt = 0;
@@ -572,9 +667,13 @@ public class StatsTracker {
         if (companionVisitsAtRebirths == null && e.companionVisitsAtRebirths != null) {
             companionVisitsAtRebirths = e.companionVisitsAtRebirths;
             companionVisits = e.companionVisitsThisRebirth != null ? e.companionVisitsThisRebirth : 0;
-            companionEndFallbackDone = Boolean.TRUE.equals(e.companionEndFallbackDone);
         }
         if (companionEggPriceByStage.isEmpty() && e.companionEggPriceByStage != null) companionEggPriceByStage.putAll(e.companionEggPriceByStage);
+        if (companionGainLearned == null) companionGainLearned = e.companionGainLearned;
+        if (companionVisitsByStage.isEmpty() && e.companionVisitsByStage != null) {
+            companionVisitsByStage.putAll(e.companionVisitsByStage);
+            companionVisitsStageRebirths = e.companionVisitsStageRebirths;
+        }
         if (swordGrowthLearned == null) swordGrowthLearned = e.swordGrowth;
         if (zoneGrowthLearned == null) zoneGrowthLearned = e.zoneGrowth;
         if (swordTarget != null && swordTarget.equals(e.swordTarget) && Boolean.TRUE.equals(e.swordTargetPredicted)) swordTargetPredicted = true;
@@ -589,7 +688,8 @@ public class StatsTracker {
             "swordGrowth", swordGrowthLearned, "zoneGrowth", zoneGrowthLearned,
             "swordFloor", fmt(swordLastPrice), "zoneFloor", fmt(zoneLastPrice), "rebirthFloor", fmt(rebirthLastPrice),
             "companionLastBoughtStage", companionLastBoughtStage, "companionVisits", companionVisits,
-            "companionVisitsAtRebirths", companionVisitsAtRebirths, "companionEggPrices", companionEggPriceByStage.size());
+            "companionVisitsAtRebirths", companionVisitsAtRebirths, "companionEggPrices", companionEggPriceByStage.size(),
+            "companionGain", companionGainLearned, "companionVisitsByStage", companionVisitsByStage.size());
     }
 
     private static String fmt(Double v) { return v != null ? Amounts.format(v) : null; }
@@ -619,8 +719,10 @@ public class StatsTracker {
         e.companionLastBoughtStage = companionLastBoughtStage;
         e.companionVisitsThisRebirth = companionVisits;
         e.companionVisitsAtRebirths = companionVisitsAtRebirths;
-        e.companionEndFallbackDone = companionEndFallbackDone;
         e.companionEggPriceByStage = companionEggPriceByStage.isEmpty() ? null : new LinkedHashMap<>(companionEggPriceByStage);
+        e.companionGainLearned = companionGainLearned;
+        e.companionVisitsByStage = companionVisitsByStage.isEmpty() ? null : new LinkedHashMap<>(companionVisitsByStage);
+        e.companionVisitsStageRebirths = companionVisitsStageRebirths;
         stateStore.put(stateUser, e);
         log("state_saved", "user", stateUser);
     }

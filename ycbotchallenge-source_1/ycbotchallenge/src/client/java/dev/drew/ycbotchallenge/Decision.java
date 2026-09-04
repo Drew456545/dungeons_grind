@@ -26,12 +26,25 @@ public record Decision(
     public static final String WAIT = "wait";
     public static final String NONE = "none";
 
+    /**
+     * 0.9.35: the companion batch. A kind like any other to the economy, the log and the
+     * HUD, but never a typed command - it is a walk to the egg and a GUI visit, so the
+     * typed overlays (first kills, cooldown, hesitation) must not apply. See {@link #actsTyped}.
+     */
+    public static final String KIND_COMPANION = "companion";
+
     /** True when the controller should type {@code kind}'s command (buy or probe). */
     public boolean acts() {
         return kind != null && (BUY.equals(action) || PROBE.equals(action));
     }
 
     public boolean isBuy() { return BUY.equals(action); }
+
+    /** True when the controller should TYPE this kind's command; a companion buy is a visit, not a command. */
+    public boolean actsTyped() { return acts() && !KIND_COMPANION.equals(kind); }
+
+    /** True when this decision hands the buy to the companion controller. */
+    public boolean actsCompanion() { return acts() && KIND_COMPANION.equals(kind); }
 
     public boolean gateHard() { return "hard".equals(gate); }
 
@@ -85,6 +98,9 @@ public record Decision(
                 case "sword-hard" -> "buy sword" + sp(price) + " · stage hard" + (ttk != null && pat != null ? " " + ttk + " > " + pat : "");
                 case "sword-cheap" -> "buy sword" + sp(price) + " · cheap vs zone gap" + (swordPct != null ? " " + Math.round(swordPct) + "%" : "");
                 case "rebirth-affordable" -> "buy rebirth" + sp(price);
+                case "companion-sooner" -> "buy eggs" + sp(price) + " · beats zone & sword";
+                case "companion-persist" -> "buy eggs" + sp(price) + " · keeps past rebirth";
+                case "companion-end" -> "buy eggs" + sp(price) + " · zone buys stopped";
                 default -> "buy " + kind + sp(price) + " · " + r;
             };
             case PROBE -> out = "probe " + kind + " · price ?" + (r.endsWith("-hard") ? " · stage hard" : "");
@@ -99,6 +115,8 @@ public record Decision(
                 case "first-kills" -> "wait · a few kills first";
                 case "cooldown" -> "wait" + sp(eta) + " · cooldown" + (kind != null ? " " + kind : "");
                 case "hesitate" -> "wait" + sp(eta) + " · hesitating on " + kind;
+                case "companion-outbid" -> "wait · zone/sword pay back sooner than eggs";
+                case "companion-repeat" -> "wait · eggs already bought on this stage";
                 default -> "wait · " + r + (kind != null ? " " + kind : "");
             };
             default -> out = "maxed".equals(r) ? "nothing left to buy" : "idle";

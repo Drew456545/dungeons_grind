@@ -39,8 +39,17 @@ public final class StateStore {
         public Integer companionLastBoughtStage;
         public Integer companionVisitsThisRebirth;
         public Integer companionVisitsAtRebirths;
+        /** Unused since 0.9.35 (the end-of-rebirth visit became a normal companion-end decision); kept so an old file still round-trips. */
         public Boolean companionEndFallbackDone;
         public Map<String, Double> companionEggPriceByStage;
+        /**
+         * 0.9.35: the income multiplier a batch actually brought, learned per account from
+         * the income before/after each visit, and the visits already spent per stage (the
+         * per-rebirth cap used to burn both on a stage the bot then never left).
+         */
+        public Double companionGainLearned;
+        public Map<String, Integer> companionVisitsByStage;
+        public Integer companionVisitsStageRebirths;
         public long savedAt;
     }
 

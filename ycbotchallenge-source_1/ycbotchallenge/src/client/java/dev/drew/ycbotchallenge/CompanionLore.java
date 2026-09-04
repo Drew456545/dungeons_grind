@@ -57,6 +57,7 @@ public final class CompanionLore {
     private final Pattern rarityRe;
     private final Pattern equipBestRe;
     private final Pattern fuseRe;
+    private final Pattern unequipRe;
     private final Pattern eggsTitleRe;
     private final Pattern companionsTitleRe;
     private final Pattern fuseTitleRe;
@@ -71,6 +72,7 @@ public final class CompanionLore {
         rarityRe = RebirthLore.compileLoose(cfg.companionRarityPattern);
         equipBestRe = RebirthLore.compileLoose(cfg.companionEquipBestPattern);
         fuseRe = RebirthLore.compileLoose(cfg.companionFusePattern);
+        unequipRe = RebirthLore.compileLoose(cfg.companionUnequipPattern);
         eggsTitleRe = RebirthLore.compileLoose(cfg.companionEggsTitlePattern);
         companionsTitleRe = RebirthLore.compileLoose(cfg.companionsTitlePattern);
         fuseTitleRe = RebirthLore.compileLoose(cfg.companionFuseTitlePattern);
@@ -195,28 +197,29 @@ public final class CompanionLore {
         return (name != null && equipBestRe.matcher(name).find()) || any(equipBestRe, lore);
     }
 
+    /** Equipped: the lore offers to un-equip it ("(( Click Here to un-equip your Cow Companion. ))"). */
+    public boolean isEquipped(List<String> lore) {
+        return any(unequipRe, lore);
+    }
+
     public boolean isFuse(String name, List<String> lore) {
         return (name != null && fuseRe.matcher(name).find()) || any(fuseRe, lore);
     }
 
     public boolean isEggsTitle(String title) { return title != null && eggsTitleRe.matcher(title.trim()).find(); }
 
-    public boolean isCompanionsTitle(String title) { return title != null && companionsTitleRe.matcher(title.trim()).find(); }
+    /** The storage GUI, never the fusion menu (whose real title may also start "Companions ..."). */
+    public boolean isCompanionsTitle(String title) {
+        return title != null && companionsTitleRe.matcher(title.trim()).find() && !isFuseTitle(title);
+    }
 
     public boolean isFuseTitle(String title) { return title != null && fuseTitleRe.matcher(title.trim()).find(); }
 
-    /** Minutes of income a price costs, or null when either is unknown. */
     /**
-     * 0.9.33: a "cheap" egg batch must also be small against the money still needed for
-     * the next stage (14:22 log: 3.31SS of 9.91SS went on eggs with 1.58SS left to the
-     * zone; 05:45: 2.32SS against an 8.81SS gap for an unchanged equip list). An unknown
-     * gap (nothing known about the zone) does not block.
+     * Minutes of income a price costs, or null when either is unknown. Evidence only since
+     * 0.9.35 (companion_price / companion_open): the buy decision is made on rebirth ETAs in
+     * {@link Economy#decideCompanion}, not on a flat minutes-of-income budget.
      */
-    public static boolean batchWithinZoneGap(double batch, Double zoneGap, double maxPct) {
-        if (zoneGap == null) return true;
-        return batch <= zoneGap * Math.max(0.0, maxPct) / 100.0 + 1e-6;
-    }
-
     public static Double incomeMinutes(Double price, Double incomePerMin) {
         if (price == null || incomePerMin == null || incomePerMin <= 0) return null;
         return price / incomePerMin;
@@ -224,13 +227,18 @@ public final class CompanionLore {
 
     /**
      * The open to click: the largest option that fits the eggs still wanted, costs at most
-     * {@code maxIncomeMinutes} of income and at most {@code maxBalancePct} of the balance.
-     * Unknown income or balance = nothing (a person does not buy blind). Ties: cheaper.
+     * {@code moneyBudget} and at most {@code maxBalancePct} of the balance. Unknown budget
+     * or balance = nothing (a person does not buy blind). Ties: cheaper.
+     *
+     * <p>0.9.35: an absolute budget, carried from the decision that approved the visit. It
+     * used to be "companionMaxIncomeMinutes of income" — the same knob that gated the
+     * trigger — so once the economy stopped using that knob the walk would have reached the
+     * egg and bought nothing.
      */
-    public static OpenOption pickOpen(List<OpenOption> options, int eggsLeft, Double incomePerMin,
-                                      double maxIncomeMinutes, Double balance, double maxBalancePct) {
-        if (options == null || eggsLeft <= 0 || incomePerMin == null || incomePerMin <= 0 || balance == null) return null;
-        double budget = Math.min(incomePerMin * Math.max(0, maxIncomeMinutes), balance * Math.max(0, maxBalancePct) / 100.0);
+    public static OpenOption pickOpen(List<OpenOption> options, int eggsLeft, Double moneyBudget,
+                                      Double balance, double maxBalancePct) {
+        if (options == null || eggsLeft <= 0 || moneyBudget == null || moneyBudget <= 0 || balance == null) return null;
+        double budget = Math.min(moneyBudget, balance * Math.max(0, maxBalancePct) / 100.0);
         OpenOption best = null;
         for (OpenOption o : options) {
             if (o == null || o.price() == null || o.price() <= 0 || o.count() <= 0) continue;
