@@ -22,5 +22,11 @@
     "answer": "pnGe",
     "kind": "screen",
     "source": "2026-09-02 22:01 first-person screenshot (screen fallback input)"
+  },
+  {
+    "file": "udWn-map128.png",
+    "answer": "udWn",
+    "kind": "map",
+    "source": "bot capture 2026-09-04 03:50 (512 px x4 smoothed dump, box-downsampled to the 128 px grid); the 4B ballot elected uaWm then ulaWm, both rejected (map still held); Drew confirmed udWn"
   }
 ]
