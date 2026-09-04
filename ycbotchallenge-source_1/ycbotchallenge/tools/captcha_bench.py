@@ -6,11 +6,17 @@ Every captcha whose answer we know goes into tools/captcha-fixtures/fixtures.jso
 here, downsampled to the 128 px map grid, with the answer the server accepted).
 Run this before changing captchaMapPrompt / captchaMapScale / captchaMapSmooth:
 
+    python tools/captcha_bench.py --single --real # THE GATE since 0.9.32
     python tools/captcha_bench.py                # full matrix, 8 samples per cell
     python tools/captcha_bench.py --samples 16   # tighter
     python tools/captcha_bench.py --prompt shipped --render x4bil
 
-It talks to the local vLLM the mod uses (OpenAI chat-completions, image as a data
+--single is what the mod actually does since 0.9.32: one greedy read of the native
+128 px map. The full matrix and --vote are comparison modes kept for tuning, not a
+description of the shipped config. Keep cloud runs to a handful of calls.
+
+It talks to whatever OpenAI-compatible endpoint the mod is pointed at — QwenCloud by
+default, a local vLLM if YCBOT_VLM_URL says so (chat-completions, image as a data
 URI). A cell's score is the exact-match rate of the parsed answer (the same
 JSON-array parsing the mod does, case-sensitive). "pair" columns score the
 two-render strategy: truth is in {first render's reading, second render's reading}.
@@ -19,8 +25,12 @@ import argparse, base64, collections, io, json, os, re, sys, time, urllib.reques
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "captcha-fixtures")
-URL = os.environ.get("YCBOT_VLM_URL", "http://127.0.0.1:8000/v1/chat/completions")
-MODEL = os.environ.get("YCBOT_VLM_MODEL", "Qwen/Qwen3-VL-4B-Instruct-FP8")
+# Defaults track the shipped config (0.9.32+). For the local vLLM reader:
+#   YCBOT_VLM_URL=http://127.0.0.1:8000/v1/chat/completions
+#   YCBOT_VLM_MODEL=Qwen/Qwen3-VL-4B-Instruct-FP8
+URL = os.environ.get("YCBOT_VLM_URL",
+                     "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions")
+MODEL = os.environ.get("YCBOT_VLM_MODEL", "qwen3.6-flash")
 # Cloud endpoints (0.9.32): the same env the mod reads; never written to a file.
 KEY = os.environ.get("YCBOT_VLM_KEY")
 if not KEY:
@@ -53,7 +63,9 @@ RENDERS = {
     "x1": (1, "nearest"), "x2near": (2, "nearest"), "x3bil": (3, "bilinear"), "x3near": (3, "nearest"),
     "x4near": (4, "nearest"), "x4bil": (4, "bilinear"), "x5bil": (5, "bilinear"), "x6bil": (6, "bilinear"),
 }
-# The mod's ballot schedule (captchaVoteRenders): read at temperature 0, then again at 0.6.
+# The PRE-0.9.32 ballot schedule, kept so --vote can still replay the local-4B setup.
+# The shipped config is one native read (captchaVoteRenders ["x1"], temperature 0);
+# since 0.9.34 the mod hedges that read in TIME rather than across renders.
 VOTE_RENDERS = ["x4bil", "x3bil", "x2near", "x5bil", "x3near"]
 VOTE_TEMPERATURE = 0.6
 
@@ -87,8 +99,6 @@ def render(img, name):
 def ask(prompt, png, temperature, n, timeout=120):
     b64 = base64.b64encode(png).decode()
     body = {"model": MODEL, "temperature": temperature, "max_tokens": 64, "n": n,
-            # DashScope/QwenCloud thinking models: no reasoning tokens for a four-letter read.
-            "enable_thinking": False,
             # DashScope/QwenCloud thinking models: no reasoning tokens for a four-letter read.
             "enable_thinking": False,
             "messages": [{"role": "user", "content": [
