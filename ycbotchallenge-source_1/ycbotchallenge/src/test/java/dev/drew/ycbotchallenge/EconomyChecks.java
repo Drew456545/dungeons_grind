@@ -1235,6 +1235,34 @@ public final class EconomyChecks {
         n += eq("hedge hides inside the answer delay",
             c.captchaHedgeMs <= c.captchaAnswerDelayMaxMs, true);
 
+        // --- the v38 migration moves a 0.9.33 config onto the hedged defaults ---
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg34", ".json");
+            java.nio.file.Files.writeString(tmp,
+                "{\"configVersion\":37,\"captchaTimeoutMs\":20000,\"captchaVoteMinReads\":3}");
+            YCBotChallengeConfig c37 = YCBotChallengeConfig.load(tmp);
+            n += eq("v37 migrates to current", c37.configVersion, YCBotChallengeConfig.CURRENT_CONFIG_VERSION);
+            n += eq("v38 takes the 8s read timeout", c37.captchaTimeoutMs, 8000);
+            n += eq("v38 drops minReads to the hedge count", c37.captchaVoteMinReads, 2);
+            n += eq("v38 gains the budget", c37.captchaBudgetMs, 25_000);
+            n += eq("v38 gains the hedge stagger", c37.captchaHedgeMs, 3000);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v38 migration: " + ex);
+            n++;
+        }
+        // A hand-set timeout is the user's choice and must survive the migration.
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg34b", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":37,\"captchaTimeoutMs\":15000}");
+            YCBotChallengeConfig hand = YCBotChallengeConfig.load(tmp);
+            n += eq("hand-set timeout survives v38", hand.captchaTimeoutMs, 15000);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v38 hand-set timeout: " + ex);
+            n++;
+        }
+
         // --- a split ballot still ranks the alternative for the rejection (0.9.26 KrA) ---
         CaptchaBallot h = new CaptchaBallot();
         h.cast("Kra", "x1", 0.0);   // read A
@@ -1737,12 +1765,12 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 37", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 37);
+        n += eq("config version 38", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 38);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
             YCBotChallengeConfig c36 = YCBotChallengeConfig.load(tmp);
-            n += eq("v36 migrates to 37", c36.configVersion, 37);
+            n += eq("v36 migrates to current", c36.configVersion, YCBotChallengeConfig.CURRENT_CONFIG_VERSION);
             n += eq("v36 prediction gate forced off", c36.gateUsesPrediction, false);
             n += eq("negative stage kills normalised", c36.zoneMinStageKills, 0);
             java.nio.file.Files.deleteIfExists(tmp);
@@ -1908,7 +1936,8 @@ public final class EconomyChecks {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"enchantSkipChance\":0.5,\"guiClickMinMs\":900,\"guiClickMaxMs\":100}");
             YCBotChallengeConfig c = YCBotChallengeConfig.load(tmp);
-            n += eq("old file with a dead knob still loads", c.configVersion, 37);
+            n += eq("old file with a dead knob still loads", c.configVersion,
+                YCBotChallengeConfig.CURRENT_CONFIG_VERSION);
             n += eq("swapped click range normalises", c.guiClickMaxMs >= c.guiClickMinMs, true);
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
