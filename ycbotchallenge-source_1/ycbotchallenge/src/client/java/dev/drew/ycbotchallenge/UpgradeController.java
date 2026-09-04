@@ -125,9 +125,10 @@ public class UpgradeController {
     public long lastEvalAt() { return lastEvalAt; }
 
     /**
-     * 0.9.31 HUD: one row per kind — "472.7S  26%  ~9m  predicted", "?" while unknown, the
-     * chosen kind marked "◂ next", the typing phase while a send is in flight, and the
-     * holding reason on the row it applies to. Null when upgrades are off.
+     * 0.9.33 HUD: one short row per kind — "472.7S  26%  ~9m" (a "~" before a ladder-
+     * predicted price), "? ≥ 4.4T" while the price is unknown but its floor is, the typing
+     * phase while a send of that kind is in flight. What happens next lives on the plan
+     * row ({@link #hudPlanLine}). Null when upgrades are off.
      */
     public String hudKindLine(String kind) {
         if (!cfg.upgradesEnabled || kind == null) return null;
@@ -138,6 +139,7 @@ public class UpgradeController {
         StringBuilder sb = new StringBuilder();
         Double price = targetOf(kind);
         if (price != null) {
+            if (stats.targetPredicted(kind)) sb.append("§7~§r");
             sb.append(Amounts.format(price));
             if (bal != null) {
                 int pct = (int) Math.min(999, Math.round(100.0 * bal / Math.max(1e-9, price)));
@@ -147,24 +149,41 @@ public class UpgradeController {
                 if (need > 0 && eta != null) sb.append("  ~").append(formatEta(eta));
                 sb.append("§r");
             }
-            if (stats.targetPredicted(kind)) sb.append("  §8predicted§r");
         } else {
             Double last = stats.lastPrice(kind);
-            sb.append(last != null ? "§7? (retry ≥ " + Amounts.format(last) + ")§r" : "§7?§r");
+            sb.append(last != null ? "§7? ≥ " + Amounts.format(last) + "§r" : "§7?§r");
         }
+        if (!zone && stats.swordTierLine() != null) sb.append("  §8").append(stats.swordTierLine()).append("§r");
         if (phase != Phase.IDLE && pendingKind != null && pendingKind.name().equalsIgnoreCase(kind)) {
             sb.append("  §e").append(phase.name().toLowerCase(Locale.ROOT)).append("§r");
-        } else {
-            String next = hudKind();
-            if (kind.equals(next)) sb.append("  §a◂ next§r");
-            long last = lastSendFor(kind);
-            int cap = capFor(kind);
-            long remainMs = last <= 0 || cap <= 0 ? 0 : (last + cap) - System.currentTimeMillis();
-            if (remainMs > 0) sb.append("  §8cd ").append((remainMs + 999) / 1000).append("s§r");
-            if (!zone && savingZone) sb.append("  §8(waits for zone)§r");
-            else if (kind.equals(horizonBlocked)) sb.append("  §8(waits; rebirth sooner)§r");
         }
         return sb.toString();
+    }
+
+    /**
+     * 0.9.33 HUD plan row: what the bot does next and why, from the last eval's
+     * {@link Decision} — "buy zone 4.4T · stage open 1.2s", "save for zone 11.49SS 64% ~3m ·
+     * sword 142% of gap", "wait · new stage, 0 kill(s) so far" — or the send in flight
+     * ("typing /zone max", "→ /swordmax in 4s"). The eval is at most evalFallbackMs old; its
+     * age is shown past 10 s so a stale line never reads as live.
+     */
+    public String hudPlanLine() {
+        if (!cfg.upgradesEnabled) return "§8upgrades off§r";
+        long now = System.currentTimeMillis();
+        if (phase != Phase.IDLE && pending != null) {
+            return "§e" + phase.name().toLowerCase(Locale.ROOT) + " " + pending + "§r";
+        }
+        if (decision != null) {
+            long in = decisionAt - now;
+            return "§a→ " + commandOf(decision) + (in > 0 ? " in " + ((in + 999) / 1000) + "s" : " now") + "§r";
+        }
+        if (lastDecision == null) return "§8waiting for the first eval§r";
+        Decision d = lastDecision;
+        String text = d.hudPlan(d.kind() != null ? targetOf(d.kind()) : null, stats.money());
+        String color = d.acts() ? "§a" : Decision.NONE.equals(d.action()) ? "§8" : "§7";
+        long age = now - d.at();
+        String suffix = age > 10_000 ? "  §8" + formatEta(age) + " ago§r" : "";
+        return color + text + "§r" + suffix;
     }
 
     /** 0.9.30 HUD: "656.09S  eta 27m", or null without a known rebirth target. */

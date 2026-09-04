@@ -434,7 +434,9 @@ public class YCBotChallengeConfig {
     public int hudY = 4;
     /** 0.9.30 HUD: backdrop opacity (0–1) and whether the module chip row is drawn. */
     public double hudAlpha = 0.55;
-    public boolean hudShowModules = true;
+    public boolean hudShowModules = false;
+    /** 0.9.33: the plan row — what runs next and why, from the last eval's Decision (age shown past 10 s). */
+    public boolean hudShowPlan = true;
     /** 0.9.31: the souls/essence/shards/credits row (off: the sword and zone price rows carry what matters). */
     public boolean hudShowBalances = false;
     public String runLabel = "baseline";
@@ -1488,6 +1490,9 @@ public class YCBotChallengeConfig {
             // blind sword, 15.98Q against a 4.4T zone floor), common first target on a fresh
             // stage (stageProbeCommonKills). Every new knob takes its default.
             gateUsesPrediction = fresh.gateUsesPrediction;
+            // HUD: plan row on, module chip row off (its state lives on the Y screen now).
+            hudShowModules = fresh.hudShowModules;
+            hudShowPlan = fresh.hudShowPlan;
             // Logging: bot flag on every row, observed (manual) upgrade lines learned,
             // bot-off balance rows throttled (offBotLogIntervalMs), zone paid from the
             // sidebar delta (upgrade_paid).

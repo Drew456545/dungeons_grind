@@ -10,10 +10,11 @@ import net.minecraft.client.gui.DrawContext;
  * The stats panel (0.9.30 layout). Two aligned columns — dim labels, plain values, one
  * accent colour per meaning (green good, yellow busy, red stopped, grey off) — with a
  * row per thing worth knowing and nothing else: header + alerts, what combat is doing,
- * money and income, the next sword and zone prices (server-quoted or ladder-predicted,
- * 0.9.31), the rebirth, the one module that is busy, a chip row of every module's state,
- * optionally the other balances, kills. Rows with nothing to say are
- * omitted, so the panel is short while the bot idles.
+ * money and income, the plan row (0.9.33: what runs next and why, from the last eval's
+ * Decision), the next sword and zone prices (server-quoted or ladder-predicted), the
+ * rebirth, the one module that is busy, optionally a chip row of every module's state
+ * (off by default since 0.9.33 — the Y screen shows it) and the other balances, kills.
+ * Rows with nothing to say are omitted, so the panel is short while the bot idles.
  */
 public class HudOverlay {
     private record Row(String label, String value) {}
@@ -123,6 +124,7 @@ public class HudOverlay {
                 + (rate != null ? "  §7+" + Amounts.format(rate) + "/min§r" : "")));
         }
         if (on) {
+            if (cfg.hudShowPlan && upgrades != null) rows.add(new Row("plan", upgrades.hudPlanLine()));
             String sw = upgrades != null ? upgrades.hudKindLine("sword") : null;
             if (sw != null) rows.add(new Row("sword", sw));
             String zn = upgrades != null ? upgrades.hudKindLine("zone") : null;

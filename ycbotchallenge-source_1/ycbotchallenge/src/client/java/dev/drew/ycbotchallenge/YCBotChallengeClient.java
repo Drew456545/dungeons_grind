@@ -272,29 +272,51 @@ public class YCBotChallengeClient implements ClientModInitializer {
     /** 0.9.30: the in-game options screen — one ON/OFF button per feature, saved to the config file at once. */
     private BotOptionsScreen newOptionsScreen() {
         List<BotOptionsScreen.Option> opts = new ArrayList<>();
-        opts.add(new BotOptionsScreen.Option("serverAutoRebirth", "Server auto-rebirth", () -> config.serverAutoRebirth, v -> config.serverAutoRebirth = v));
-        opts.add(new BotOptionsScreen.Option("upgradesEnabled", "Sword / zone buys", () -> config.upgradesEnabled, v -> config.upgradesEnabled = v));
-        opts.add(new BotOptionsScreen.Option("rebirthHorizonEnabled", "Rebirth horizon rule", () -> config.rebirthHorizonEnabled, v -> config.rebirthHorizonEnabled = v));
-        opts.add(new BotOptionsScreen.Option("enchantsEnabled", "Enchant visits", () -> config.enchantsEnabled, v -> config.enchantsEnabled = v));
-        opts.add(new BotOptionsScreen.Option("rebirthUpgradesEnabled", "Rebirth upgrades", () -> config.rebirthUpgradesEnabled, v -> config.rebirthUpgradesEnabled = v));
-        opts.add(new BotOptionsScreen.Option("companionsEnabled", "Companions", () -> config.companionsEnabled, v -> config.companionsEnabled = v));
+        // 0.9.33: each toggle shows what its module is doing right now (the HUD module row is off by default).
+        opts.add(new BotOptionsScreen.Option("serverAutoRebirth", "Server auto-rebirth", () -> config.serverAutoRebirth, v -> config.serverAutoRebirth = v,
+            () -> { String r = upgrades.hudRebirthLine(); return r != null ? "rebirth " + r : "rebirth cost unknown"; }));
+        opts.add(new BotOptionsScreen.Option("upgradesEnabled", "Sword / zone buys", () -> config.upgradesEnabled, v -> config.upgradesEnabled = v,
+            () -> upgrades.hudPlanLine()));
+        opts.add(new BotOptionsScreen.Option("rebirthHorizonEnabled", "Rebirth horizon rule", () -> config.rebirthHorizonEnabled, v -> config.rebirthHorizonEnabled = v,
+            () -> upgrades.horizonBlockedKind() != null ? "holding " + upgrades.horizonBlockedKind() + " (rebirth sooner)" : "not limiting"));
+        opts.add(new BotOptionsScreen.Option("enchantsEnabled", "Enchant visits", () -> config.enchantsEnabled, v -> config.enchantsEnabled = v,
+            () -> moduleStatus(enchants.hudLine(), enchants.isBusy(), enchants.isSuspended())));
+        opts.add(new BotOptionsScreen.Option("rebirthUpgradesEnabled", "Rebirth upgrades", () -> config.rebirthUpgradesEnabled, v -> config.rebirthUpgradesEnabled = v,
+            () -> moduleStatus(rebirthUpgrades.hudLine(), rebirthUpgrades.isBusy(), rebirthUpgrades.isSuspended())));
+        opts.add(new BotOptionsScreen.Option("companionsEnabled", "Companions", () -> config.companionsEnabled, v -> config.companionsEnabled = v,
+            () -> moduleStatus(companions.hudLine(), companions.isBusy(), companions.isSuspended())));
         opts.add(new BotOptionsScreen.Option("companionBulkDeleteEnabled", "Companion bulk delete", () -> config.companionBulkDeleteEnabled, v -> config.companionBulkDeleteEnabled = v));
-        opts.add(new BotOptionsScreen.Option("transcendEnabled", "Transcend (Q)", () -> config.transcendEnabled, v -> config.transcendEnabled = v));
-        opts.add(new BotOptionsScreen.Option("giveawaysEnabled", "Join giveaways", () -> config.giveawaysEnabled, v -> config.giveawaysEnabled = v));
+        opts.add(new BotOptionsScreen.Option("transcendEnabled", "Transcend (Q)", () -> config.transcendEnabled, v -> config.transcendEnabled = v,
+            () -> { String t = transcend.hudState(); return t != null ? t : "idle"; }));
+        opts.add(new BotOptionsScreen.Option("giveawaysEnabled", "Join giveaways", () -> config.giveawaysEnabled, v -> config.giveawaysEnabled = v,
+            () -> "joined " + stats.giveawaysJoined + " · won " + stats.giveawaysWon));
         opts.add(new BotOptionsScreen.Option("giveawayWinReplyEnabled", "Giveaway win reply", () -> config.giveawayWinReplyEnabled, v -> config.giveawayWinReplyEnabled = v));
-        opts.add(new BotOptionsScreen.Option("breaksEnabled", "Breaks", () -> config.breaksEnabled, v -> config.breaksEnabled = v));
-        opts.add(new BotOptionsScreen.Option("stopProtocolEnabled", "Stop protocol", () -> config.stopProtocolEnabled, v -> config.stopProtocolEnabled = v));
-        opts.add(new BotOptionsScreen.Option("captchaAutoSolve", "Captcha auto-solve", () -> config.captchaAutoSolve, v -> config.captchaAutoSolve = v));
+        opts.add(new BotOptionsScreen.Option("breaksEnabled", "Breaks", () -> config.breaksEnabled, v -> config.breaksEnabled = v,
+            () -> combat.isOnBreak() ? "on break · " + (combat.breakRemainingMs() + 999) / 1000 + "s left" : "focused"));
+        opts.add(new BotOptionsScreen.Option("stopProtocolEnabled", "Stop protocol", () -> config.stopProtocolEnabled, v -> config.stopProtocolEnabled = v,
+            () -> pausedReason != null ? "paused: " + pausedReason : "armed"));
+        opts.add(new BotOptionsScreen.Option("captchaAutoSolve", "Captcha auto-solve", () -> config.captchaAutoSolve, v -> config.captchaAutoSolve = v,
+            () -> { String c = captchaSolver.hudLine(); return c != null ? c : "no captcha"; }));
+        opts.add(new BotOptionsScreen.Option("learnObservedUpgrades", "Learn manual buys", () -> config.learnObservedUpgrades, v -> config.learnObservedUpgrades = v));
+        opts.add(new BotOptionsScreen.Option("gateUsesPrediction", "Legacy: prediction fills gate", () -> config.gateUsesPrediction, v -> config.gateUsesPrediction = v));
+        opts.add(new BotOptionsScreen.Option("pricePredictionEnabled", "Price ladder prediction", () -> config.pricePredictionEnabled, v -> config.pricePredictionEnabled = v));
         opts.add(new BotOptionsScreen.Option("sprint", "Sprint", () -> config.sprint, v -> config.sprint = v));
         opts.add(new BotOptionsScreen.Option("hud", "HUD", () -> config.hud, v -> config.hud = v));
+        opts.add(new BotOptionsScreen.Option("hudShowPlan", "HUD plan row", () -> config.hudShowPlan, v -> config.hudShowPlan = v));
         opts.add(new BotOptionsScreen.Option("hudShowModules", "HUD module row", () -> config.hudShowModules, v -> config.hudShowModules = v));
         opts.add(new BotOptionsScreen.Option("hudShowBalances", "HUD balances row", () -> config.hudShowBalances, v -> config.hudShowBalances = v));
-        opts.add(new BotOptionsScreen.Option("pricePredictionEnabled", "Price ladder prediction", () -> config.pricePredictionEnabled, v -> config.pricePredictionEnabled = v));
         return new BotOptionsScreen(opts, (key, value) -> {
             config.save(configPath);
             if (logger != null) logger.log("option_toggle", "name", key, "value", value);
             LOGGER.info("option {} = {}", key, value);
         });
+    }
+
+    /** Status line for a visiting module: what it is doing, else suspended, else idle. */
+    private static String moduleStatus(String line, boolean busy, boolean suspended) {
+        if (line != null && !line.isBlank()) return line;
+        if (suspended) return "suspended until the next toggle";
+        return busy ? "busy" : "idle";
     }
 
     private static boolean ctrlHeld(MinecraftClient client) {

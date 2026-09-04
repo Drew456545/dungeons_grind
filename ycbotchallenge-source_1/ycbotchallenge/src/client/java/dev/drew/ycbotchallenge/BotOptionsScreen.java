@@ -1,9 +1,11 @@
 package dev.drew.ycbotchallenge;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
@@ -19,17 +21,29 @@ import net.minecraft.text.Text;
  * releases its keys and does nothing else; the hotkeys are ignored on this screen.
  */
 public class BotOptionsScreen extends Screen {
-    /** One toggle: the config field name (logged), its label, and the getter/setter on the live config. */
-    public record Option(String key, String label, BooleanSupplier get, Consumer<Boolean> set) {}
+    /**
+     * One toggle: the config field name (logged), its label, the getter/setter on the live
+     * config, and (0.9.33) an optional live status drawn under the button — what the module
+     * is doing right now ("idle · last visit 12m ago", "suspended", the plan line).
+     */
+    public record Option(String key, String label, BooleanSupplier get, Consumer<Boolean> set, Supplier<String> status) {
+        public Option(String key, String label, BooleanSupplier get, Consumer<Boolean> set) {
+            this(key, label, get, set, null);
+        }
+    }
+
+    private record StatusSlot(int x, int y, int w, Supplier<String> status) {}
 
     private static final int BUTTON_W = 150;
     private static final int BUTTON_H = 20;
     private static final int ROW_H = 22;
+    private static final int ROW_H_STATUS = 32;
     private static final int GAP_X = 8;
     private static final int TOP = 36;
 
     private final List<Option> options;
     private final BiConsumer<String, Boolean> onChange;
+    private final List<StatusSlot> statusSlots = new ArrayList<>();
 
     public BotOptionsScreen(List<Option> options, BiConsumer<String, Boolean> onChange) {
         super(Text.literal("YCBotChallenge options"));
@@ -39,8 +53,13 @@ public class BotOptionsScreen extends Screen {
 
     @Override
     protected void init() {
+        statusSlots.clear();
+        boolean anyStatus = options.stream().anyMatch(o -> o.status() != null);
         int cols = Math.max(1, Math.min(3, (this.width - GAP_X) / (BUTTON_W + GAP_X)));
         int rows = (options.size() + cols - 1) / cols;
+        // Status lines need taller rows; drop them when the screen cannot fit the grid.
+        int rowH = anyStatus && TOP + rows * ROW_H_STATUS + BUTTON_H + 16 <= this.height ? ROW_H_STATUS : ROW_H;
+        boolean showStatus = rowH == ROW_H_STATUS;
         int gridW = cols * BUTTON_W + (cols - 1) * GAP_X;
         int left = (this.width - gridW) / 2;
         for (int i = 0; i < options.size(); i++) {
@@ -48,14 +67,15 @@ public class BotOptionsScreen extends Screen {
             int col = i % cols;
             int row = i / cols;
             int x = left + col * (BUTTON_W + GAP_X);
-            int y = TOP + row * ROW_H;
+            int y = TOP + row * rowH;
             addDrawableChild(CyclingButtonWidget.onOffBuilder(o.get().getAsBoolean())
                 .build(x, y, BUTTON_W, BUTTON_H, Text.literal(o.label()), (button, value) -> {
                     o.set().accept(value);
                     if (onChange != null) onChange.accept(o.key(), value);
                 }));
+            if (showStatus && o.status() != null) statusSlots.add(new StatusSlot(x + 2, y + BUTTON_H + 1, BUTTON_W - 4, o.status()));
         }
-        int doneY = Math.min(this.height - BUTTON_H - 8, TOP + rows * ROW_H + 8);
+        int doneY = Math.min(this.height - BUTTON_H - 8, TOP + rows * rowH + 8);
         addDrawableChild(ButtonWidget.builder(ScreenTexts.DONE, b -> close())
             .dimensions((this.width - BUTTON_W) / 2, doneY, BUTTON_W, BUTTON_H).build());
     }
@@ -67,6 +87,18 @@ public class BotOptionsScreen extends Screen {
         context.drawCenteredTextWithShadow(this.textRenderer,
             Text.literal("saved to config/ycbotchallenge.json on click · applies at once"),
             this.width / 2, 24, 0xFF9A9A9A);
+        for (StatusSlot s : statusSlots) {
+            String text;
+            try {
+                text = s.status().get();
+            } catch (RuntimeException e) {
+                text = null;
+            }
+            if (text == null || text.isBlank()) continue;
+            String shown = text;
+            while (shown.length() > 4 && this.textRenderer.getWidth(shown) > s.w()) shown = shown.substring(0, shown.length() - 1);
+            context.drawTextWithShadow(this.textRenderer, shown, s.x(), s.y(), 0xFF9A9A9A);
+        }
     }
 
     @Override

@@ -1127,6 +1127,11 @@ public class StatsTracker {
         zoneSeqAtDisable = zoneChangeSeq;
     }
 
+    /** "tier 3/5" from the Sword Skins menu (0.9.33 step 6), "~3/5" once /swordmax moved it since the last read; null unknown. */
+    public String swordTierLine() {
+        return null;
+    }
+
     /** Kills recorded on the current stage (the window is cleared on every zone change, teleport and rebirth). */
     public int stageKills() {
         return killDurations.size();

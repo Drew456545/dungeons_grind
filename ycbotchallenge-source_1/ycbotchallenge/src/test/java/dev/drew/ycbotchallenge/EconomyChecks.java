@@ -72,6 +72,7 @@ public final class EconomyChecks {
         n += priceLadders();
         n += audit0933Decision();
         n += logging0933();
+        n += hudPlan0933();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1714,6 +1715,45 @@ public final class EconomyChecks {
         } catch (Exception ex) {
             System.err.println("FAIL event logger bot flag: " + ex);
             n++;
+        }
+        return n;
+    }
+
+    /** 0.9.33 HUD: the plan row is the last Decision, one short line per reason; module row off by default. */
+    private static int hudPlan0933() {
+        int n = 0;
+        n += eq("fresh hudShowPlan", CFG.hudShowPlan, true);
+        n += eq("fresh hudShowModules off", CFG.hudShowModules, false);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"hudShowModules\":true}");
+            n += eq("v36 module row migrates off", YCBotChallengeConfig.load(tmp).hudShowModules, false);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL hud migration: " + ex);
+            n++;
+        }
+        long at = 1_000_000L;
+        Decision base = new Decision(Decision.WAIT, "zone", "zone-stage-kills", "unknown", "none", null, 9600, 0,
+            null, null, null, null, null, null, at);
+        n += eq("plan: new stage", base.hudPlan(null, null), "wait · new stage, 0 kill(s) so far");
+        Decision hard = new Decision(Decision.BUY, "sword", "sword-hard", "hard", "cook", 14_100.0, 9600, 1,
+            null, null, null, 1.8, "median", null, at);
+        n += eq("plan: hard stage", hard.hudPlan(2.48e12, 2.6e12), "buy sword 2.48T · stage hard 14.1s > 9.6s");
+        Decision probe = new Decision(Decision.PROBE, "zone", "zone-probe", "unknown", "none", null, 9600, 1,
+            0.0, "floor", null, 1.3, "config", null, at);
+        n += eq("plan: probe", probe.hudPlan(null, 17.33e15), "probe zone · price ?");
+        Decision inst = new Decision(Decision.WAIT, "zone", "sword-instant", "open", "median", 1200.0, 9600, 5,
+            80e15, "target", null, null, null, 15_000.0, at);
+        n += eq("plan: instant", inst.hudPlan(1.17e18, 1.09e18), "wait · instant kills 1.2s, sword useless");
+        Decision hz = new Decision(Decision.WAIT, "zone", "rebirth-horizon", "open", "median", 3000.0, 9600, 5,
+            400e21, "target", null, 1.3, "config", null, at);
+        n += eq("plan: horizon", hz.hudPlan(415e21, 100e21), "wait · rebirth sooner than zone pays off");
+        Decision none = new Decision(Decision.NONE, null, "maxed", "open", "none", null, null, 0,
+            null, null, null, null, null, null, at);
+        n += eq("plan: maxed", none.hudPlan(null, null), "nothing left to buy");
+        for (Decision d : new Decision[]{base, hard, probe, inst, hz, none}) {
+            n += eq("plan length " + d.reason(), d.hudPlan(1e12, 1e12).length() <= 64, true);
         }
         return n;
     }
