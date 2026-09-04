@@ -385,7 +385,7 @@ public final class EconomyChecks {
         n += eq("preferred: nothing", Economy.preferredKind(false, false) == null, true);
         // Captcha capture is map-only by default; a v19 "auto" config migrates, "screen" is kept.
         n += eq("fresh capture mode", CFG.captchaCaptureMode, "map");
-        n += eq("fresh map scale is x4", CFG.captchaMapScale, 4);
+        n += eq("fresh map scale is native x1 (0.9.32: the cloud reader wants the raw map)", CFG.captchaMapScale, 1);
         n += eq("re-prompt line is a retry signal", CFG.captchaRetryPatterns.contains("please enter the captcha on the map"), true);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
