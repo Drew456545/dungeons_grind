@@ -50,6 +50,14 @@ public final class StateStore {
         public Double companionGainLearned;
         public Map<String, Integer> companionVisitsByStage;
         public Integer companionVisitsStageRebirths;
+        /**
+         * 0.9.36: the rebirth cycle clock. Bot-on minutes of the last full cycle (what a
+         * persistent income multiplier pays back against), the running bot-on ms of the
+         * current one and the rebirth count it belongs to.
+         */
+        public Double lastCycleOnMin;
+        public Long cycleOnMs;
+        public Integer cycleAtRebirths;
         public long savedAt;
     }
 

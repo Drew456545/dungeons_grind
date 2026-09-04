@@ -334,39 +334,60 @@ public final class Economy {
     }
 
     /**
-     * 0.9.35: the rebirth horizon is the wrong veto for companions. A sword or a zone is
-     * wiped by the rebirth, so it must pay for itself before it ({@link #rebirthHorizonAllows},
-     * P &lt; G(g-1)); companions persist — the 2026-09-04 storage held z1s10 and z2s1..s5
-     * companions across rebirth 11 — so a batch that delays this rebirth still pays on the
-     * other side. Allowed when the buy reaches the rebirth sooner than standing still, or
-     * delays it by at most {@code maxDelayMin} minutes AND {@code maxDelayPct} of what is
-     * left. Unknown numbers = no opinion (true), same contract as the wiped-buy rule.
+     * 0.9.36: a batch reaches a milestone sooner WITH the eggs than without. Same algebra as
+     * {@link #rebirthHorizonAllows} (staying takes G/I, buying (G+P)/(I*g), so buy iff
+     * P &lt; G(g-1)) applied to whatever gap is being saved for - the next stage or the
+     * rebirth. Income cancels out, which matters on a fresh hard stage where the 60 s
+     * summary reads ~0 for minutes (lvl17, 2026-09-04: first kills 185-250 s).
      */
-    public static boolean companionHorizonAllows(Double price, Double bal, Double rebirthTarget,
-                                                 Double incomePerMin, double gain,
-                                                 double maxDelayMin, double maxDelayPct) {
+    public static boolean companionSoonerTo(Double price, Double gap, double gain) {
+        if (price == null || price <= 0 || gap == null || gap <= 0 || gain <= 1.0) return false;
+        return price < gap * (gain - 1.0);
+    }
+
+    /** Minutes the batch pushes the rebirth out (buy ETA minus stay ETA, never negative); null when unknown. */
+    public static Double companionDelayMin(Double price, Double bal, Double rebirthTarget, Double incomePerMin, double gain) {
         Double stay = rebirthEtaMin(bal, rebirthTarget, incomePerMin);
         Double buy = buyEtaMin(price, bal, rebirthTarget, incomePerMin, gain);
-        if (stay == null || buy == null) return true;
-        if (buy <= stay) return true;
-        double delay = buy - stay;
-        return delay <= Math.max(0, maxDelayMin) && delay <= stay * Math.max(0, maxDelayPct) / 100.0;
+        if (stay == null || buy == null) return null;
+        return Math.max(0, buy - stay);
     }
 
     /**
-     * The patience horizon (0.9.35): eggs only pre-empt when the stage — the thing that
-     * actually advances this rebirth — is a long way off. A null ETA is FAR: there is no
-     * price to wait for. {@code patienceMs <= 0} disables the gate.
-     *
-     * <p>The zone ETA only, deliberately. Gating on the sword too would reinstate the bug
-     * this fixes (the sword sits on a x3.5 ladder, so its ETA was 0-20 min throughout the
-     * lvl15 stall); gating on the rebirth ETA would refuse the near-rebirth batch, which is
-     * the one Drew asks for. The sword is priced by the ETA comparison in {@link #decide},
-     * the rebirth by {@link #companionHorizonAllows}.
+     * 0.9.36: how far a batch may push THIS rebirth out. The eggs survive it, so the price of
+     * the delay is paid back on the other side: a gain g on an income-bound cycle of C bot-on
+     * minutes saves (1 - 1/g) x C on the next one. {@code fraction} keeps half of that as
+     * margin (the climb has fixed costs too); {@code floorMin} applies before any cycle is
+     * measured. The 0.9.35 rule was "delay &lt;= 25 % of what is left to the rebirth", which
+     * goes to zero exactly at the near-rebirth batch (2026-09-04 19:19-19:22: eight refusals
+     * of a 2.2-minute batch with a 2-minute rebirth left).
      */
-    public static boolean companionPatienceOk(Double zoneEtaMs, int patienceMs) {
-        if (patienceMs <= 0) return true;
-        return zoneEtaMs == null || zoneEtaMs >= patienceMs;
+    public static double companionPersistBudgetMin(double gain, double cycleMin, double fraction, double floorMin) {
+        double saved = gain > 1.0 && cycleMin > 0 ? (1.0 - 1.0 / gain) * cycleMin * Math.max(0, fraction) : 0;
+        return Math.max(Math.max(0, floorMin), saved);
+    }
+
+    public static boolean companionPersistAllows(double delayMin, double gain, double cycleMin, double fraction, double floorMin) {
+        return delayMin <= companionPersistBudgetMin(gain, cycleMin, fraction, floorMin) + 1e-9;
+    }
+
+    /** 0.9.36: the retreat question, measured not acted on ({@link #zoneBackCandidate}). */
+    public record ZoneBack(double herePerMin, Double therePerMin, Double ratio, boolean wouldRetreat) {}
+
+    /**
+     * Would farming the previous stage out-earn this one right now? Income here is money per
+     * kill over the kill time (never under the movement floor); {@code therePerMin} is the
+     * previous stage's best measured rate with the sword as it was when we left, a lower
+     * bound for what a retreat would earn. A retreat is worth logging when there beats here
+     * by {@code margin}. Null when this stage cannot be priced yet.
+     */
+    public static ZoneBack zoneBackCandidate(Double moneyPerKill, Double ttkMs, int instantTtkMs,
+                                             Double therePerMin, double margin) {
+        if (moneyPerKill == null || moneyPerKill <= 0 || ttkMs == null || ttkMs <= 0) return null;
+        double here = moneyPerKill / Math.max(ttkMs, Math.max(1, instantTtkMs)) * 60_000.0;
+        if (therePerMin == null || therePerMin <= 0) return new ZoneBack(here, null, null, false);
+        double ratio = therePerMin / here;
+        return new ZoneBack(here, therePerMin, ratio, ratio > Math.max(1.0, margin));
     }
 
     /**
@@ -630,24 +651,27 @@ public final class Economy {
         public double zoneGain = 1.3, swordDpsMult = 2.0, swordGainFloor = 1.25;
         public int zoneMinStageKills = 1;
         public long now;
-        // 0.9.35 companions. Defaults leave the branch inert (companionBatchPrice null), so
-        // every pre-0.9.35 fixture decides exactly as it did before.
+        // 0.9.35 companions. Defaults leave the branch inert (companionBatchPrice null: the
+        // hold is annotated eggs=no-price and nothing else changes), so every pre-0.9.35
+        // fixture decides exactly as it did before.
         public boolean companionsEnabled = true;
-        /** Controller-side: an egg is known, the stage has settled, nothing suspended or aborting. */
-        public boolean companionFeasible;
+        /** 0.9.36: why the controller cannot run a visit right now (physical: busy, aborting, no egg), or null. */
+        public String companionBlocked;
         /** companionEggsMin eggs at this stage's price (observed, else the x52.2 ladder). */
         public Double companionBatchPrice;
         public double companionGain = 1.5;
         public String companionGainVia = "config";
         public Integer companionStage;
+        /** 0.9.36: the stage eggs were last bought at (persisted); a lower stage is never bought again. */
+        public Integer companionLastBoughtStage;
         public int companionVisitsThisStage;
         public int companionMaxVisitsPerStage = 2;
-        public double companionMaxBalancePct = 40;
-        public int companionPatienceMs = 1_200_000;
-        public double companionPersistCredit = 1.25;
+        /** 0.9.36: the income figure is this stage's own (enough kills, or enough time, on it). */
+        public boolean companionIncomeSettled = true;
         public double companionMaxRebirthDelayMin = 3.0;
-        public double companionMaxRebirthDelayPct = 25;
-        public double companionRebirthEtaMinMax = 12.0;
+        /** 0.9.36: bot-on minutes of the last full rebirth cycle (the config prior until one is measured). */
+        public double companionCycleMin = 45.0;
+        public double companionPaybackFraction = 0.5;
         /** Zone buys have stopped for this rebirth (horizon-blocked on the zone, or maxed). */
         public boolean companionZoneStopped;
     }
@@ -674,9 +698,12 @@ public final class Economy {
         Decision d = decideUpgrades(in, base, g, ttk, zoneGap);
         if (d.acts()) return d;
         // 0.9.35: only ever converts a hold into an egg batch - a real zone/sword/rebirth buy
-        // always wins, so the zone-first strategy is untouched.
-        Decision c = decideCompanion(in, base, ttk, zoneGap);
-        return c != null ? c : d;
+        // always wins, so the zone-first strategy is untouched. 0.9.36: when it declines, the
+        // hold is kept (its reason and HUD line are the primary economy's) and annotated with
+        // why (Decision.eggs), so a silent refusal is impossible.
+        Decision c = decideCompanion(in, base, zoneGap);
+        if (c == null) return d;
+        return c.acts() ? c : d.withEggs(c.eggs());
     }
 
     /** The sword/zone/rebirth decision (0.9.33), unchanged; {@link #decide} adds the companion post-pass. */
@@ -783,73 +810,68 @@ public final class Economy {
     }
 
     /**
-     * The companion post-pass (0.9.35). Runs only when {@link #decideUpgrades} is holding,
-     * so an egg batch can never delay a stage or a sword the bot was about to buy.
+     * The companion post-pass (0.9.35, rewritten 0.9.36). Runs only when {@link #decideUpgrades}
+     * is holding, so an egg batch can never delay a stage or a sword the bot was about to buy.
      *
      * <p>Why it exists: zone prices climb a flat x55 a stage while income growth per stage
-     * fell to x24 at lvl14 and x18 at lvl15 in the 2026-09-04 logs — income is
-     * money/kill x kills/min and kills/min collapses as the TTK runs 1.2s -> 96s, so the
-     * x3.5 sword ladder cannot hold that line and the climb decelerates without bound
-     * (lvl15: 41.7 bot-on minutes, thirteen sword buys, no advance). A companion batch is a
-     * direct income multiplier that does not depend on the TTK at all — measured 2.20x
-     * (7 eggs) and 1.76x (8 eggs) against a sword gain of 1.25-1.93 — and it survives the
-     * rebirth, which is why it is worth buying late and high.
+     * fell to x27.8 at lvl15, x45.6 at lvl16 and x6.4 at lvl17 in the 2026-09-04 logs —
+     * income is money/kill x kills/min and kills/min collapses as the TTK runs 1.2s -> 185s,
+     * so the x3.5 sword ladder cannot hold that line and the climb decelerates without bound
+     * (lvl17: 62 minutes, two sword buys, no advance, the server auto-rebirthed). A companion
+     * batch is a direct income multiplier that does not depend on the TTK at all — measured
+     * 2.20x (7 eggs) and 1.76x (8 eggs) against a sword gain of 1.25-1.93 — and it survives
+     * the rebirth, which is why it is worth buying late and high.
      *
-     * <p>Order: affordable, not the whole wallet, not a repeat of this stage, the stage is
-     * far away ({@link #companionPatienceOk}), then the batch must reach the rebirth sooner
-     * than the zone would and no more than {@code companionPersistCredit} slower than the
-     * sword (the sword is wiped at the rebirth, the eggs are not). Null = no companion
-     * opinion; the caller keeps its own hold.
+     * <p>The 0.9.35 version raced ETAs (beat the zone, within a credit of the sword, a
+     * 20-minute patience on the stage, a delay budget that was a percentage of what was left
+     * to the rebirth) and returned bare null on six paths: the 19:14 log has zero companion
+     * events and zero purchases, with the batch refused 120x on a ten-kill settle, 28x on a
+     * 40 %-of-balance cap (18.53N in hand for a 7.41N batch, the whole rebirth costing
+     * 15.94N) and 8x on the percentage rule at a two-minute rebirth. Two rules now, and every
+     * decline is a named annotation on the hold ({@link Decision#eggs}):
+     * <ul>
+     * <li>{@code companion-sooner}: the batch reaches the gap being saved for - the next
+     * stage (unless zone buys have stopped) or the rebirth - sooner with the eggs than
+     * without ({@link #companionSoonerTo}). Income-free.</li>
+     * <li>{@code companion-persist}: otherwise, once the income figure is this stage's own,
+     * the minutes it delays the rebirth fit the persistent payback budget
+     * ({@link #companionPersistAllows}).</li>
+     * </ul>
+     * Before either: the controller can run a visit, a price is known, the stage is not below
+     * the last one bought (Drew buys late and high - a lower stage's eggs are already owned),
+     * the per-stage visit cap, and the balance covers the batch (the 40 % cap is gone: the
+     * visit spends the priced batch and nothing more).
+     *
+     * @return a BUY of kind companion, a NONE carrying the decline in {@code eggs}, or null
+     *         when companions are off (no annotation at all).
      */
-    private static Decision decideCompanion(Inputs in, Decision base, Double ttk, Double zoneGap) {
-        if (!in.companionsEnabled || !in.companionFeasible) return null;
+    private static Decision decideCompanion(Inputs in, Decision base, Double zoneGap) {
+        if (!in.companionsEnabled) return null;
+        if (in.companionBlocked != null) return base.withEggs("blocked");
         Double batch = in.companionBatchPrice;
-        if (batch == null || batch <= 0 || in.bal == null) return null;
-        if (!knownAffordable(batch, in.bal)) return null;
-        // Variance control, not economics: the ETA maths is linear and would spend the lot.
-        if (batch > in.bal * Math.max(0, in.companionMaxBalancePct) / 100.0) return null;
+        if (batch == null || batch <= 0) return base.withEggs("no-price");
+        if (in.companionStage != null && in.companionLastBoughtStage != null
+            && in.companionStage < in.companionLastBoughtStage) return base.withEggs("below-owned");
         if (in.companionMaxVisitsPerStage > 0 && in.companionVisitsThisStage >= in.companionMaxVisitsPerStage) {
-            return base.with(Decision.WAIT, Decision.KIND_COMPANION, "companion-repeat",
-                in.companionGain, in.companionGainVia, null);
+            return base.withEggs("repeat");
         }
-        Double zoneWaitEta = in.zoneMaxed ? null : etaMs(zoneGap, in.incomePerMin);
-        if (!companionPatienceOk(zoneWaitEta, in.companionPatienceMs)) return null;
+        if (in.bal == null || !knownAffordable(batch, in.bal)) return base.withEggs("unaffordable");
 
         double gc = in.companionGain;
         String via = in.companionGainVia;
-        Double stay = rebirthEtaMin(in.bal, in.rebirthTarget, in.incomePerMin);
-        Double cEta = buyEtaMin(batch, in.bal, in.rebirthTarget, in.incomePerMin, gc);
-        if (stay == null || cEta == null) return null; // no income or no rebirth target: no opinion
-        Double zEta = in.zoneMaxed ? null
-            : buyEtaMin(in.zoneTarget, in.bal, in.rebirthTarget, in.incomePerMin, in.zoneGain);
-        Double sEta = in.swordMaxed ? null
-            : buyEtaMin(in.swordTarget, in.bal, in.rebirthTarget, in.incomePerMin,
-                swordGain(ttk, in.swordDpsMult, in.instantTtkMs, in.swordGainFloor));
-        if (!sooner(cEta, zEta)) {
-            return base.with(Decision.WAIT, Decision.KIND_COMPANION, "companion-outbid", gc, via, null);
-        }
-        if (sEta != null && cEta > sEta * Math.max(1.0, in.companionPersistCredit)) {
-            return base.with(Decision.WAIT, Decision.KIND_COMPANION, "companion-outbid", gc, via, null);
-        }
-        if (cEta < stay) {
+        Double zoneMilestone = in.zoneMaxed || in.companionZoneStopped ? null : zoneGap;
+        Double rebirthMilestone = in.rebirthTarget != null ? in.rebirthTarget - in.bal : null;
+        if (companionSoonerTo(batch, zoneMilestone, gc) || companionSoonerTo(batch, rebirthMilestone, gc)) {
             return base.with(Decision.BUY, Decision.KIND_COMPANION, "companion-sooner", gc, via, null);
         }
-        // Slower to this rebirth, but the eggs keep paying past it: only near the rebirth, or
-        // once the zone has stopped being bought at all, and only inside the delay budget.
-        boolean near = stay <= in.companionRebirthEtaMinMax;
-        boolean zoneStopped = in.zoneMaxed || in.companionZoneStopped;
-        if ((near || zoneStopped)
-            && companionHorizonAllows(batch, in.bal, in.rebirthTarget, in.incomePerMin, gc,
-                in.companionMaxRebirthDelayMin, in.companionMaxRebirthDelayPct)) {
-            return base.with(Decision.BUY, Decision.KIND_COMPANION,
-                zoneStopped && !near ? "companion-end" : "companion-persist", gc, via, null);
+        // Slower to every milestone, but the eggs keep paying past the rebirth.
+        if (!in.companionIncomeSettled) return base.withEggs("settle");
+        Double delay = companionDelayMin(batch, in.bal, in.rebirthTarget, in.incomePerMin, gc);
+        if (delay == null) return base.withEggs(in.rebirthTarget == null ? "no-rebirth-target" : "no-income");
+        if (companionPersistAllows(delay, gc, in.companionCycleMin, in.companionPaybackFraction, in.companionMaxRebirthDelayMin)) {
+            return base.with(Decision.BUY, Decision.KIND_COMPANION, "companion-persist", gc, via, delay * 60_000.0);
         }
-        return null;
-    }
-
-    /** a is strictly sooner than b; an unknown b never blocks. */
-    private static boolean sooner(Double a, Double b) {
-        return a != null && (b == null || a < b - 1e-9);
+        return base.withEggs("horizon");
     }
 
     private static boolean horizonAllows(Inputs in, Double price, double gain) {

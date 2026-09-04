@@ -110,6 +110,13 @@ public class UpgradeController {
     private Decision lastDecision = null;
     /** Tag time of the cook whose "already past the patience" verdict was logged (zone_gate_hard). */
     private long lastCookHardLogged = -1;
+    /** 0.9.36: the egg annotation last logged as companion_skip, and when (one per change, else every 2 min). */
+    private String lastEggsLogged = null;
+    private long lastEggsLogAt = 0;
+    /** 0.9.36: zone_back_candidate bookkeeping - the stage it was last done for, the sword buys seen there, the first HARD read. */
+    private int zoneBackSeq = -1;
+    private int zoneBackBuys = 0;
+    private boolean zoneBackHardLogged = false;
 
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -368,6 +375,8 @@ public class UpgradeController {
             Decision d = decide(combat, now, predicted);
             horizonBlocked = "rebirth-horizon".equals(d.reason()) ? d.kind() : null;
             savingZone = "saving-zone".equals(d.reason());
+            logEggs(d, now);
+            maybeLogZoneBack(combat, d, predicted, now);
             if (d.actsTyped() && !Economy.firstKillsReached(combat.kills - killsAtEnable, combat.kills - killsAtRebirth, firstKillsNeeded)) {
                 lastDecision = d.hold("first-kills", null);
                 evalAt = Long.MAX_VALUE;
@@ -745,6 +754,107 @@ public class UpgradeController {
     }
 
     /**
+     * 0.9.36: the egg post-pass declined - say why, with the numbers, once per change of
+     * reason and at most every two minutes otherwise. The 0.9.35 post-pass returned bare
+     * null on six paths and the 19:14 log had no companion row at all.
+     */
+    private void logEggs(Decision d, long now) {
+        if (logger == null || d.eggs() == null) return;
+        boolean changed = !d.eggs().equals(lastEggsLogged);
+        if (!changed && now - lastEggsLogAt < 120_000) return;
+        lastEggsLogged = d.eggs();
+        lastEggsLogAt = now;
+        Integer stage = stats.confirmedZoneLevel();
+        Double batch = stats.companionBatchPrice(stage);
+        Double bal = stats.money();
+        Double income = stats.incomePerMinute();
+        double gain = stats.companionGain();
+        Double zoneGap = "zone".equals(horizonBlocked) || stats.zoneMaxed ? null : stats.zoneGapEstimate();
+        Double rebirthGap = stats.rebirthTarget != null && bal != null ? stats.rebirthTarget - bal : null;
+        Double delay = Economy.companionDelayMin(batch, bal, stats.rebirthTarget, income, gain);
+        double cycle = stats.companionCycleMin(cfg.companionCyclePriorMin);
+        logger.log("companion_skip", evalFields(d,
+            "eggsReason", d.eggs(),
+            "blocked", companions != null ? companions.blockedReason(now) : "no-controller",
+            "stage", stage,
+            "batch", batch != null ? Amounts.format(batch) : null,
+            "batchPct", batch != null && batch > 0 && bal != null ? Math.round(1000.0 * bal / batch) / 10.0 : null,
+            "gapZone", zoneGap != null ? Amounts.format(zoneGap) : null,
+            "gapRebirth", rebirthGap != null ? Amounts.format(rebirthGap) : null,
+            "soonerZone", Economy.companionSoonerTo(batch, zoneGap, gain),
+            "soonerRebirth", Economy.companionSoonerTo(batch, rebirthGap, gain),
+            "settled", companions != null && companions.incomeSettled(now),
+            "delayMin", tenth(delay),
+            "budgetMin", tenth(Economy.companionPersistBudgetMin(gain, cycle, cfg.companionPaybackFraction, cfg.companionMaxRebirthDelayMin)),
+            "cycleMin", tenth(cycle), "cycleVia", stats.lastCycleOnMin() != null ? "measured" : "prior",
+            "companionGain", Math.round(gain * 100.0) / 100.0, "companionGainVia", stats.companionGainVia(),
+            "visitsThisStage", stats.companionVisitsThisStage(stage),
+            "visitsThisRebirth", stats.companionVisitsThisRebirth(),
+            "lastBoughtStage", stats.companionLastBoughtStage));
+    }
+
+    /**
+     * 0.9.36: the retreat question, measured. Once per stage when the gate first reads HARD,
+     * and again after every sword buy on it: what this stage earns per minute right now
+     * against the previous stage's best rate ({@link Economy#zoneBackCandidate}). Nothing is
+     * sent; the log says whether /zone previous would have paid, and when.
+     */
+    private void maybeLogZoneBack(CombatController combat, Decision d, Double predicted, long now) {
+        if (logger == null || !cfg.zoneBackMeasureEnabled) return;
+        int seq = stats.zoneChangeSeq();
+        if (seq != zoneBackSeq) {
+            zoneBackSeq = seq;
+            zoneBackBuys = stats.swordBuysThisZone();
+            zoneBackHardLogged = false;
+        }
+        String why;
+        if (d.gateHard() && !zoneBackHardLogged) {
+            zoneBackHardLogged = true;
+            why = "gate-hard";
+        } else if (stats.swordBuysThisZone() > zoneBackBuys) {
+            zoneBackBuys = stats.swordBuysThisZone();
+            why = "sword";
+        } else {
+            return;
+        }
+        Double ttk = stats.medianTtkMs();
+        String ttkVia = "median";
+        if (ttk == null && predicted != null && predicted > 0) { ttk = predicted; ttkVia = "predicted"; }
+        if (ttk == null && combat.isCooking()) {
+            ttk = combat.cookElapsedMs() / Economy.rarityScale(combat.targetRarity(), cfg.rarityHpScale);
+            ttkVia = "cook";
+        }
+        if (ttk == null && stats.stageMaxTtkMs() != null) { ttk = stats.stageMaxTtkMs(); ttkVia = "kill"; }
+        StatsTracker.StageRecord here = stats.currentStageRecord();
+        StatsTracker.StageRecord prev = stats.previousStageRecord();
+        Double mpk = here != null ? here.moneyPerKill() : null;
+        String mpkVia = "stage";
+        if (mpk == null && prev != null && prev.moneyPerKill() != null) {
+            mpk = prev.moneyPerKill() * cfg.zoneMoneyGrowthPrior;
+            mpkVia = "ladder";
+        }
+        Double there = prev != null ? prev.peakPerMin : null;
+        Economy.ZoneBack zb = Economy.zoneBackCandidate(mpk, ttk, cfg.zoneInstantTtkMs, there, cfg.zoneBackMargin);
+        Double bal = stats.money();
+        Double swordNeed = stats.swordTarget != null && bal != null ? Math.max(0, stats.swordTarget - bal) : null;
+        logger.log("zone_back_candidate", "via", why,
+            "stage", stats.confirmedZoneLevel(), "prevStage", prev != null ? prev.stage : null,
+            "gate", d.gate(), "gateVia", d.gateVia(),
+            "ttkMs", ttk != null ? Math.round(ttk) : null, "ttkVia", ttkVia,
+            "moneyPerKill", mpk != null ? Amounts.format(mpk) : null, "moneyPerKillVia", mpkVia,
+            "stageKills", here != null ? here.kills : null,
+            "herePerMin", zb != null ? Amounts.format(zb.herePerMin()) : null,
+            "therePerMin", there != null ? Amounts.format(there) : null,
+            "ratio", zb != null && zb.ratio() != null ? Math.round(zb.ratio() * 100.0) / 100.0 : null,
+            "margin", cfg.zoneBackMargin,
+            "wouldRetreat", zb != null ? zb.wouldRetreat() : null,
+            "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
+            "swordEtaHereMin", zb != null && swordNeed != null && zb.herePerMin() > 0 ? tenth(swordNeed / zb.herePerMin()) : null,
+            "swordEtaThereMin", there != null && swordNeed != null && there > 0 ? tenth(swordNeed / there) : null,
+            "swordBuysThisZone", stats.swordBuysThisZone());
+    }
+
+    /**
      * Every fact behind the decision (0.9.33): the {@link Decision#kv()} vocabulary plus the
      * prices, floors, rebirth horizon numbers and the log-only DPS prediction.
      */
@@ -827,19 +937,18 @@ public class UpgradeController {
         // 0.9.35: companions are priced by the same call. companions == null before the
         // client wires it (tests, and the first ticks) leaves the branch inert.
         in.companionsEnabled = cfg.companionsEnabled && companions != null;
-        in.companionFeasible = companions != null && companions.canVisitNow(now);
+        in.companionBlocked = companions != null ? companions.blockedReason(now) : "no-controller";
         in.companionStage = stats.confirmedZoneLevel();
         in.companionBatchPrice = stats.companionBatchPrice(in.companionStage);
         in.companionGain = stats.companionGain();
         in.companionGainVia = stats.companionGainVia();
+        in.companionLastBoughtStage = stats.companionLastBoughtStage;
         in.companionVisitsThisStage = stats.companionVisitsThisStage(in.companionStage);
         in.companionMaxVisitsPerStage = cfg.companionMaxVisitsPerStage;
-        in.companionMaxBalancePct = cfg.companionMaxBalancePct;
-        in.companionPatienceMs = (int) Math.round(cfg.companionPatienceMinutes * 60_000.0);
-        in.companionPersistCredit = cfg.companionPersistCredit;
+        in.companionIncomeSettled = companions != null && companions.incomeSettled(now);
         in.companionMaxRebirthDelayMin = cfg.companionMaxRebirthDelayMin;
-        in.companionMaxRebirthDelayPct = cfg.companionMaxRebirthDelayPct;
-        in.companionRebirthEtaMinMax = cfg.companionRebirthEtaMinMax;
+        in.companionCycleMin = stats.companionCycleMin(cfg.companionCyclePriorMin);
+        in.companionPaybackFraction = cfg.companionPaybackFraction;
         in.companionZoneStopped = "zone".equals(horizonBlocked) || stats.zoneMaxed;
         in.now = now;
         Decision d = Economy.decide(in);

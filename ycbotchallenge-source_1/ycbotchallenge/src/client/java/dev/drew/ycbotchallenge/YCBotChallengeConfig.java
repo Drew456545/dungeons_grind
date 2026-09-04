@@ -729,11 +729,11 @@ public class YCBotChallengeConfig {
     public int companionEggsMax = 10;
     public int companionMaxOpensPerVisit = 6;
     /**
-     * Variance control, not economics (0.9.35): the ETA maths in Economy.decideCompanion is
-     * linear and would happily spend the whole wallet, and pickOpen may land a bundle that
-     * costs more than the priced batch. Whether a batch is worth buying at all is decided
-     * there; companionStageSettleKills still holds it off until the income figure is this
-     * stage's own.
+     * Manual visits only since 0.9.36 (Ctrl+Shift+toggle): the share of the wallet such a
+     * visit may spend. An economy visit spends the priced batch (companionEggsMin eggs) and
+     * nothing more. It used to cap the decision too, and at lvl17 that demanded 18.53N in
+     * hand for a 7.41N batch while the whole rebirth cost 15.94N - eggs were unreachable
+     * exactly where they were needed.
      */
     public double companionMaxBalancePct = 40;
     public int companionMinStageGain = 0;
@@ -752,18 +752,18 @@ public class YCBotChallengeConfig {
      * two stages above the last buy, twice a rebirth, never while a zone was "affordable")
      * was a second economy that refused all of that; it is gone.
      *
-     * companionPatienceMinutes: eggs only pre-empt when the stage is at least this far off.
-     * The zone ETA only — the sword sits on a x3.5 ladder so its ETA is nearly always short,
-     * and the rebirth being close is the reason to buy, not to refuse.
-     * companionPersistCredit: the batch may reach this rebirth up to this much slower than
-     * the sword and still win, because the sword is wiped by the rebirth and the eggs are not.
-     * companionMaxRebirthDelayMin/Pct: how far a batch may push the rebirth out when it is
-     * slower than standing still (it keeps paying on the other side, but not for free).
+     * 0.9.36: the 0.9.35 ETA race (patience on the stage, a credit against the sword, a delay
+     * budget that was a percentage of what was left to the rebirth) bought nothing at all —
+     * the 19:14 log has zero companion events — and is gone. Two rules remain
+     * (Economy.decideCompanion): the batch reaches the gap being saved for sooner with the
+     * eggs than without, or the minutes it delays the rebirth fit the persistent payback
+     * budget: max(companionMaxRebirthDelayMin, (1 - 1/gain) x last cycle's bot-on minutes x
+     * companionPaybackFraction). companionCyclePriorMin stands in for the cycle length until
+     * one has been measured (rebirth 13's cycle ran ~60 bot-on minutes).
      */
-    public double companionPatienceMinutes = 20.0;
-    public double companionPersistCredit = 1.25;
     public double companionMaxRebirthDelayMin = 3.0;
-    public double companionMaxRebirthDelayPct = 25;
+    public double companionCyclePriorMin = 45.0;
+    public double companionPaybackFraction = 0.5;
     public int companionMaxVisitsPerStage = 2;
     /** The egg ladder, measured x52.2 a stage over seven consecutive steps (44.44Q@s9 -> 904.27SS@s15). */
     public double companionPriceGrowth = 52.2;
@@ -773,7 +773,8 @@ public class YCBotChallengeConfig {
      * 1.5 sits deliberately under the measured 1.76x and 2.20x.
      */
     public double companionGainPrior = 1.5;
-    public double companionGainMin = 1.2;
+    /** 0.9.36: 0.8, so a dud batch can lower the estimate (under 1.2 every one was "recorded and dropped"). */
+    public double companionGainMin = 0.8;
     public double companionGainMax = 3.0;
     public int companionGainWindowMs = 180_000;
     /** After an aborted visit the decision stops asking for a while (it cannot execute). */
@@ -822,8 +823,14 @@ public class YCBotChallengeConfig {
     public String swordSkinDamagePattern = "/damage:\\s*(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*dmg/";
     public String swordSkinEquippedPattern = "/^equipped\\b/";
     public String swordSkinLockedPattern = "/^locked\\b/";
-    public int companionStageSettleKills = 10;
-    public double companionRebirthEtaMinMax = 8.0;
+    /**
+     * The income figure is this stage's own after this many kills on it OR this long on it
+     * (0.9.36: either). Ten kills at a 185 s first kill was 16+ minutes; the 60 s reward
+     * summary makes the rate honest within two of its windows. Gates only the persist rule -
+     * the sooner rule is income-free.
+     */
+    public int companionStageSettleKills = 3;
+    public int companionStageSettleMs = 120_000;
     /** "Finish this kill, then go buy pets": delay between the decision and the walk. */
     public int companionDelayMinMs = 10_000;
     public int companionDelayMaxMs = 60_000;
@@ -1114,6 +1121,19 @@ public class YCBotChallengeConfig {
      */
     public int zoneMinStageKills = 1;
     /**
+     * 0.9.36: the retreat question, measured only. On a fresh stage the first time the gate
+     * reads HARD, and after every sword buy on it, log zone_back_candidate: what this stage
+     * earns per minute right now (money per kill over the kill time) against the previous
+     * stage's best rate, and whether /zone previous would have paid (there > here x margin).
+     * No command is sent. 2026-09-04 lvl16 -> 17: the x27 money-per-kill step cancelled the
+     * x29 kill-time step, so the answer was "no" - the measurement says when that flips.
+     * zoneMoneyGrowthPrior prices this stage's kills off the previous stage's before the
+     * first kill lands (the logs measured x27-x81 a stage; 20 is the conservative end).
+     */
+    public boolean zoneBackMeasureEnabled = true;
+    public double zoneBackMargin = 1.5;
+    public double zoneMoneyGrowthPrior = 20.0;
+    /**
      * A bot toggle within this many ms on the same stage (no zone change or teleport in
      * between) keeps the kill window and the patience roll instead of clearing them
      * (2026-09-04 14:55: six toggles in 37 s emptied the window each time and the gate
@@ -1291,7 +1311,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 39;
+    public static final int CURRENT_CONFIG_VERSION = 40;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1626,10 +1646,7 @@ public class YCBotChallengeConfig {
             // The per-rebirth cap becomes a backstop and the real one is per stage: the
             // 2026-09-04 17:21 log spent both rebirth visits on lvl15 and then refused every
             // later batch on the stage it never left.
-            companionPatienceMinutes = fresh.companionPatienceMinutes;
-            companionPersistCredit = fresh.companionPersistCredit;
             companionMaxRebirthDelayMin = fresh.companionMaxRebirthDelayMin;
-            companionMaxRebirthDelayPct = fresh.companionMaxRebirthDelayPct;
             companionMaxVisitsPerStage = fresh.companionMaxVisitsPerStage;
             companionPriceGrowth = fresh.companionPriceGrowth;
             companionGainPrior = fresh.companionGainPrior;
@@ -1640,6 +1657,21 @@ public class YCBotChallengeConfig {
             // "two stages above the last buy" was permanent on a stage you never leave.
             if (companionMinStageGain == 2) companionMinStageGain = fresh.companionMinStageGain;
             if (companionMaxVisitsPerRebirth == 2) companionMaxVisitsPerRebirth = fresh.companionMaxVisitsPerRebirth;
+            changed = true;
+        }
+        if (configVersion < 40) {
+            // v40 (0.9.36): the companion post-pass is two rules and every decline is logged.
+            // The 0.9.35 race knobs (companionPatienceMinutes, companionPersistCredit,
+            // companionMaxRebirthDelayPct, companionRebirthEtaMinMax) are gone - Gson ignores
+            // them in an old file. New knobs (companionCyclePriorMin, companionPaybackFraction,
+            // companionStageSettleMs, zoneBack*) take their defaults. Two defaults moved:
+            // the settle (10 kills was 16+ minutes at a 185 s first kill) and the gain floor
+            // (1.2 could never learn a dud batch). Hand-set values survive.
+            if (companionStageSettleKills == 10) companionStageSettleKills = fresh.companionStageSettleKills;
+            if (companionGainMin == 1.2) companionGainMin = fresh.companionGainMin;
+            // The 0.9.35 fusion-menu pattern fix only filled a blank pattern, so the live
+            // config kept the old "/fuse companions/" and the menu was still never found.
+            if ("/fuse companions/".equals(companionFusePattern)) companionFusePattern = fresh.companionFusePattern;
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;
@@ -1812,17 +1844,20 @@ public class YCBotChallengeConfig {
         if (companionMinStageGain < 0) companionMinStageGain = 0;
         if (companionMaxVisitsPerRebirth < 0) companionMaxVisitsPerRebirth = 0;
         if (companionMaxVisitsPerStage < 0) companionMaxVisitsPerStage = 0;
-        if (companionPatienceMinutes < 0) companionPatienceMinutes = 0;
-        if (companionPersistCredit < 1.0) companionPersistCredit = 1.0;
         if (companionMaxRebirthDelayMin < 0) companionMaxRebirthDelayMin = 0;
-        if (companionMaxRebirthDelayPct < 0) companionMaxRebirthDelayPct = 0;
+        if (companionCyclePriorMin < 1.0) companionCyclePriorMin = 1.0;
+        if (companionPaybackFraction < 0) companionPaybackFraction = 0;
+        if (companionPaybackFraction > 1) companionPaybackFraction = 1;
         if (companionPriceGrowth <= 1.0) companionPriceGrowth = 52.2;
         if (companionGainPrior < 1.0) companionGainPrior = 1.0;
-        if (companionGainMin < 1.0) companionGainMin = 1.0;
+        if (companionGainMin < 0.1) companionGainMin = 0.1;
         if (companionGainMax < companionGainMin) companionGainMax = companionGainMin;
         if (companionGainWindowMs < 1000) companionGainWindowMs = 1000;
         if (companionRetryAfterAbortMs < 0) companionRetryAfterAbortMs = 0;
         if (companionStageSettleKills < 0) companionStageSettleKills = 0;
+        if (companionStageSettleMs < 0) companionStageSettleMs = 0;
+        if (zoneBackMargin < 1.0) zoneBackMargin = 1.0;
+        if (zoneMoneyGrowthPrior < 1.0) zoneMoneyGrowthPrior = 1.0;
         if (companionDelayMinMs < 0) companionDelayMinMs = 0;
         if (companionDelayMaxMs < companionDelayMinMs) companionDelayMaxMs = companionDelayMinMs;
         if (companionSettleMinMs < 200) companionSettleMinMs = 200;

@@ -78,6 +78,7 @@ public final class EconomyChecks {
         n += swordSkins0933();
         n += captchaHedge0934();
         n += companions0935();
+        n += companions0936();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1768,7 +1769,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 39", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 39);
+        n += eq("config version 40", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 40);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -1879,7 +1880,7 @@ public final class EconomyChecks {
 
 
     /** Real amounts from the 2026-09-04 logs: O is the rung above SS. */
-    private static final double SS = 1e24, O = 1e27;
+    private static final double SS = 1e24, O = 1e27, N = 1e30;
 
     /**
      * The lvl15 stall: 2026-09-04 17:57:13 verbatim, 36 minutes in, where the log shows
@@ -1902,7 +1903,6 @@ public final class EconomyChecks {
         in.stageMaxTtkMs = 167344.0;      // the stage the sword never fixed
         in.stageKills = 74;
         in.patienceMs = 13977;
-        in.companionFeasible = true;
         in.companionStage = 15;
         in.companionBatchPrice = 3 * 904.27 * SS;   // companionEggsMin eggs at the s15 price
         in.companionGain = 1.5;                     // the prior, before anything is learned
@@ -1914,41 +1914,57 @@ public final class EconomyChecks {
     private static int companions0935() {
         int n = 0;
 
-        // The asymmetry. Same numbers: refused for a buy the rebirth wipes, allowed for one it
-        // does not. This is the whole reason a separate companion horizon rule exists.
+        // The asymmetry (0.9.35), now in 0.9.36 terms. The same numbers: a buy the rebirth
+        // wipes is refused by the horizon; a batch that survives it is bought because the
+        // rebirth comes sooner WITH the eggs (P < G(g-1) on the rebirth gap).
         n += eq("horizon vetoes a wiped buy",
             Economy.rebirthHorizonAllows(3.31 * SS, 7.0 * SS, 10.0 * SS, 1.21 * SS, 1.8), false);
-        n += eq("companions keep paying past it",
-            Economy.companionHorizonAllows(3.31 * SS, 7.0 * SS, 10.0 * SS, 1.21 * SS, 1.8, 3.0, 25), true);
-        n += eq("a batch 10x the gap is refused by both",
-            Economy.companionHorizonAllows(30.0 * SS, 7.0 * SS, 10.0 * SS, 1.21 * SS, 1.8, 3.0, 25), false);
-        n += eq("unknown numbers: no opinion",
-            Economy.companionHorizonAllows(3.31 * SS, null, 10.0 * SS, 1.21 * SS, 1.8, 3.0, 25), true);
+        n += eq("a batch over the gap's share is not sooner",
+            Economy.companionSoonerTo(3.31 * SS, 3.0 * SS, 1.8), false);
+        n += eq("sooner to a 10SS gap at g 1.8", Economy.companionSoonerTo(3.31 * SS, 10.0 * SS, 1.8), true);
+        n += eq("not sooner when the batch exceeds the gap's share", Economy.companionSoonerTo(30.0 * SS, 10.0 * SS, 1.8), false);
+        n += eq("no gain, no opinion", Economy.companionSoonerTo(1.0, 10.0, 1.0), false);
+        n += eq("unknown gap: not sooner", Economy.companionSoonerTo(1.0, null, 1.5), false);
 
-        // The patience horizon. Zone ETA only: the sword sits on a x3.5 ladder so its ETA was
-        // 0-20 min all through the stall, and a close rebirth is the reason to buy, not to refuse.
-        n += eq("stage far off: eggs may pre-empt", Economy.companionPatienceOk(1_800_000.0, 1_200_000), true);
-        n += eq("stage minutes away: they may not", Economy.companionPatienceOk(120_000.0, 1_200_000), false);
-        n += eq("no zone price is far, not near", Economy.companionPatienceOk(null, 1_200_000), true);
-        n += eq("patience 0 disables the gate", Economy.companionPatienceOk(1.0, 0), true);
+        // The persistent payback budget: what the next cycle saves, floored - never a share of
+        // what is left to this rebirth (0.9.35's 25 % of a two-minute rebirth was 30 s).
+        n += eq("budget: g1.5 on a 45 min cycle, half kept", Economy.companionPersistBudgetMin(1.5, 45, 0.5, 3.0), 7.5, 1e-9);
+        n += eq("budget floor before a cycle is measured", Economy.companionPersistBudgetMin(1.5, 0, 0.5, 3.0), 3.0, 1e-9);
+        n += eq("budget floor wins over a tiny cycle", Economy.companionPersistBudgetMin(1.5, 6, 0.5, 3.0), 3.0, 1e-9);
+        n += eq("a 2-minute delay fits", Economy.companionPersistAllows(2.0, 1.5, 45, 0.5, 3.0), true);
+        n += eq("a 10-minute delay does not", Economy.companionPersistAllows(10.0, 1.5, 45, 0.5, 3.0), false);
+        n += eq("... unless the cycle is long", Economy.companionPersistAllows(10.0, 1.5, 90, 0.5, 3.0), true);
+        // 19:19:47: 141.75O batch, 402.66O in hand, 531.44O rebirth at 65.04O/min - 0.9.35
+        // refused it eight times; the delay is 0.8 min and the 3-minute floor alone takes it.
+        Double d1919 = Economy.companionDelayMin(141.75 * O, 402.66 * O, 531.44 * O, 65.04 * O, 1.5);
+        n += eq("19:19:47 delay", d1919, 0.8, 0.1);
+        n += eq("19:19:47 allowed by the floor", Economy.companionPersistAllows(d1919, 1.5, 45, 0.5, 3.0), true);
+        n += eq("unknown numbers: no delay", Economy.companionDelayMin(3.31 * SS, null, 10.0 * SS, 1.21 * SS, 1.8) == null, true);
 
         // The stall itself: what the log holds on, and what the batch turns it into.
         Economy.Inputs baseInputs = lvl15();
-        baseInputs.companionFeasible = false;
+        baseInputs.companionBlocked = "busy";
         Decision held = Economy.decide(baseInputs);
         n += eq("baseline is the hold the log shows",
             held.action() + " " + held.kind() + " " + held.reason(), "wait zone saving-zone");
+        n += eq("... annotated with why the eggs wait", held.eggs(), "blocked");
 
         Decision d = Economy.decide(lvl15());
         n += eq("companions convert it", d.action() + " " + d.kind() + " " + d.reason(),
             "buy companion companion-sooner");
         n += eq("the batch is not a typed command", d.actsTyped(), false);
         n += eq("it is handed to the companion controller", d.actsCompanion(), true);
+        n += eq("a buy carries no annotation", d.eggs() == null, true);
 
-        // Slower to this rebirth than standing still, but it keeps paying past it.
+        // Slower to every milestone than standing still (zone buys stopped, the batch over the
+        // rebirth gap's share), but the eggs keep paying past the rebirth: the delay fits.
         Economy.Inputs persist = lvl15();
-        persist.bal = 13.0 * O;
-        n += eq("bought for what it keeps", Economy.decide(persist).reason(), "companion-persist");
+        persist.bal = 16.5 * O;                  // 1.22O to the rebirth
+        persist.companionZoneStopped = true;
+        persist.companionBatchPrice = 1.0 * O;   // delays the rebirth 0.34 min against a 7.5 min budget
+        Decision dp = Economy.decide(persist);
+        n += eq("bought for what it keeps", dp.reason(), "companion-persist");
+        n += eq("the delay rides on the decision", dp.waitMs() != null && dp.waitMs() > 10_000 && dp.waitMs() < 40_000, true);
 
         // The further the rebirth, the MORE an income multiplier is worth - the opposite of a
         // sword or a zone, which the rebirth wipes.
@@ -1956,13 +1972,27 @@ public final class EconomyChecks {
         far.rebirthTarget = 400.0 * O;
         n += eq("a distant rebirth makes it worth more", Economy.decide(far).reason(), "companion-sooner");
 
-        // ... but with the rebirth imminent, a batch that would push it out past the delay
-        // budget is refused and the hold stands.
+        // ... and a batch that pushes the rebirth out past the payback budget is refused, the
+        // hold standing with the reason on it.
         Economy.Inputs late = lvl15();
-        late.bal = 15.0 * O;
-        n += eq("no batch that delays an imminent rebirth", Economy.decide(late).actsCompanion(), false);
+        late.bal = 16.5 * O;
+        late.companionZoneStopped = true;
+        late.companionBatchPrice = 12.0 * O;     // delay 9.9 min > 7.5
+        Decision dl = Economy.decide(late);
+        n += eq("past the budget: refused", dl.actsCompanion(), false);
+        n += eq("... and says so", dl.eggs(), "horizon");
+        n += eq("... on the hold the economy already had", dl.reason(), "saving-zone");
+        late.companionCycleMin = 90;             // a longer cycle pays more back
+        n += eq("a longer cycle takes it", Economy.decide(late).reason(), "companion-persist");
+        late.companionIncomeSettled = false;
+        n += eq("the persist rule waits for the stage's own income", Economy.decide(late).eggs(), "settle");
+        late.companionIncomeSettled = true;
+        late.incomePerMin = null;
+        n += eq("no income: no delay to judge", Economy.decide(late).eggs(), "no-income");
 
-        // The two 0.9.33 log cases, now refused for the right reason: the stage is in reach.
+        // The two 0.9.33 log cases. 0.9.35 refused them for being minutes from the stage; now
+        // they are bought: the batch is under half the rebirth gap, so the rebirth comes sooner
+        // with the eggs, and Drew buys at every new stage on the way up.
         Economy.Inputs t1422 = lvl15();          // 3.31SS on eggs with 1.58SS left to the zone
         t1422.bal = 8.33 * SS;
         t1422.rebirthTarget = 30.0 * SS;
@@ -1973,8 +2003,7 @@ public final class EconomyChecks {
         t1422.companionStage = 13;
         t1422.medianTtkMs = 8294.0;
         t1422.zoneFloor = null;
-        n += eq("14:22: eggs never delay a stage 0.8 min away",
-            Economy.decide(t1422).actsCompanion(), false);
+        n += eq("14:22: bought - sooner to the 30SS rebirth", Economy.decide(t1422).reason(), "companion-sooner");
 
         Economy.Inputs t0545 = lvl15();          // 2.32SS against an 8.81SS gap
         t0545.bal = 2.68 * SS;
@@ -1986,27 +2015,37 @@ public final class EconomyChecks {
         t0545.companionStage = 13;
         t0545.medianTtkMs = 8294.0;
         t0545.zoneFloor = null;
-        n += eq("05:45: same, a 9.4 min stage", Economy.decide(t0545).actsCompanion(), false);
+        n += eq("05:45: same - sooner to the 11.49SS stage", Economy.decide(t0545).reason(), "companion-sooner");
 
         // Caps and safety.
         Economy.Inputs repeat = lvl15();
         repeat.companionVisitsThisStage = 2;
         Decision dRep = Economy.decide(repeat);
-        n += eq("the per-stage budget is spent", dRep.reason(), "companion-repeat");
+        n += eq("the per-stage budget is spent", dRep.eggs(), "repeat");
         n += eq("and nothing is bought", dRep.acts(), false);
+        n += eq("the hold is the economy's own", dRep.reason(), "saving-zone");
 
+        // 0.9.36: the 40 %-of-balance cap is gone from the decision (at lvl17 it demanded
+        // 18.53N in hand for a 7.41N batch while the whole rebirth cost 15.94N).
         Economy.Inputs rich = lvl15();
         rich.companionBatchPrice = 0.6 * rich.bal;   // 60% of the wallet
-        n += eq("never most of the balance", Economy.decide(rich).actsCompanion(), false);
+        n += eq("most of the balance is fine when it pays", Economy.decide(rich).reason(), "companion-sooner");
 
         Economy.Inputs blocked = lvl15();
-        blocked.companionFeasible = false;
-        n += eq("an infeasible visit leaves the hold alone",
-            Economy.decide(blocked).reason(), "saving-zone");
+        blocked.companionBlocked = "abort-cooldown";
+        Decision dB = Economy.decide(blocked);
+        n += eq("an infeasible visit leaves the hold alone", dB.reason(), "saving-zone");
+        n += eq("... and says the visit is blocked", dB.eggs(), "blocked");
+
+        Economy.Inputs noPrice = lvl15();
+        noPrice.companionBatchPrice = null;
+        n += eq("no egg price yet", Economy.decide(noPrice).eggs(), "no-price");
 
         Economy.Inputs off = lvl15();
         off.companionsEnabled = false;
-        n += eq("the toggle really turns it off", Economy.decide(off).actsCompanion(), false);
+        Decision dOff = Economy.decide(off);
+        n += eq("the toggle really turns it off", dOff.actsCompanion(), false);
+        n += eq("... with no annotation at all", dOff.eggs() == null, true);
 
         // Regression: a fixture that says nothing about companions decides as it always did.
         n += eq("companions are inert by default", new Economy.Inputs().companionBatchPrice == null, true);
@@ -2021,13 +2060,185 @@ public final class EconomyChecks {
         n += eq("first sample is the estimate", Economy.blendGrowth(null, 2.2, 0.3), 2.2, 1e-9);
         n += eq("second blends in", Economy.blendGrowth(2.2, 1.76, 0.3), 2.068, 1e-3);
 
-        // The new plan lines stay inside the HUD row.
-        for (String r : List.of("companion-sooner", "companion-persist", "companion-end",
-                                "companion-outbid", "companion-repeat")) {
-            String act = r.equals("companion-outbid") || r.equals("companion-repeat") ? Decision.WAIT : Decision.BUY;
-            Decision p = new Decision(act, Decision.KIND_COMPANION, r, "hard", "median", 36073.0, 13977, 23,
-                23.71 * O, "target", null, 1.76, "learned", null, 0L);
+        // The plan lines stay inside the HUD row.
+        for (String r : List.of("companion-sooner", "companion-persist")) {
+            Decision p = new Decision(Decision.BUY, Decision.KIND_COMPANION, r, "hard", "median", 36073.0, 13977, 23,
+                23.71 * O, "target", null, 1.76, "learned", 116_400.0, 0L);
             n += eq("plan length " + r, p.hudPlan(2.71 * O, 3.41 * O).length() <= 64, true);
+        }
+        return n;
+    }
+
+    /**
+     * The lvl17 stall, 2026-09-04 20:40 verbatim: the newest log's terminal stage. Ocelots at a
+     * 23 s median after two sword buys (1.6N, 5.59N), gate HARD, the 19.56N sword out of reach,
+     * the 105.17N zone 91N away, the 15.94N rebirth 1.66N away at 2.26N/min - and a 3-egg
+     * batch at 2.47N each that 0.9.35 refused on the 40 % cap every single eval.
+     */
+    private static Economy.Inputs lvl17() {
+        Economy.Inputs in = new Economy.Inputs();
+        in.bal = 14.28 * N;
+        in.rebirthTarget = 15.94 * N;
+        in.incomePerMin = 2.26 * N;
+        in.zoneTarget = 105.17 * N;
+        in.zoneFloor = 1.91 * N;
+        in.swordTarget = 19.56 * N;
+        in.swordFloor = 5.59 * N;
+        in.medianTtkMs = 23_200.0;
+        in.stageMaxTtkMs = 247_800.0;
+        in.stageKills = 20;
+        in.patienceMs = 11_812;
+        in.companionStage = 17;
+        in.companionLastBoughtStage = 15;
+        in.companionBatchPrice = 3 * 2.47 * N;
+        in.companionGain = 1.5;
+        in.companionCycleMin = 45;
+        in.now = 1_000L;
+        return in;
+    }
+
+    /** 0.9.36: eggs that get bought, every decline named, the cycle clock, the retreat measured, config v40. */
+    private static int companions0936() {
+        int n = 0;
+
+        // --- 20:40 lvl17: the hold the log shows, and the batch 0.9.35 never bought.
+        Economy.Inputs held = lvl17();
+        held.companionBlocked = "busy";
+        Decision h = Economy.decide(held);
+        n += eq("20:40 hold", h.action() + " " + h.kind() + " " + h.reason(), "wait sword sword-hard-unaffordable");
+        n += eq("20:40 gate", h.gate() + " " + h.gateVia(), "hard median");
+        Decision d17 = Economy.decide(lvl17());
+        n += eq("20:40 the batch is the buy", d17.action() + " " + d17.kind() + " " + d17.reason(), "buy companion companion-sooner");
+        // Zone buys stopped: the rebirth gap (1.66N) is too small for "sooner", the persist rule takes it.
+        Economy.Inputs stopped = lvl17();
+        stopped.companionZoneStopped = true;
+        Decision ds = Economy.decide(stopped);
+        n += eq("20:40 zone stopped: still bought, for what it keeps", ds.reason(), "companion-persist");
+        n += eq("20:40 delay ~1.9 min", ds.waitMs() != null ? ds.waitMs() / 60_000.0 : null, 1.94, 0.1);
+        // Not yet affordable: the hold stands and says so.
+        Economy.Inputs poor = lvl17();
+        poor.bal = 5.0 * N;
+        Decision dpoor = Economy.decide(poor);
+        n += eq("5N in hand: hold", dpoor.reason(), "sword-hard-unaffordable");
+        n += eq("5N in hand: eggs unaffordable", dpoor.eggs(), "unaffordable");
+        // A fresh hard stage before its income is its own: the sooner rule needs no income at all.
+        Economy.Inputs fresh = lvl17();
+        fresh.companionIncomeSettled = false;
+        fresh.incomePerMin = null;
+        n += eq("fresh stage, no income: sooner still buys", Economy.decide(fresh).reason(), "companion-sooner");
+        fresh.companionZoneStopped = true;
+        n += eq("... the persist rule waits", Economy.decide(fresh).eggs(), "settle");
+
+        // --- 19:19:47 lvl16: eight refusals in 0.9.35 on the percentage rule; the stage gap takes it now.
+        Economy.Inputs l16 = new Economy.Inputs();
+        l16.bal = 402.66 * O;
+        l16.rebirthTarget = 531.44 * O;
+        l16.incomePerMin = 65.04 * O;
+        l16.zoneTarget = 1911.08 * O;
+        l16.zoneFloor = 34.76 * O;
+        l16.swordTarget = 456.99 * O;
+        l16.swordFloor = 130.4 * O;
+        l16.stageKills = 2;
+        l16.stageMaxTtkMs = 15_040.0;
+        l16.patienceMs = 9737;
+        l16.companionStage = 16;
+        l16.companionLastBoughtStage = 15;
+        l16.companionBatchPrice = 141.75 * O;
+        l16.now = 1_000L;
+        Decision d16 = Economy.decide(l16);
+        n += eq("19:19:47 bought", d16.reason(), "companion-sooner");
+        n += eq("19:19:47 gate from the first slow kill", d16.gate() + " " + d16.gateVia(), "hard kill");
+
+        // --- Late and high: a stage below the last one bought is never bought again.
+        Economy.Inputs low = lvl17();
+        low.companionStage = 12;
+        Decision dlow = Economy.decide(low);
+        n += eq("stage 12 with eggs from 15: refused", dlow.actsCompanion(), false);
+        n += eq("... as below-owned", dlow.eggs(), "below-owned");
+        low.companionStage = 15;
+        n += eq("the last bought stage itself is fine", Economy.decide(low).actsCompanion(), true);
+        low.companionLastBoughtStage = null;
+        low.companionStage = 3;
+        n += eq("nothing bought yet: any stage", Economy.decide(low).actsCompanion(), true);
+
+        // --- Zone-first is untouched: a real buy always wins and carries no annotation.
+        Economy.Inputs zone = lvl15();
+        zone.bal = 40.0 * O;
+        Decision dz = Economy.decide(zone);
+        n += eq("an affordable zone beats the eggs", dz.action() + " " + dz.kind() + " " + dz.reason(), "buy zone zone-affordable");
+        n += eq("... and is not annotated", dz.eggs() == null, true);
+
+        // --- The annotation rides on controller holds and reaches the log.
+        Decision hold = Economy.decide(held).hold("first-kills", null);
+        n += eq("a controller hold keeps the annotation", hold.eggs(), "blocked");
+        Object[] kv = hold.kv();
+        boolean found = false;
+        for (int i = 0; i + 1 < kv.length; i += 2) if ("eggs".equals(kv[i]) && "blocked".equals(kv[i + 1])) found = true;
+        n += eq("kv emits eggs", found, true);
+        n += eq("a plain fixture is annotated no-price", Economy.decide(new Economy.Inputs()).eggs(), "no-price");
+
+        // --- The retreat, measured: 2026-09-04 lvl16 -> 17. 770O a kill at 185 s against
+        // lvl16's 356O/min peak: a x27 money step against a x29 time step, no retreat.
+        Economy.ZoneBack zb = Economy.zoneBackCandidate(770.0 * O, 185_000.0, 2000, 356.0 * O, 1.5);
+        n += eq("lvl17 earns ~250O/min at first", zb.herePerMin() / O, 249.7, 1.0);
+        n += eq("lvl16 was 1.43x that", zb.ratio(), 1.43, 0.01);
+        n += eq("under the margin: no retreat", zb.wouldRetreat(), false);
+        n += eq("ten times slower kills: retreat", Economy.zoneBackCandidate(770.0 * O, 1_850_000.0, 2000, 356.0 * O, 1.5).wouldRetreat(), true);
+        n += eq("instant kills sit on the movement floor", Economy.zoneBackCandidate(1.0e6, 500.0, 2000, null, 1.5).herePerMin(), 30.0e6, 1.0);
+        n += eq("no previous stage: nothing to retreat to", Economy.zoneBackCandidate(770.0 * O, 185_000.0, 2000, null, 1.5).wouldRetreat(), false);
+        n += eq("no kill priced yet: null", Economy.zoneBackCandidate(null, 185_000.0, 2000, 356.0 * O, 1.5) == null, true);
+
+        // --- Config v40: the 0.9.35 race knobs are gone, two defaults moved, the live fusion pattern is fixed.
+        for (String dead : new String[]{"companionPatienceMinutes", "companionPersistCredit", "companionMaxRebirthDelayPct", "companionRebirthEtaMinMax"}) {
+            boolean gone;
+            try { YCBotChallengeConfig.class.getDeclaredField(dead); gone = false; } catch (NoSuchFieldException e) { gone = true; }
+            n += eq("dead knob removed: " + dead, gone, true);
+        }
+        n += eq("fresh settle kills", CFG.companionStageSettleKills, 3);
+        n += eq("fresh settle ms", CFG.companionStageSettleMs, 120_000);
+        n += eq("fresh gain floor", CFG.companionGainMin, 0.8, 1e-9);
+        n += eq("fresh cycle prior", CFG.companionCyclePriorMin, 45.0, 1e-9);
+        n += eq("fresh payback fraction", CFG.companionPaybackFraction, 0.5, 1e-9);
+        n += eq("fresh zone-back measurement on", CFG.zoneBackMeasureEnabled, true);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":39,\"companionStageSettleKills\":10,\"companionGainMin\":1.2,"
+                + "\"companionFusePattern\":\"/fuse companions/\",\"companionPatienceMinutes\":20.0}");
+            YCBotChallengeConfig c39 = YCBotChallengeConfig.load(tmp);
+            n += eq("v39 migrates to current", c39.configVersion, YCBotChallengeConfig.CURRENT_CONFIG_VERSION);
+            n += eq("v39 settle kills 10 -> 3", c39.companionStageSettleKills, 3);
+            n += eq("v39 gain floor 1.2 -> 0.8", c39.companionGainMin, 0.8, 1e-9);
+            n += eq("v39 stale fusion pattern replaced", c39.companionFusePattern, CFG.companionFusePattern);
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":39,\"companionStageSettleKills\":5,\"companionGainMin\":1.1,"
+                + "\"companionFusePattern\":\"/my fusion/\"}");
+            YCBotChallengeConfig hand = YCBotChallengeConfig.load(tmp);
+            n += eq("hand-set settle survives", hand.companionStageSettleKills, 5);
+            n += eq("hand-set gain floor survives", hand.companionGainMin, 1.1, 1e-9);
+            n += eq("hand-set fusion pattern survives", hand.companionFusePattern, "/my fusion/");
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v40 migration: " + ex);
+            n++;
+        }
+
+        // --- The cycle clock round-trips through the state file.
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-state", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            StateStore s = new StateStore(tmp);
+            StateStore.Entry e = new StateStore.Entry();
+            e.lastCycleOnMin = 58.3;
+            e.cycleOnMs = 120_000L;
+            e.cycleAtRebirths = 14;
+            s.put("Ihazekids69420", e);
+            StateStore.Entry r = new StateStore(tmp).get("ihazekids69420");
+            n += eq("last cycle minutes", r.lastCycleOnMin, 58.3, 1e-9);
+            n += eq("running cycle ms", r.cycleOnMs, 120_000L);
+            n += eq("cycle rebirth", r.cycleAtRebirths, 14);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL cycle state: " + ex);
+            n++;
         }
         return n;
     }

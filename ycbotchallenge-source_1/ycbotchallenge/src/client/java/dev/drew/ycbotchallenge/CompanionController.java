@@ -73,6 +73,8 @@ public class CompanionController {
     private int lastCombatKills = 0;
     private int zoneSeqSeen = -1;
     private int killsAtStage = 0;
+    /** 0.9.36: when the current stage started (or the bot was enabled on it) - the time half of the settle rule. */
+    private long stageEnteredAt = 0;
     private long lastEggScanAt = 0;
     private long lastDecisionAt = 0;
     private long lastSkipLogAt = 0;
@@ -202,7 +204,7 @@ public class CompanionController {
         if (phase == Phase.IDLE) {
             if (suspended) return "companions: suspended after repeated aborts (toggle to reset)";
             if (plannedAt != 0) return "companions: visit in " + Math.max(0, (plannedAt - System.currentTimeMillis() + 999) / 1000) + "s (" + planVia + ")";
-            return null;
+            return eggsLine();
         }
         return "companions: " + phase.name().toLowerCase(Locale.ROOT)
             + (eggsOpened > 0 ? "  eggs " + eggsOpened + "/" + eggsTarget : "")
@@ -214,8 +216,27 @@ public class CompanionController {
         consecutiveAborts = 0;
         lastRebirthSeen = stats.lastRebirthAt;
         killsAtStage = kills;
+        stageEnteredAt = now;
         zoneSeqSeen = stats.zoneChangeSeq();
         manualRequested = false;
+    }
+
+    /**
+     * 0.9.36: why the eggs are not being bought, for the HUD busy row and the Y screen -
+     * the last eval's annotation ({@link Decision#eggs}) with the batch and how far the
+     * balance is from it. Null when the economy has nothing to say (a buy is planned, or
+     * companions are off).
+     */
+    public String eggsLine() {
+        Decision d = upgrades != null ? upgrades.lastDecision() : null;
+        if (d == null || d.eggs() == null) return null;
+        Integer stage = stats.confirmedZoneLevel();
+        Double batch = stats.companionBatchPrice(stage);
+        Double bal = stats.money();
+        String price = batch != null ? " " + Amounts.format(batch) : "";
+        String pct = batch != null && batch > 0 && bal != null ? " " + Math.min(999, Math.round(100.0 * bal / batch)) + "%" : "";
+        String why = "blocked".equals(d.eggs()) ? "blocked: " + blockedReason(System.currentTimeMillis()) : d.eggs();
+        return "eggs" + price + pct + " · " + why;
     }
 
     public void reset(MinecraftClient client) {
@@ -628,6 +649,7 @@ public class CompanionController {
         if (zseq != zoneSeqSeen) {
             zoneSeqSeen = zseq;
             killsAtStage = combat.kills;
+            stageEnteredAt = now;
         }
         Integer locNow = locationNow();
         if (eggLocation != null && locNow != null && !locNow.equals(eggLocation)) forgetEgg("location");
@@ -738,8 +760,8 @@ public class CompanionController {
      * 2026-09-04 lvl15 stall wanted. Economy.decideCompanion prices it now; what is
      * left here is physical feasibility, which the economy cannot see.
      *
-     * @return the decision's own reason ("companion-sooner" / "companion-persist" /
-     *         "companion-end"), or null when nothing is due.
+     * @return the decision's own reason ("companion-sooner" / "companion-persist"), or null
+     *         when nothing is due.
      */
     private String decide(long now) {
         Decision d = upgrades.lastDecision();
@@ -754,28 +776,40 @@ public class CompanionController {
     }
 
     /**
-     * Can a visit actually run? Fed back into Economy.Inputs.companionFeasible so the
+     * Can a visit actually run? Fed back into Economy.Inputs.companionBlocked so the
      * decision never live-locks on a buy that cannot execute. Everything here is physical or
-     * a blast-radius cap — never economics.
+     * a blast-radius cap — never economics. 0.9.36: the settle and the income are no longer
+     * feasibility - the economy's sooner rule needs neither, and {@link #incomeSettled} gates
+     * only its persist rule.
      */
     public boolean canVisitNow(long now) { return blockedReason(now) == null; }
 
     /** Why a visit cannot run right now, or null when it can. */
-    private String blockedReason(long now) {
+    public String blockedReason(long now) {
         if (!cfg.companionsEnabled) return "disabled";
         if (suspended) return "suspended";
         if (now < blockedUntil) return "abort-cooldown";
         if (phase != Phase.IDLE || plannedAt != 0) return "busy";
+        // 0.9.36: the previous batch's income window is still open - a second visit inside it
+        // would abandon that measurement, and the gain estimate is the only evidence there is.
+        if (gainAt != 0 && now < gainAt) return "gain-window";
         Integer stage = stats.confirmedZoneLevel();
         if (stage == null) return "no-stage";
-        // The income figure must be this stage's own before any ETA about it means anything.
-        if (lastCombatKills - killsAtStage < cfg.companionStageSettleKills) return "settle-kills";
-        if (stats.incomePerMinute() == null || stats.money() == null) return "no-income";
+        if (stats.money() == null) return "no-balance";
         if (stats.companionBatchPrice(stage) == null) return "no-egg-price";
         // Runaway guard only; the real budget is per stage, inside the economy.
         if (cfg.companionMaxVisitsPerRebirth > 0
             && stats.companionVisitsThisRebirth() >= cfg.companionMaxVisitsPerRebirth) return "visits";
         return null;
+    }
+
+    /**
+     * 0.9.36: the income figure is this stage's own - enough kills on it, or enough time on
+     * it (the 60 s reward summary makes the rate honest within two of its windows). Either.
+     */
+    public boolean incomeSettled(long now) {
+        if (lastCombatKills - killsAtStage >= Math.max(0, cfg.companionStageSettleKills)) return true;
+        return stageEnteredAt != 0 && now - stageEnteredAt >= Math.max(0, cfg.companionStageSettleMs);
     }
 
     /**

@@ -94,6 +94,82 @@ public class StatsTracker {
     private final Map<String, Integer> companionVisitsByStage = new LinkedHashMap<>();
     private Integer companionVisitsStageRebirths = null;
 
+    // ---- 0.9.36: the rebirth cycle clock and the per-stage record
+    /** Bot-on ms since the last rebirth, the rebirth it belongs to, and the last full cycle's bot-on minutes (persisted). */
+    private long cycleOnMs = 0;
+    private Integer cycleAtRebirths = null;
+    private Double lastCycleOnMin = null;
+    private long lastPollAt = 0;
+    private long cycleDirtyAt = 0;
+
+    /** Bot-on minutes of the last full rebirth cycle, or null before one has been measured. */
+    public Double lastCycleOnMin() { return lastCycleOnMin; }
+
+    /** What a persistent income multiplier pays back against: the last measured cycle, else the prior. */
+    public double companionCycleMin(double priorMin) {
+        return lastCycleOnMin != null && lastCycleOnMin >= 5.0 ? lastCycleOnMin : priorMin;
+    }
+
+    /**
+     * One stage of the current rebirth (0.9.36): how long the bot grinded there, what it
+     * earned, its best rate and its kill time at exit. The previous stage's record is what
+     * the retreat measurement (zone_back_candidate) compares a fresh stage against.
+     */
+    public static final class StageRecord {
+        public Integer stage;
+        public int seq;
+        public long enteredAt;
+        public long onMs;
+        public int kills;
+        public double moneyEarned;
+        public Double peakPerMin;
+        public Double medianTtkAtExit;
+        public int swordBuys;
+        public Double zoneFloorAtExit;
+
+        public Double moneyPerKill() { return kills > 0 && moneyEarned > 0 ? moneyEarned / kills : null; }
+        public Double avgPerMin() { return onMs >= 30_000 && moneyEarned > 0 ? moneyEarned / (onMs / 60_000.0) : null; }
+    }
+
+    private StageRecord currentStage = null;
+    private StageRecord previousStage = null;
+    private int stagesThisCycle = 0;
+    private Integer topStageThisCycle = null;
+
+    public StageRecord currentStageRecord() { return currentStage; }
+    public StageRecord previousStageRecord() { return previousStage; }
+
+    private void closeStageRecord(String via) {
+        StageRecord r = currentStage;
+        if (r == null) return;
+        if (r.stage == null) r.stage = bossLevel;
+        r.medianTtkAtExit = medianTtkMs();
+        r.swordBuys = swordBuysThisZone;
+        r.zoneFloorAtExit = zoneLastPrice;
+        long now = System.currentTimeMillis();
+        log("stage_record", "via", via, "stage", r.stage, "seq", r.seq,
+            "onMin", Math.round(r.onMs / 6000.0) / 10.0, "wallMin", Math.round((now - r.enteredAt) / 6000.0) / 10.0,
+            "kills", r.kills, "moneyEarned", r.moneyEarned > 0 ? Amounts.format(r.moneyEarned) : null,
+            "moneyPerKill", r.moneyPerKill() != null ? Amounts.format(r.moneyPerKill()) : null,
+            "avgPerMin", r.avgPerMin() != null ? Amounts.format(r.avgPerMin()) : null,
+            "peakPerMin", r.peakPerMin != null ? Amounts.format(r.peakPerMin) : null,
+            "medianTtkMs", r.medianTtkAtExit != null ? Math.round(r.medianTtkAtExit) : null,
+            "swordBuys", r.swordBuys,
+            "zoneFloor", r.zoneFloorAtExit != null ? Amounts.format(r.zoneFloorAtExit) : null);
+        // A stage with kills is worth comparing against; a teleport-through stage is not.
+        if (r.kills > 0 || r.moneyEarned > 0) previousStage = r;
+        currentStage = null;
+    }
+
+    private void openStageRecord() {
+        StageRecord r = new StageRecord();
+        r.seq = zoneChangeSeq;
+        r.enteredAt = System.currentTimeMillis();
+        r.stage = bossLevel;
+        currentStage = r;
+        stagesThisCycle++;
+    }
+
     /** Visits made this rebirth (0 once the sidebar rebirth counter moved past the one they belong to). */
     public int companionVisitsThisRebirth() {
         return Economy.visitsThisRebirth(companionVisits, companionVisitsAtRebirths, rebirths);
@@ -676,6 +752,15 @@ public class StatsTracker {
         }
         if (swordGrowthLearned == null) swordGrowthLearned = e.swordGrowth;
         if (zoneGrowthLearned == null) zoneGrowthLearned = e.zoneGrowth;
+        if (lastCycleOnMin == null) lastCycleOnMin = e.lastCycleOnMin;
+        if (cycleAtRebirths == null && e.cycleAtRebirths != null) {
+            cycleAtRebirths = e.cycleAtRebirths;
+            // The running clock continues only for the rebirth it was counting.
+            cycleOnMs = e.cycleOnMs != null && (rebirths == null || rebirths.equals(e.cycleAtRebirths)) ? e.cycleOnMs : 0;
+            if (rebirths != null && !rebirths.equals(e.cycleAtRebirths)) cycleAtRebirths = rebirths;
+        } else if (cycleAtRebirths == null) {
+            cycleAtRebirths = rebirths;
+        }
         if (swordTarget != null && swordTarget.equals(e.swordTarget) && Boolean.TRUE.equals(e.swordTargetPredicted)) swordTargetPredicted = true;
         if (zoneTarget != null && zoneTarget.equals(e.zoneTarget) && Boolean.TRUE.equals(e.zoneTargetPredicted)) zoneTargetPredicted = true;
         long now = System.currentTimeMillis();
@@ -689,7 +774,8 @@ public class StatsTracker {
             "swordFloor", fmt(swordLastPrice), "zoneFloor", fmt(zoneLastPrice), "rebirthFloor", fmt(rebirthLastPrice),
             "companionLastBoughtStage", companionLastBoughtStage, "companionVisits", companionVisits,
             "companionVisitsAtRebirths", companionVisitsAtRebirths, "companionEggPrices", companionEggPriceByStage.size(),
-            "companionGain", companionGainLearned, "companionVisitsByStage", companionVisitsByStage.size());
+            "companionGain", companionGainLearned, "companionVisitsByStage", companionVisitsByStage.size(),
+            "lastCycleOnMin", lastCycleOnMin, "cycleOnMin", Math.round(cycleOnMs / 6000.0) / 10.0, "cycleAtRebirths", cycleAtRebirths);
     }
 
     private static String fmt(Double v) { return v != null ? Amounts.format(v) : null; }
@@ -723,6 +809,9 @@ public class StatsTracker {
         e.companionGainLearned = companionGainLearned;
         e.companionVisitsByStage = companionVisitsByStage.isEmpty() ? null : new LinkedHashMap<>(companionVisitsByStage);
         e.companionVisitsStageRebirths = companionVisitsStageRebirths;
+        e.lastCycleOnMin = lastCycleOnMin;
+        e.cycleOnMs = cycleOnMs;
+        e.cycleAtRebirths = cycleAtRebirths != null ? cycleAtRebirths : rebirths;
         stateStore.put(stateUser, e);
         log("state_saved", "user", stateUser);
     }
@@ -915,6 +1004,21 @@ public class StatsTracker {
         }
         Double rate = incomePerMinute();
         long nowMs = System.currentTimeMillis();
+        // 0.9.36: the cycle clock and the stage clock count bot-on time only, and never a gap
+        // (a poll is every ~second; a 5 s hole is a freeze or a reconnect, not grinding).
+        if (lastPollAt != 0 && nowMs - lastPollAt < 5_000 && botActive.getAsBoolean()) {
+            long dt = nowMs - lastPollAt;
+            cycleOnMs += dt;
+            if (currentStage != null) currentStage.onMs += dt;
+            if (nowMs - cycleDirtyAt > 60_000) { cycleDirtyAt = nowMs; markStateDirty(); }
+        }
+        lastPollAt = nowMs;
+        if (currentStage == null && zone != null) openStageRecord();
+        if (currentStage != null) {
+            if (currentStage.stage == null && bossLevel != null) currentStage.stage = bossLevel;
+            if (currentStage.stage != null && (topStageThisCycle == null || currentStage.stage > topStageThisCycle)) topStageThisCycle = currentStage.stage;
+            if (rate != null && (currentStage.peakPerMin == null || rate > currentStage.peakPerMin)) currentStage.peakPerMin = rate;
+        }
         flushState(nowMs);
         long incomeEvery = botActive.getAsBoolean() ? 15_000 : Math.max(15_000, cfg.offBotLogIntervalMs);
         if (rate != null && nowMs - lastIncomeLogAt > incomeEvery) {
@@ -1004,7 +1108,10 @@ public class StatsTracker {
         if (key.equals(moneyKey())) {
             long nowMs = System.currentTimeMillis();
             lastSidebarMoneyAt = nowMs;
-            if (prev != null && value > prev + 1e-6) lastMoneyUpAt = nowMs;
+            if (prev != null && value > prev + 1e-6) {
+                lastMoneyUpAt = nowMs;
+                if (currentStage != null) currentStage.moneyEarned += value - prev;
+            }
             // Money collapsing to ~zero while we didn't just buy anything = a rebirth
             // wiped the balance (the sidebar rebirth counter is the primary signal;
             // this covers boards where that row isn't always rendered). A collapse
@@ -1106,17 +1213,48 @@ public class StatsTracker {
         Integer prev = rebirths;
         if (prev != null && prev == n) return;
         rebirths = n;
-        if (prev == null) return; // first read
+        if (prev == null) {
+            // First read: a cycle clock persisted for another rebirth count belongs to a
+            // cycle that ended while the client was off - start over, quietly.
+            if (cycleAtRebirths != null && cycleAtRebirths != n) { cycleOnMs = 0; cycleAtRebirths = n; markStateDirty(); }
+            return;
+        }
         if (n > prev) {
-            rebirthTimes.addLast(System.currentTimeMillis());
+            long nowMs = System.currentTimeMillis();
+            Long lastRb = rebirthTimes.peekLast();
+            rebirthTimes.addLast(nowMs);
             while (rebirthTimes.size() > 500) rebirthTimes.removeFirst();
             log("rebirth", "rebirths", n, "prev", prev, "delta", n - prev);
+            endCycle(n, lastRb != null ? nowMs - lastRb : null);
             rebirthReset("sidebar-counter");
         } else {
             ascensions++;
             log("ascension", "via", "rebirth-reset", "rebirthsBefore", prev, "rebirthsAfter", n, "ascensions", ascensions);
             rebirthReset("ascension");
         }
+    }
+
+    /**
+     * 0.9.36: the sidebar counter moved - the cycle it closes is measured in bot-on minutes
+     * (what a persistent income multiplier pays back against) and the stage records start
+     * over. cycle_end carries the wall time too, when the previous rebirth was seen this
+     * session.
+     */
+    private void endCycle(int rebirthsNow, Long wallMs) {
+        closeStageRecord("rebirth");
+        double onMin = cycleOnMs / 60_000.0;
+        boolean measured = onMin >= 5.0;
+        if (measured) lastCycleOnMin = Math.round(onMin * 10.0) / 10.0;
+        log("cycle_end", "rebirths", rebirthsNow, "onMin", Math.round(onMin * 10.0) / 10.0,
+            "wallMin", wallMs != null ? Math.round(wallMs / 6000.0) / 10.0 : null,
+            "measured", measured, "stages", stagesThisCycle, "topStage", topStageThisCycle,
+            "lastCycleOnMin", lastCycleOnMin);
+        cycleOnMs = 0;
+        cycleAtRebirths = rebirthsNow;
+        stagesThisCycle = 0;
+        topStageThisCycle = null;
+        previousStage = null;
+        markStateDirty();
     }
 
     /**
@@ -1402,10 +1540,12 @@ public class StatsTracker {
             return;
         }
         lastZoneChangeAt = now;
+        closeStageRecord(via);
         zoneChangeSeq++;
         swordBuysThisZone = 0;
         resetTtkWindow(via);
         log("zone_change", "via", via, "zone", zone);
+        openStageRecord();
     }
 
     /** Live boss bars (never null). Safe to call every tick. */
@@ -1632,8 +1772,11 @@ public class StatsTracker {
             onZoneChange("respawn-broadcast");
             known = true;
         }
+        // 0.9.36: never on a player's line - "LiterallyWorst » how do i prestige" and
+        // "» can i ascend?" each counted as ours in the 19:14 log.
+        boolean playerLine = ChatClassifier.isPlayerOrBroadcast(text);
         for (Pattern p : ascensionRes) {
-            if (p.matcher(text).find()) {
+            if (!playerLine && p.matcher(text).find()) {
                 ascensions++;
                 log("ascension", "via", "chat", "message", text, "ascensions", ascensions);
                 known = true;
@@ -1641,7 +1784,7 @@ public class StatsTracker {
             }
         }
         for (Pattern p : prestigeRes) {
-            if (p.matcher(text).find()) {
+            if (!playerLine && p.matcher(text).find()) {
                 prestiges++;
                 log("prestige", "via", "chat", "message", text, "prestiges", prestiges);
                 known = true;
@@ -1968,6 +2111,7 @@ public class StatsTracker {
         killDurations.addLast(Math.round(ms / scale));
         while (killDurations.size() > 200) killDurations.removeFirst();
         zoneKills++;
+        if (currentStage != null) currentStage.kills++;
         if (zoneBaselineTtkMs == null && zoneKills >= 3) zoneBaselineTtkMs = medianTtkMs();
     }
 
