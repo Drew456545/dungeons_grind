@@ -296,7 +296,14 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("stopProtocolEnabled", "Stop protocol", () -> config.stopProtocolEnabled, v -> config.stopProtocolEnabled = v,
             () -> pausedReason != null ? "paused: " + pausedReason : "armed"));
         opts.add(new BotOptionsScreen.Option("captchaAutoSolve", "Captcha auto-solve", () -> config.captchaAutoSolve, v -> config.captchaAutoSolve = v,
-            () -> { String c = captchaSolver.hudLine(); return c != null ? c : "no captcha"; }));
+            // Mid-solve show the solve; otherwise the reader's reachability and which host
+            // it actually is (0.9.34 — the old HUD named vLLM whatever was configured).
+            () -> {
+                String c = captchaSolver.hudLine();
+                if (c != null) return c;
+                String h = captchaSolver.vlmHudLine();
+                return h != null ? h : "reader ok · " + captchaSolver.readerHost();
+            }));
         opts.add(new BotOptionsScreen.Option("learnObservedUpgrades", "Learn manual buys", () -> config.learnObservedUpgrades, v -> config.learnObservedUpgrades = v));
         opts.add(new BotOptionsScreen.Option("swordMenuScoutEnabled", "Sword Skins price scouting", () -> config.swordMenuScoutEnabled, v -> config.swordMenuScoutEnabled = v,
             () -> { String t = stats.swordTierLine(); return t != null ? t + (stats.swordSkin != null ? " · " + stats.swordSkin : "") : "menu not read yet"; }));
@@ -403,7 +410,14 @@ public class YCBotChallengeClient implements ClientModInitializer {
         setEnabled(client, false, true);
         pausedReason = "captcha";
         if (client.player != null) {
-            String hint = "vlm-offline".equals(reason) ? " The model server is offline." : "";
+            String hint = switch (reason) {
+                // Name the host actually configured: before 0.9.34 this said "the model
+                // server", which sent Drew looking for a vLLM the mod had not used since
+                // 0.9.32 (2026-09-04 16:07:13).
+                case "vlm-offline" -> " Every read failed to reach " + captchaSolver.readerHost() + ".";
+                case "budget" -> " No answer in time — type it yourself before the window closes.";
+                default -> "";
+            };
             client.player.sendMessage(Text.literal(
                 "§e[YCBotChallenge] paused — captcha (" + source + ", " + reason + ")." + hint
                     + " Solve it, then press the toggle key."), false);

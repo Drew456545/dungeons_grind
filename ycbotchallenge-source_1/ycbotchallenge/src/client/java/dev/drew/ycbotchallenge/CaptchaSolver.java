@@ -35,14 +35,25 @@ import net.minecraft.item.map.MapState;
 import net.minecraft.text.Text;
 
 /**
- * Auto-solves the map captcha with a local Qwen3-VL served by vLLM.
+ * Auto-solves the map captcha with QwenCloud's qwen3.6-flash (0.9.32; a local
+ * Qwen3-VL behind vLLM stays available via captchaVlmEndpoint).
  *
  * Flow: detect (held/hotbar map, chat line or server GUI) -> settle -> capture
  * (the map's own 128x128 pixels from any hand/hotbar slot or a nearby item
- * frame; else a HUD-less, downscaled screenshot) -> POST to the local
+ * frame; else a HUD-less, downscaled screenshot) -> POST to the
  * OpenAI-compatible endpoint -> parse the answer -> type it in chat like a
  * person -> watch for a success/retry message -> resume the grind (a second,
  * case-flipped guess on rejection; then hand over to the human).
+ *
+ * 0.9.34 reads are HEDGED, not retried: read A goes out the moment the map is
+ * captured and read B captchaHedgeMs later WITHOUT waiting for A to fail, both
+ * voting into the same CaptchaBallot. The stagger hides read B inside the
+ * 2.5-5 s reading pause, so the cross-check is free end-to-end, and it covers
+ * two different failures at once — a hung or 5xx'd call no longer sinks the
+ * captcha, and a single confidently-wrong read is no longer invisible (0.9.26:
+ * the x4 render read "Kra" 12/12 when the answer was "KrA"). The whole attempt
+ * is bounded by captchaBudgetMs; past it the bot hands over rather than typing
+ * an answer that would land after the server's window shuts.
  *
  * All Minecraft state is touched on the client tick thread; only the HTTP
  * round-trips and PNG encoding happen off-thread.
@@ -62,7 +73,28 @@ public class CaptchaSolver {
     private static final Gson GSON = new Gson();
 
     private record MapHit(MapState state, boolean stackFound, String where, int mapId) {}
-    private record Health(boolean online, List<String> models, long latencyMs, String error) {}
+
+    /**
+     * How the reader answered its last probe. The distinction is the 0.9.34 fix: the probe
+     * used to call any non-200 death, so one QwenCloud 503 (2026-09-04 16:07:13) marked the
+     * reader offline for 97 s — while the solve path, which only ever treated a connect
+     * failure as fatal, would have shrugged the same 503 off. DEGRADED means the server
+     * answered and a solve is still worth attempting; only UNREACHABLE is a dead endpoint.
+     */
+    public enum Reach { ONLINE, DEGRADED, UNREACHABLE }
+
+    /**
+     * Pure: classify one probe or read outcome. {@code status} is the HTTP status, or 0
+     * when the request never produced a response; {@code err} is the failure, if any.
+     */
+    public static Reach classify(int status, Throwable err) {
+        if (err != null) return isConnectFailure(err) ? Reach.UNREACHABLE : Reach.DEGRADED;
+        return status == 200 ? Reach.ONLINE : Reach.DEGRADED;
+    }
+
+    private record Health(Reach reach, List<String> models, long latencyMs, String error) {
+        boolean online() { return reach != Reach.UNREACHABLE; }
+    }
 
     private final YCBotChallengeConfig cfg;
     private final Callbacks callbacks;
@@ -127,10 +159,33 @@ public class CaptchaSolver {
     /** The server re-uses the same image across tries: remember rejects and feed them back. */
     private final List<String> wrongAnswers = new ArrayList<>();
 
-    // VLM health
+    // Reader health (informational since 0.9.34 — a solve is never gated on it)
     private volatile boolean vlmOnline = true;
+    private volatile Reach vlmReach = Reach.ONLINE;
     private boolean healthInFlight = false;
     private long lastHealthAt = 0;
+
+    // 0.9.34 hedged reads
+    /** Hand-over deadline for the whole captcha, stamped at detection. */
+    private long budgetDeadline = 0;
+    /** Reads fired for this captcha so far. */
+    private int hedgesLaunched = 0;
+    /** When the next hedge is due (0 = no schedule running). */
+    private long nextHedgeAt = 0;
+    /** Reads that came back with no usable answer — the trigger for the optional third. */
+    private final java.util.concurrent.atomic.AtomicInteger hedgeFailures = new java.util.concurrent.atomic.AtomicInteger();
+    /** Reads whose completion has been fully processed — the tick thread's "reading over" signal. */
+    private final java.util.concurrent.atomic.AtomicInteger hedgeDone = new java.util.concurrent.atomic.AtomicInteger();
+    /** Of those, the ones that could not connect at all: all-connect-failed means a dead endpoint. */
+    private final java.util.concurrent.atomic.AtomicInteger hedgeConnectFailures = new java.util.concurrent.atomic.AtomicInteger();
+    /** Latency of the last read that produced a vote, for the captcha_vote rows. */
+    private final java.util.concurrent.atomic.AtomicLong lastReadMs = new java.util.concurrent.atomic.AtomicLong();
+    /** In-flight reads, cancelled once an answer is accepted so no tokens are wasted. */
+    private final List<java.util.concurrent.CompletableFuture<?>> inFlight = new ArrayList<>();
+    /** All hedges are spent and none produced a vote. */
+    private volatile boolean hedgesExhausted = false;
+    /** Failures already acted on, so one failed read accelerates the schedule exactly once. */
+    private int hedgeFailuresSeen = 0;
 
     public CaptchaSolver(YCBotChallengeConfig cfg, Callbacks callbacks, Path debugDir) {
         this.cfg = cfg;
@@ -176,9 +231,30 @@ public class CaptchaSolver {
         return "§bcaptcha: " + what + "§r";
     }
 
-    /** Red HUD line while the model server is unreachable (null when fine). */
+    /**
+     * HUD line while the reader is not healthy (null when fine). Names the host actually
+     * configured — before 0.9.34 this said "start vLLM" no matter what the endpoint was,
+     * which on 2026-09-04 told Drew to start a server the mod had not used since 0.9.32.
+     */
     public String vlmHudLine() {
-        return vlmOnline ? null : "§ccaptcha VLM: offline — start vLLM§r";
+        return switch (vlmReach) {
+            case ONLINE -> null;
+            case DEGRADED -> "§ecaptcha reader: " + readerHost() + " erroring§r";
+            case UNREACHABLE -> "§ccaptcha reader: " + readerHost() + " unreachable§r";
+        };
+    }
+
+    /** The endpoint's host for a message, or the raw setting when it will not parse. */
+    public String readerHost() {
+        String url = cfg.captchaVlmHealthUrl;
+        if (url == null || url.isBlank()) url = cfg.captchaVlmEndpoint;
+        if (url == null || url.isBlank()) return "(no endpoint set)";
+        try {
+            String h = URI.create(url).getHost();
+            return h != null ? h : url;
+        } catch (Exception e) {
+            return url;
+        }
     }
 
     private void log(String type, Object... kv) {
@@ -200,6 +276,8 @@ public class CaptchaSolver {
             feedback = null;
             pendingAnswer = null;
             pendingOut = null;
+            // A re-prompt is a fresh window from the server, so the budget restarts too.
+            budgetDeadline = System.currentTimeMillis() + cfg.captchaBudgetMs;
             captureMode = "map";
             captureWhere = "reprompt";
             mapPromptUsed = true;
@@ -245,15 +323,23 @@ public class CaptchaSolver {
         ballotActive = false;
         answerSentAt = 0;
         voteError.set(null);
+        hedgesLaunched = 0;
+        nextHedgeAt = 0;
+        hedgeFailures.set(0);
+        hedgeFailuresSeen = 0;
+        hedgeDone.set(0);
+        hedgeConnectFailures.set(0);
+        hedgesExhausted = false;
         if (heldId != solvedMapId) { solvedMapId = -1; mapCandidates.clear(); mapAnswersSent = 0; }
-        if (!vlmOnline) {
-            // No 3x20s of retries against a dead port: hand over right away.
-            phase = Phase.SETTLING;
-            fail(client, "vlm-offline", "model server unreachable at " + cfg.captchaVlmHealthUrl);
-            return;
-        }
+        // 0.9.34: no pre-flight gate on vlmOnline. The health probe calls /v1/models while a
+        // solve calls /chat/completions, so a red probe is not evidence this captcha will
+        // fail — and on 2026-09-04 one transient 503 there would have handed the bot over
+        // for 97 s without so much as capturing the map. Attempt it; the hedged reads carry
+        // the resilience, and a genuinely dead endpoint still fails fast (connect refused
+        // comes back in milliseconds) well inside captchaBudgetMs.
         phase = Phase.SETTLING;
         settleStart = System.currentTimeMillis();
+        budgetDeadline = settleStart + cfg.captchaBudgetMs;
         phaseDeadline = settleStart + cfg.captchaSettleMs;
         say(client, "§e[YCBotChallenge] captcha detected — reading it with " + cfg.captchaVlmModel + "...");
     }
@@ -266,9 +352,14 @@ public class CaptchaSolver {
         phase = Phase.IDLE;
     }
 
-    /** Invalidate the background reader: a worker whose generation is stale casts no more votes. */
+    /**
+     * Invalidate the reads: a completion whose generation is stale casts no vote, and
+     * anything still on the wire is cancelled so the captcha costs no further tokens.
+     */
     private void stopVoting() {
         voteGeneration++;
+        nextHedgeAt = 0;
+        cancelInFlight();
     }
 
     /** Wire to ClientReceiveMessageEvents.GAME (any thread). */
@@ -307,17 +398,19 @@ public class CaptchaSolver {
             if (key != null) b.header("Authorization", "Bearer " + key);
             req = b.build();
         } catch (Exception e) {
-            healthResult.set(new Health(false, List.of(), 0, "bad url: " + e.getMessage()));
+            healthResult.set(new Health(Reach.UNREACHABLE, List.of(), 0, "bad url: " + e.getMessage()));
             return;
         }
         http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((resp, err) -> {
             long dt = System.currentTimeMillis() - t0;
             if (err != null) {
-                healthResult.set(new Health(false, List.of(), dt, rootMessage(err)));
+                healthResult.set(new Health(classify(0, err), List.of(), dt, rootMessage(err)));
                 return;
             }
             if (resp.statusCode() != 200) {
-                healthResult.set(new Health(false, List.of(), dt, "HTTP " + resp.statusCode()));
+                // Answered, so reachable — a 5xx here is a hiccup, not a dead endpoint.
+                healthResult.set(new Health(classify(resp.statusCode(), null), List.of(), dt,
+                    "HTTP " + resp.statusCode()));
                 return;
             }
             List<String> models = new ArrayList<>();
@@ -330,7 +423,7 @@ public class CaptchaSolver {
                     }
                 }
             } catch (Exception ignored) { }
-            healthResult.set(new Health(true, models, dt, null));
+            healthResult.set(new Health(Reach.ONLINE, models, dt, null));
         });
     }
 
@@ -338,11 +431,14 @@ public class CaptchaSolver {
         Health h = healthResult.getAndSet(null);
         if (h == null) return;
         healthInFlight = false;
-        boolean was = vlmOnline;
-        vlmOnline = h.online;
-        log("vlm_health", "online", h.online, "models", h.models, "latencyMs", h.latencyMs,
-            "error", h.error, "url", cfg.captchaVlmHealthUrl, "changed", was != h.online);
-        if (h.online && cfg.captchaVlmModelAuto && h.models.size() == 1
+        Reach was = vlmReach;
+        vlmReach = h.reach();
+        // Only a genuine connect failure counts as offline (0.9.34).
+        vlmOnline = h.online();
+        log("vlm_health", "online", h.online(), "reach", h.reach().name().toLowerCase(),
+            "models", h.models, "latencyMs", h.latencyMs,
+            "error", h.error, "url", cfg.captchaVlmHealthUrl, "changed", was != h.reach());
+        if (h.online() && cfg.captchaVlmModelAuto && h.models.size() == 1
             && !h.models.get(0).equals(cfg.captchaVlmModel)) {
             log("vlm_model_auto", "from", cfg.captchaVlmModel, "to", h.models.get(0));
             cfg.captchaVlmModel = h.models.get(0);
@@ -373,10 +469,24 @@ public class CaptchaSolver {
         return c.getClass().getSimpleName() + (c.getMessage() != null ? ": " + c.getMessage() : "");
     }
 
+    /**
+     * Whether the request never got a usable connection — as opposed to being answered
+     * badly or slowly, which is merely degraded (0.9.34).
+     *
+     * ClosedChannelException is in the list on the evidence of the pre-0.9.32 logs: a
+     * stopped local vLLM on 127.0.0.1:8000 failed exactly that way, in 2-5 ms. The old
+     * code caught it only because the health probe treated every exception as death; now
+     * that a 5xx is deliberately NOT death, a dead port has to be named explicitly or it
+     * would be misfiled as degraded and cost a whole budget to discover.
+     */
     private static boolean isConnectFailure(Throwable t) {
         Throwable c = t;
         while (c != null) {
-            if (c instanceof java.net.ConnectException || c instanceof java.net.http.HttpConnectTimeoutException) return true;
+            if (c instanceof java.net.ConnectException
+                || c instanceof java.net.http.HttpConnectTimeoutException
+                || c instanceof java.nio.channels.ClosedChannelException
+                || c instanceof java.net.UnknownHostException
+                || c instanceof java.net.NoRouteToHostException) return true;
             c = c.getCause() == c ? null : c.getCause();
         }
         return false;
@@ -389,6 +499,17 @@ public class CaptchaSolver {
         if (client.player == null || client.world == null) { cancel(); return; }
         long now = System.currentTimeMillis();
         pollHealth();
+        // One budget for the whole captcha (0.9.34). Past it an answer would land after the
+        // server's ~30s window shuts, so hand over instead and leave the remainder to the
+        // human. Typing already under way and the post-answer verify are not interrupted.
+        if (budgetDeadline > 0 && now >= budgetDeadline
+            && phase != Phase.IDLE && phase != Phase.TYPING_RUN && phase != Phase.AWAITING_RESULT) {
+            cancelInFlight();
+            log("captcha_budget_spent", "budgetMs", cfg.captchaBudgetMs, "phase", phase.name(),
+                "hedges", hedgesLaunched, "reads", ballot.reads(), "failures", hedgeFailures.get());
+            fail(client, "budget", "no answer within " + cfg.captchaBudgetMs + "ms — handing over");
+            return;
+        }
         switch (phase) {
             case SETTLING -> {
                 if (now >= phaseDeadline) startCapture(client, now);
@@ -417,14 +538,28 @@ public class CaptchaSolver {
             case SOLVING -> {
                 if (vlmConnectFailed.getAndSet(false)) {
                     vlmOnline = false;
+                    vlmReach = Reach.UNREACHABLE;
                     String err = vlmError.getAndSet(null);
-                    log("vlm_health", "online", false, "error", err, "via", "solve", "changed", true);
+                    log("vlm_health", "online", false, "reach", "unreachable", "error", err,
+                        "via", "solve", "changed", true);
                     fail(client, "vlm-offline", err != null ? err : "connection refused");
                     return;
                 }
                 if (ballotActive) {
+                    tickHedges(now);
                     String ve = voteError.getAndSet(null);
-                    if (ve != null) log("captcha_vote_error", "error", ve, "reads", ballot.reads());
+                    if (ve != null) log("captcha_vote_error", "error", ve, "reads", ballot.reads(),
+                        "hedges", hedgesLaunched, "failures", hedgeFailures.get());
+                    if (hedgesExhausted) {
+                        // Every read failed to connect: the endpoint really is down.
+                        vlmOnline = false;
+                        vlmReach = Reach.UNREACHABLE;
+                        String err = vlmError.getAndSet(null);
+                        log("vlm_health", "online", false, "reach", "unreachable", "error", err,
+                            "via", "solve", "hedges", hedgesLaunched, "changed", true);
+                        fail(client, "vlm-offline", err != null ? err : "connection refused");
+                        return;
+                    }
                     if (ballot.reads() > 0) {
                         refreshCandidates();
                         log("captcha_candidates", "candidates", candidates, "reads", ballot.reads(),
@@ -467,10 +602,16 @@ public class CaptchaSolver {
                 }
             }
             case TYPING -> {
+                // Keep the schedule running through the reading pause: this is where read B
+                // lands, which is exactly why the cross-check costs no end-to-end time.
+                if (ballotActive) tickHedges(now);
                 if (now >= phaseDeadline && pendingAnswer != null) {
                     // The reading pause has passed; with the ballot running, hold a little
                     // longer until a few votes are in (a person re-reads the map anyway).
-                    if (ballotActive && !votingDone && ballot.reads() < Math.max(1, cfg.captchaVoteMinReads)
+                    // ...but never hold so long that typing cannot finish inside the budget.
+                    boolean roomToWait = now + TYPING_ESTIMATE_MS < budgetDeadline;
+                    if (roomToWait && ballotActive && !votingDone
+                        && ballot.reads() < Math.max(1, cfg.captchaVoteMinReads)
                         && now < phaseDeadline + Math.max(0, cfg.captchaVoteMaxWaitMs)) {
                         return;
                     }
@@ -480,8 +621,13 @@ public class CaptchaSolver {
                         if (!candidates.isEmpty()) answer = candidates.get(0);
                         log("captcha_vote", "at", "send", "reads", ballot.reads(), "tallies", ballot.tallies(),
                             "leader", answer, "render", ballot.renderOf(answer), "wrong", wrongAnswers,
-                            "votingDone", votingDone);
+                            "votingDone", votingDone, "hedges", hedgesLaunched,
+                            "failures", hedgeFailures.get(), "lastReadMs", lastReadMs.get(),
+                            "elapsedMs", elapsedMs(now), "heldForVotes", !roomToWait ? "budget" : null);
                     }
+                    // Reads still on the wire are deliberately NOT cancelled here: they keep
+                    // voting through the verify window so a rejection has the best-supported
+                    // alternative ready without a fresh call (0.9.26).
                     pendingAnswer = null;
                     String out = cfg.captchaAnswerTemplate.replace("{answer}", answer);
                     pendingOut = out;
@@ -503,6 +649,9 @@ public class CaptchaSolver {
                 }
             }
             case AWAITING_RESULT -> {
+                // Voting runs on through the verify window (0.9.26) so a rejection already
+                // has its alternative; shouldHedge's budget guard stops it in time.
+                if (ballotActive) tickHedges(now);
                 // The server says nothing either way (19:43 log); on a right answer the map
                 // leaves the hand (Drew), so a map still held this long after the answer is
                 // the rejection (0.9.26).
@@ -782,61 +931,161 @@ public class CaptchaSolver {
 
     private static final Pattern RENDER_SPEC = Pattern.compile("x(\\d{1,2})(bil|near)");
 
+    /** Rough cost of opening chat, typing a 3-4 character answer and sending it. */
+    static final long TYPING_ESTIMATE_MS = 2500;
+
     /**
-     * One background reader for the whole captcha: the schedule at temperature 0, then
-     * again at captchaVoteTemperature, one request at a time, each parsed reading a vote,
-     * until the ballot is stopped (solved, failed, cancelled) or captchaVoteMaxReads.
-     * Errors are logged on the tick thread; a connection failure before any vote is the
-     * usual vlm-offline hand-over.
+     * Pure: should another read go out right now? (0.9.34 hedging.)
+     *
+     * Read A always goes. Read B always goes too — it is the cross-check, and firing it
+     * without waiting for A is the whole point: it covers a hung or 5xx'd A at no
+     * end-to-end cost, because captchaHedgeMs is tuned to land it inside the reading
+     * pause the bot already takes. Beyond B a read only earns its place if something has
+     * actually gone wrong (a failure) or the ballot is split and a tiebreak would help.
+     *
+     * Every read past the first must also be able to FINISH and still leave room to type,
+     * which is what {@code tailMs} (minimum answer delay + typing) reserves — a read
+     * started too late can only push the answer past the server's window.
+     */
+    public static boolean shouldHedge(long elapsedMs, long budgetMs, int hedgesLaunched, int maxHedges,
+                                      int distinctReadings, int failures,
+                                      long perReadTimeoutMs, long tailMs) {
+        if (hedgesLaunched >= Math.max(1, maxHedges)) return false;
+        if (hedgesLaunched == 0) return true;
+        if (elapsedMs + perReadTimeoutMs + tailMs > budgetMs) return false;
+        if (hedgesLaunched == 1) return true;
+        return failures > 0 || distinctReadings > 1;
+    }
+
+    /**
+     * Start the hedged read schedule: fire read A now, the rest on the tick thread as
+     * {@link #shouldHedge} allows. Every parsed reading is a vote in the same 0.9.26
+     * ballot, so the first good answer wins and a disagreement becomes the second guess.
      */
     private void startVoting() {
         phase = Phase.SOLVING;
-        phaseDeadline = System.currentTimeMillis() + cfg.captchaTimeoutMs + 2000;
         mapPromptUsed = true;
         ballotActive = true;
         votingDone = false;
-        final int gen = ++voteGeneration;
-        final String promptText = cfg.captchaMapPrompt;
-        final List<NamedPng> snapshot = new ArrayList<>(renders);
-        final int maxReads = Math.max(1, cfg.captchaVoteMaxReads);
-        final double heat = cfg.captchaVoteTemperature;
-        Thread t = new Thread(() -> {
-            int reads = 0;
-            double[] temps = heat > 0 ? new double[]{0.0, heat} : new double[]{0.0};
-            outer:
-            for (double temp : temps) {
-                for (NamedPng r : snapshot) {
-                    if (gen != voteGeneration || reads >= maxReads) break outer;
-                    try {
-                        HttpResponse<String> resp = http.send(buildRequest(r.png(), promptText, temp, 64),
-                            HttpResponse.BodyHandlers.ofString());
-                        if (resp.statusCode() != 200) {
-                            voteError.set("HTTP " + resp.statusCode() + " on " + r.name());
-                            continue;
-                        }
-                        String content = contentOf(resp.body());
-                        String reading = ChatClassifier.parseAnswerArray(content, cfg.captchaPreserveCase);
-                        if (reading == null) {
-                            voteError.set("no answer on " + r.name() + ": " + truncate(content, 120));
-                            continue;
-                        }
-                        if (gen != voteGeneration) break outer;
-                        ballot.cast(reading, r.name(), temp);
-                        reads++;
-                    } catch (Exception e) {
-                        if (isConnectFailure(e) && ballot.reads() == 0) {
-                            vlmError.set("request failed: " + rootMessage(e));
-                            vlmConnectFailed.set(true);
-                            break outer;
-                        }
-                        voteError.set(r.name() + ": " + rootMessage(e));
-                    }
+        hedgesLaunched = 0;
+        nextHedgeAt = 0;
+        hedgeFailures.set(0);
+        hedgeFailuresSeen = 0;
+        hedgeDone.set(0);
+        hedgeConnectFailures.set(0);
+        hedgesExhausted = false;
+        inFlight.clear();
+        ++voteGeneration;
+        long now = System.currentTimeMillis();
+        phaseDeadline = now + cfg.captchaTimeoutMs + 2000;
+        fireHedge(now);
+    }
+
+    /** One hedged read, async. Cycles the render list; the first read is greedy. */
+    private void fireHedge(long now) {
+        if (renders.isEmpty()) return;
+        final int gen = voteGeneration;
+        final int idx = hedgesLaunched;
+        final NamedPng r = renders.get(idx % renders.size());
+        // Read A greedy; later reads take captchaVoteTemperature, so raising it turns the
+        // hedges into genuinely independent samples rather than repeat confirmations.
+        final double temp = idx == 0 ? 0.0 : cfg.captchaVoteTemperature;
+        final long t0 = now;
+        hedgesLaunched++;
+        nextHedgeAt = now + Math.max(500, cfg.captchaHedgeMs);
+        phaseDeadline = Math.max(phaseDeadline, now + cfg.captchaTimeoutMs + 2000);
+        log("captcha_hedge", "n", idx + 1, "render", r.name(), "temp", temp,
+            "atMs", elapsedMs(now), "budgetLeftMs", budgetDeadline - now);
+        // Keep the SEND future, not the whenComplete-derived one: cancelling a derived
+        // stage does not propagate upstream, so cancelling that would leave the request
+        // running and still cost the tokens it was cancelled to save.
+        java.util.concurrent.CompletableFuture<HttpResponse<String>> f =
+            http.sendAsync(buildRequest(r.png(), cfg.captchaMapPrompt, temp, 64),
+                    HttpResponse.BodyHandlers.ofString());
+        f.whenComplete((resp, err) -> {
+            try {
+                if (gen != voteGeneration) return; // cancelled captcha: discard late arrivals
+                long dt = System.currentTimeMillis() - t0;
+                if (err != null) {
+                    hedgeFailures.incrementAndGet();
+                    if (isConnectFailure(err)) hedgeConnectFailures.incrementAndGet();
+                    vlmError.set("request failed: " + rootMessage(err));
+                    voteError.set(r.name() + " (" + dt + "ms): " + rootMessage(err));
+                    return;
                 }
+                if (resp.statusCode() != 200) {
+                    hedgeFailures.incrementAndGet();
+                    voteError.set("HTTP " + resp.statusCode() + " on " + r.name() + " (" + dt + "ms)");
+                    return;
+                }
+                String content = contentOf(resp.body());
+                String reading = ChatClassifier.parseAnswerArray(content, cfg.captchaPreserveCase);
+                if (reading == null) {
+                    hedgeFailures.incrementAndGet();
+                    voteError.set("no answer on " + r.name() + ": " + truncate(content, 120));
+                    return;
+                }
+                ballot.cast(reading, r.name(), temp);
+                lastReadMs.set(dt);
+            } finally {
+                // Counted only AFTER the vote is cast, and only for the live captcha: the
+                // tick thread reads this to decide the reading is over, and a future is
+                // isDone() before its completion stage has run, so counting on isDone()
+                // would let votingDone fire with an answer still unrecorded.
+                if (gen == voteGeneration) hedgeDone.incrementAndGet();
             }
-            if (gen == voteGeneration) votingDone = true;
-        }, "ycbot-captcha-vote");
-        t.setDaemon(true);
-        t.start();
+        });
+        inFlight.add(f);
+    }
+
+    /**
+     * Milliseconds spent on this captcha. Derived from the budget deadline rather than
+     * settleStart, because a server re-prompt restarts the budget without re-settling.
+     */
+    private long elapsedMs(long now) {
+        return budgetDeadline > 0 ? cfg.captchaBudgetMs - (budgetDeadline - now) : now - settleStart;
+    }
+
+    /** Fire due hedges and work out whether the reading is finished. Tick thread only. */
+    private void tickHedges(long now) {
+        long elapsed = elapsedMs(now);
+        int failures = hedgeFailures.get();
+        if (failures > hedgeFailuresSeen) {
+            // A read came back failed. The stagger exists to hide tail latency, not to pace
+            // error handling — waiting out the rest of it would just burn budget on a
+            // failure we already know about. Pull the next hedge forward to now.
+            log("captcha_hedge_accelerated", "failures", failures, "hedges", hedgesLaunched,
+                "waitedMs", Math.max(0, nextHedgeAt - now), "atMs", elapsed);
+            hedgeFailuresSeen = failures;
+            nextHedgeAt = now;
+        }
+        if (now >= nextHedgeAt
+            && shouldHedge(elapsed, cfg.captchaBudgetMs, hedgesLaunched, cfg.captchaHedgeMax,
+                           ballot.distinct(), hedgeFailures.get(),
+                           cfg.captchaTimeoutMs, minAnswerDelayMs() + TYPING_ESTIMATE_MS)) {
+            fireHedge(now);
+        }
+        inFlight.removeIf(java.util.concurrent.CompletableFuture::isDone);
+        boolean moreComing = shouldHedge(elapsed, cfg.captchaBudgetMs, hedgesLaunched, cfg.captchaHedgeMax,
+                                         ballot.distinct(), hedgeFailures.get(),
+                                         cfg.captchaTimeoutMs, minAnswerDelayMs() + TYPING_ESTIMATE_MS);
+        votingDone = !moreComing && hedgeDone.get() >= hedgesLaunched;
+        // Every read spent, none produced a vote, and all of them failed to connect: this
+        // is the genuinely dead endpoint the old pre-flight gate was guarding against.
+        if (votingDone && ballot.reads() == 0 && hedgesLaunched > 0
+            && hedgeConnectFailures.get() >= hedgesLaunched) {
+            hedgesExhausted = true;
+        }
+    }
+
+    private long minAnswerDelayMs() {
+        return Math.max(0, cfg.captchaAnswerDelayMinMs);
+    }
+
+    /** Drop any read still in flight — an answer is chosen, so its result would be waste. */
+    private void cancelInFlight() {
+        for (java.util.concurrent.CompletableFuture<?> f : inFlight) f.cancel(true);
+        inFlight.clear();
     }
 
     /** Candidates = the ballot minus rejected readings; an all-agree ballot still gets the look-alike second guess. */

@@ -221,10 +221,10 @@ public class YCBotChallengeConfig {
     public boolean pauseOnContainerScreen = true;
 
     /**
-     * Captcha auto-solve via a local Qwen3-VL served by vLLM (the sanctioned
-     * hackathon hurdle). When enabled, a detected captcha pauses grinding,
-     * captures the map (held map pixels > nearest item-frame map > full
-     * screenshot), asks the local model, sends the answer to chat, and resumes.
+     * Captcha auto-solve via QwenCloud's qwen3.6-flash since 0.9.32 (a local Qwen3-VL
+     * behind vLLM stays available — see captchaVlmEndpoint). When enabled, a detected
+     * captcha pauses grinding, captures the map (held map pixels > nearest item-frame
+     * map > full screenshot), asks the reader, sends the answer to chat, and resumes.
      * On repeated failure it falls back to the old pause-for-human behavior.
      */
     public boolean captchaAutoSolve = true;
@@ -282,8 +282,31 @@ public class YCBotChallengeConfig {
     public String captchaAnswerTemplate = "{answer}";
     /** Wait for the map/screen to actually render before capturing. (Sonar's total budget is ~30s.) */
     public int captchaSettleMs = 1000;
-    /** HTTP timeout for the local model call. */
-    public int captchaTimeoutMs = 20000;
+    /**
+     * HTTP timeout for one model read. 0.9.34: 8s, not the old 20s — a single read is
+     * benched at 3-5s, and at 20s one slow call ate two thirds of the server's ~30s
+     * window with nothing left to recover. The hedges below are the resilience now.
+     */
+    public int captchaTimeoutMs = 8000;
+    /**
+     * Hard hand-over deadline for the whole solve, measured from detection (0.9.34).
+     * At this point the bot stops and pauses for the human (captcha_pause reason=budget)
+     * rather than typing a guess that will land after the server's ~30s window closes —
+     * the remainder is the human's room to type it themselves.
+     */
+    public int captchaBudgetMs = 25_000;
+    /**
+     * Hedged reads (0.9.34): read A fires as soon as the map is captured, read B this
+     * long after it WITHOUT waiting for A to fail, both voting into the same ballot.
+     * 3s lands read B inside the 2.5-5s captchaAnswerDelay reading pause, so the
+     * cross-check costs no end-to-end time. Fixes both tail latency (a hung or 503'd
+     * call no longer sinks the captcha) and the 0.9.26 blind spot: the x4 render read
+     * "Kra" 12/12 when the answer was "KrA" — one read that is confidently wrong is
+     * undetectable, two that disagree hand the alternative to the ballot for free.
+     */
+    public int captchaHedgeMs = 3000;
+    /** Most reads fired for one captcha. A and B always go; C only if one failed or the ballot split. */
+    public int captchaHedgeMax = 3;
     /**
      * Max solve cycles for NON-answer failures only (capture failed, model
      * timeout — nothing was sent to chat). Chat answers are capped separately
@@ -351,7 +374,8 @@ public class YCBotChallengeConfig {
     public List<String> captchaVoteRenders = List.of("x1");
     public double captchaVoteTemperature = 0;
     public int captchaVoteMaxReads = 12;
-    public int captchaVoteMinReads = 3;
+    /** Votes to hold for before typing. 0.9.34: 2 — the hedge schedule fires two reads, not three. */
+    public int captchaVoteMinReads = 2;
     public int captchaVoteMaxWaitMs = 3000;
     /**
      * The server says nothing after an answer, right or wrong (latest.log 13:43); on a right
@@ -401,7 +425,13 @@ public class YCBotChallengeConfig {
     public List<String> captchaChatHintPatterns = List.of("type the", "verify", "prove you", "bot check", "captcha");
     /** Unclassified server lines are raw-logged (chat_raw) so new wording is captured; at most this many per minute, 0 = off. */
     public int chatRawPerMinute = 30;
-    /** VLM health: GET this on enable and every interval. A captcha while offline pauses at once instead of 3x20s retries. */
+    /**
+     * Reader health: GET this on enable and every interval. Informational since 0.9.34 —
+     * a captcha is never gated on it, because this route (/v1/models) is not the route a
+     * solve uses (/chat/completions), and on 2026-09-04 16:07:13 one transient HTTP 503
+     * here marked the reader dead for 97s. Only a genuine connect failure now counts as
+     * unreachable; any answered request, 5xx included, is merely degraded.
+     */
     public String captchaVlmHealthUrl = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models";
     public int captchaVlmHealthIntervalMs = 300_000;
     public int captchaVlmHealthTimeoutMs = 3000;
@@ -1212,7 +1242,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 37;
+    public static final int CURRENT_CONFIG_VERSION = 38;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1522,6 +1552,24 @@ public class YCBotChallengeConfig {
             // sidebar delta (upgrade_paid).
             changed = true;
         }
+        if (configVersion < 38) {
+            // v38 (0.9.34): hedged reads. Evidence — 2026-09-04 16:07:13, one transient
+            // HTTP 503 on the QwenCloud /v1/models probe flipped the reader "offline" for
+            // 97 s; in that window begin() bailed before even capturing the map and paused
+            // the bot for a human, on evidence from a route a solve never calls. Now two
+            // reads are fired 3 s apart into the 0.9.26 ballot (the second lands inside the
+            // 2.5-5 s reading pause, so it costs nothing end to end), a solve is never gated
+            // on the health probe, and the whole attempt is bounded by captchaBudgetMs so
+            // the hand-over leaves the human ~5 s of the server's ~30 s window.
+            captchaBudgetMs = fresh.captchaBudgetMs;
+            captchaHedgeMs = fresh.captchaHedgeMs;
+            captchaHedgeMax = fresh.captchaHedgeMax;
+            // 20s per read left no room to recover; a read benches at 3-5s.
+            if (captchaTimeoutMs == 20000) captchaTimeoutMs = fresh.captchaTimeoutMs;
+            // Two hedges can never satisfy a three-vote minimum.
+            if (captchaVoteMinReads == 3) captchaVoteMinReads = fresh.captchaVoteMinReads;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1571,6 +1619,12 @@ public class YCBotChallengeConfig {
         if (captchaMapDataWaitMs < 0) captchaMapDataWaitMs = fresh.captchaMapDataWaitMs;
         if (captchaSettleMs < 0) captchaSettleMs = fresh.captchaSettleMs;
         if (captchaTimeoutMs < 1000) captchaTimeoutMs = fresh.captchaTimeoutMs;
+        if (captchaBudgetMs < 10_000) captchaBudgetMs = 10_000;
+        if (captchaBudgetMs > 60_000) captchaBudgetMs = 60_000;
+        if (captchaHedgeMs < 500) captchaHedgeMs = 500;
+        if (captchaHedgeMs > 15_000) captchaHedgeMs = 15_000;
+        if (captchaHedgeMax < 1) captchaHedgeMax = 1;
+        if (captchaHedgeMax > 5) captchaHedgeMax = 5;
         if (captchaMaxAttempts < 1) captchaMaxAttempts = fresh.captchaMaxAttempts;
         if (captchaMaxAnswers < 1) captchaMaxAnswers = fresh.captchaMaxAnswers;
         if (captchaAnswerDelayMaxMs < captchaAnswerDelayMinMs) captchaAnswerDelayMaxMs = captchaAnswerDelayMinMs;
