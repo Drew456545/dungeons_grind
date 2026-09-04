@@ -1343,7 +1343,7 @@ public final class EconomyChecks {
             n += eq("egg persisted", r.get("LVL12") != null, true);
             n += eq("egg x", r.get("lvl12") != null ? Double.valueOf(r.get("lvl12").x) : null, 12.5, 1e-9);
             n += eq("egg label", r.get("lvl12") != null ? r.get("lvl12").label : null, "minecraft:dragon_egg");
-            n += eq("other stage missing", r.get("lvl11") == null, true);
+            n += eq("other location missing", r.get("lvl3") == null, true);
             EggStore.Egg e2 = new EggStore.Egg();
             e2.x = 1; e2.y = 2; e2.z = 3;
             r.put("lvl12", e2);
