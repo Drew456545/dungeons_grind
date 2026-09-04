@@ -427,6 +427,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             transcend.onEnable(System.currentTimeMillis(), combat.kills);
         } else {
             if (logger != null) logger.log("bot_off");
+            stats.onDisable();
             if (client != null) {
                 combat.reset(client);
                 upgrades.reset(client);

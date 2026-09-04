@@ -471,4 +471,235 @@ public final class Economy {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);
     }
+
+    // ---- 0.9.33: tri-state zone gate and the zone-first decision ---------------------------
+
+    /** Zone gate state (0.9.33): OPEN (stage measured killable), HARD (measured too slow), UNKNOWN (not measured yet). */
+    public enum Gate { OPEN, HARD, UNKNOWN }
+
+    public record GateResult(Gate gate, String via) {
+        public String name() { return gate.name().toLowerCase(java.util.Locale.ROOT); }
+        public boolean hard() { return gate == Gate.HARD; }
+    }
+
+    /** 1 + the rarity's HP scale (RARE 1.15, EPIC 1.30, LEGENDARY 1.40 by default); 1 for an untagged or unknown mob. */
+    public static double rarityScale(String rarity, java.util.Map<String, Double> scales) {
+        if (rarity == null || scales == null) return 1.0;
+        Double s = scales.get(rarity.toUpperCase(java.util.Locale.ROOT));
+        return s != null && s > -1.0 ? 1.0 + s : 1.0;
+    }
+
+    /**
+     * Tri-state zone gate (0.9.33). The 0.9.23 gate read "unknown TTK" as closed, and every
+     * /zone max teleport empties the kill window, so 11 of 12 zone buys in the 2026-09-04
+     * logs were followed by a blind sword buy (15.98Q on lvl7 with a 4.4T zone floor and
+     * 17.33Q in hand; 2.48T four seconds before the median opened the gate). Now:
+     * <ol>
+     * <li>patience 0: OPEN (gate disabled);</li>
+     * <li>the mob being cooked has already taken longer than the patience (rarity-normalised
+     *     elapsed time, real evidence, never the DPS prediction): HARD via "cook";</li>
+     * <li>three or more stage kills: the median decides, via "median";</li>
+     * <li>one or two stage kills and any of them above the patience: HARD via "kill"
+     *     (the 17:57 chicken: 11.5 s, then 0.3-0.8 s; two kills of delay, not two minutes);</li>
+     * <li>else, with a legacy prediction supplied ({@code gateUsesPrediction}), that decides;</li>
+     * <li>else UNKNOWN: the zone stays allowed, the sword does not.</li>
+     * </ol>
+     */
+    public static GateResult zoneGate(Double medianMs, int stageKills, Double stageMaxTtkMs,
+                                      double cookElapsedMs, int patienceMs, Double predictedMs) {
+        if (patienceMs <= 0) return new GateResult(Gate.OPEN, "none");
+        if (cookElapsedMs > patienceMs) return new GateResult(Gate.HARD, "cook");
+        if (stageKills >= 3 && medianMs != null && medianMs > 0) {
+            return new GateResult(medianMs > patienceMs ? Gate.HARD : Gate.OPEN, "median");
+        }
+        if (stageKills >= 1 && stageMaxTtkMs != null && stageMaxTtkMs > patienceMs) {
+            return new GateResult(Gate.HARD, "kill");
+        }
+        if (predictedMs != null && predictedMs > 0) {
+            return new GateResult(predictedMs > patienceMs ? Gate.HARD : Gate.OPEN, "predicted");
+        }
+        return new GateResult(Gate.UNKNOWN, "none");
+    }
+
+    /**
+     * Remaining money to the next stage: the known target, else the last zone price times
+     * the ladder growth (a lower bound is better than no opinion: with {@code zoneTarget}
+     * null the 0.9.32 rule skipped the saving guard and bought swords blind), else null.
+     */
+    public static Double zoneGapEstimate(Double zoneTarget, Double zoneFloor, double zoneGrowth, Double bal) {
+        if (bal == null) return null;
+        Double ref = zoneTarget != null ? zoneTarget
+            : zoneFloor != null && zoneFloor > 0 ? zoneFloor * Math.max(1.0, zoneGrowth) : null;
+        return ref == null ? null : Math.max(0.0, ref - bal);
+    }
+
+    /** "target" / "floor" / null: where {@link #zoneGapEstimate} got its number. */
+    public static String zoneGapVia(Double zoneTarget, Double zoneFloor) {
+        if (zoneTarget != null) return "target";
+        return zoneFloor != null && zoneFloor > 0 ? "floor" : null;
+    }
+
+    /** {@link #swordWhileSaving} against an already-estimated gap; an unknown gap (nothing known about the zone) leaves it to exploration. */
+    public static boolean swordWhileSavingGap(Double swordTarget, Double zoneGap, Double ttkMs,
+                                              double savingMaxPct, int instantTtkMs) {
+        if (ttkMs != null && instantTtkMs > 0 && ttkMs <= instantTtkMs) return false;
+        if (swordTarget == null || zoneGap == null) return true;
+        return swordTarget <= zoneGap * Math.max(0.0, savingMaxPct) / 100.0 + 1e-6;
+    }
+
+    /**
+     * A toggle within {@code keepMs} on the same stage keeps the kill window and the patience
+     * roll (2026-09-04 14:55: six toggles in 37 s emptied the window each time and the gate
+     * never opened). A zone change or teleport in between always resets.
+     */
+    public static boolean keepTtkWindow(long offMs, int keepMs, boolean sameZone, boolean zoneChanged) {
+        if (keepMs <= 0 || offMs < 0) return false;
+        return offMs <= keepMs && sameZone && !zoneChanged;
+    }
+
+    /**
+     * Target-score adjustment for a mob's rarity tag: while the stage has fewer than
+     * {@code probeKills} kills the first target should be a common one so the stage is
+     * measured quickly (rare tags cost {@code penaltyBlocks}); afterwards the rarer mob
+     * is worth walking {@code bonusBlocks} further for, as before.
+     */
+    public static double rarityScoreAdjust(String rarity, double bonusBlocks, int stageKills, int probeKills, double penaltyBlocks) {
+        if (rarity == null) return 0;
+        if (stageKills < Math.max(0, probeKills)) return Math.max(0, penaltyBlocks);
+        return -bonusBlocks;
+    }
+
+    /** One typed probe of an unknown price: the free seed, then only past the rolled retry floor, one unresolved at a time. */
+    public static boolean probeAllowed(boolean seeded, boolean exploratorySent, Double lastPrice, Double bal, double retryGrowth) {
+        if (!seeded) return true;
+        if (exploratorySent) return false;
+        return retryUnknownAllowed(lastPrice, bal, retryGrowth);
+    }
+
+    /** Plain facts for {@link #decide}; defaults are the config defaults so a test sets only what it means. */
+    public static final class Inputs {
+        public Double swordTarget, zoneTarget, rebirthTarget, swordFloor, zoneFloor, bal, incomePerMin;
+        public double zoneGrowth = 55.0;
+        public Double medianTtkMs, stageMaxTtkMs, predictedTtkMs;
+        public int stageKills;
+        public double cookElapsedMs;
+        public int patienceMs = 10_000;
+        public boolean swordMaxed, zoneMaxed;
+        public boolean swordSeeded, swordExploratorySent, zoneSeeded, zoneExploratorySent;
+        public double swordRetryGrowth = 0.5, zoneRetryGrowth = 0.5;
+        public boolean serverAutoRebirth = true, rebirthAffordable, rebirthRetryDue;
+        public double savingMaxPct = 25;
+        public int instantTtkMs = 2000;
+        public boolean horizonEnabled = true;
+        public double zoneGain = 1.3, swordDpsMult = 2.0, swordGainFloor = 1.25;
+        public int zoneMinStageKills = 1;
+        public long now;
+    }
+
+    /**
+     * The buy decision (0.9.33), zone-first: rebirth when it is ours to buy; the zone
+     * whenever the stage is not HARD and it is affordable (probed first while its price is
+     * unknown), after {@code zoneMinStageKills} kills on the stage the last /zone max landed
+     * on; the sword when the stage is HARD, or while it is cheap against the zone gap
+     * ({@link #swordWhileSavingGap}) and the kills are above the movement floor; the
+     * rebirth horizon ({@link #rebirthHorizonAllows}, sword gain from the kill median only)
+     * vetoes any buy that would not pay off before the rebirth. Every outcome carries its
+     * reason so the log, the HUD and the tests share one vocabulary.
+     */
+    public static Decision decide(Inputs in) {
+        GateResult g = zoneGate(in.medianTtkMs, in.stageKills, in.stageMaxTtkMs, in.cookElapsedMs, in.patienceMs, in.predictedTtkMs);
+        Double ttk = in.medianTtkMs != null && in.medianTtkMs > 0 ? in.medianTtkMs : null;
+        Double zoneGap = in.zoneMaxed ? null : zoneGapEstimate(in.zoneTarget, in.zoneFloor, in.zoneGrowth, in.bal);
+        String gapVia = in.zoneMaxed ? null : zoneGapVia(in.zoneTarget, in.zoneFloor);
+        Double swordPct = in.swordTarget != null && zoneGap != null && zoneGap > 0 ? 100.0 * in.swordTarget / zoneGap : null;
+        Decision base = new Decision(Decision.NONE, null, null, g.name(), g.via(), ttk,
+            in.patienceMs > 0 ? in.patienceMs : null, in.stageKills, zoneGap, gapVia, swordPct, null, null, null, in.now);
+
+        if (!in.serverAutoRebirth) {
+            if (in.rebirthAffordable) return base.with(Decision.BUY, "rebirth", "rebirth-affordable", null, null, null);
+            if (in.rebirthRetryDue) return base.with(Decision.PROBE, "rebirth", "rebirth-probe", null, null, null);
+        }
+        if (in.swordMaxed && in.zoneMaxed) return base.with(Decision.NONE, null, "maxed", null, null, null);
+
+        boolean zoneAff = knownAffordable(in.zoneTarget, in.bal);
+        boolean swordAff = knownAffordable(in.swordTarget, in.bal);
+        double zoneGain = in.zoneGain;
+        double swordGain = swordGain(ttk, in.swordDpsMult, in.instantTtkMs, in.swordGainFloor);
+        String swordGainVia = ttk != null ? "median" : "floor";
+        boolean instant = ttk != null && in.instantTtkMs > 0 && ttk <= in.instantTtkMs;
+        Double zoneEta = etaMs(zoneGap, in.incomePerMin);
+        Double swordEta = in.swordTarget != null && in.bal != null ? etaMs(in.swordTarget - in.bal, in.incomePerMin) : null;
+
+        // Zone branch: the zone is the buy whenever the stage is not measured too hard.
+        if (!in.zoneMaxed && !g.hard()) {
+            boolean zoneProbe = !zoneAff && in.zoneTarget == null
+                && probeAllowed(in.zoneSeeded, in.zoneExploratorySent, in.zoneFloor, in.bal, in.zoneRetryGrowth);
+            if (zoneAff || zoneProbe) {
+                if (in.stageKills < Math.max(0, in.zoneMinStageKills)) {
+                    return base.with(Decision.WAIT, "zone", "zone-stage-kills", zoneGain, "config", null);
+                }
+                if (zoneProbe) return base.with(Decision.PROBE, "zone", "zone-probe", zoneGain, "config", null);
+                if (horizonAllows(in, in.zoneTarget, zoneGain)) {
+                    return base.with(Decision.BUY, "zone", "zone-affordable", zoneGain, "config", null);
+                }
+                // The zone would not pay off before the rebirth; a sword that does may still go.
+                if (!in.swordMaxed && swordAff && !instant && horizonAllows(in, in.swordTarget, swordGain)) {
+                    return base.with(Decision.BUY, "sword", "sword-before-rebirth", swordGain, swordGainVia, null);
+                }
+                return base.with(Decision.WAIT, "zone", "rebirth-horizon", zoneGain, "config", zoneEta);
+            }
+        }
+
+        // Sword branch.
+        if (in.swordMaxed) {
+            if (g.hard()) return base.with(Decision.WAIT, "zone", "hard-no-sword", null, null, null);
+            return base.with(Decision.WAIT, in.zoneTarget != null ? "zone" : null,
+                in.zoneTarget != null ? "unaffordable" : "no-prices", null, null, zoneEta);
+        }
+        if (g.hard()) {
+            if (swordAff) {
+                if (horizonAllows(in, in.swordTarget, swordGain)) {
+                    return base.with(Decision.BUY, "sword", "sword-hard", swordGain, swordGainVia, null);
+                }
+                return base.with(Decision.WAIT, "sword", "rebirth-horizon", swordGain, swordGainVia, null);
+            }
+            if (in.swordTarget == null
+                && probeAllowed(in.swordSeeded, in.swordExploratorySent, in.swordFloor, in.bal, in.swordRetryGrowth)) {
+                return base.with(Decision.PROBE, "sword", "sword-probe-hard", swordGain, swordGainVia, null);
+            }
+            return base.with(Decision.WAIT, "sword", "sword-hard-unaffordable", swordGain, swordGainVia, swordEta);
+        }
+        // Gate OPEN or UNKNOWN: saving for the zone; a sword only while it cannot hurt.
+        if (instant) {
+            return base.with(Decision.WAIT, in.zoneMaxed ? null : "zone", "sword-instant", null, null, zoneEta);
+        }
+        if (swordAff) {
+            if (swordWhileSavingGap(in.swordTarget, zoneGap, ttk, in.savingMaxPct, in.instantTtkMs)) {
+                if (horizonAllows(in, in.swordTarget, swordGain)) {
+                    return base.with(Decision.BUY, "sword", "sword-cheap", swordGain, swordGainVia, null);
+                }
+                return base.with(Decision.WAIT, "sword", "rebirth-horizon", swordGain, swordGainVia, null);
+            }
+            return base.with(Decision.WAIT, "zone", "saving-zone", zoneGain, "config", zoneEta);
+        }
+        if (in.swordTarget == null
+            && probeAllowed(in.swordSeeded, in.swordExploratorySent, in.swordFloor, in.bal, in.swordRetryGrowth)
+            && (zoneGap == null || in.bal == null || in.bal <= zoneGap * Math.max(0.0, in.savingMaxPct) / 100.0)) {
+            // /swordmax buys every level it can afford: a blind probe may spend the whole balance,
+            // so it is typed only while that balance is small against the zone gap.
+            return base.with(Decision.PROBE, "sword", "sword-probe", swordGain, swordGainVia, null);
+        }
+        if (in.zoneTarget != null || zoneGap != null) {
+            return base.with(Decision.WAIT, "zone", "unaffordable", zoneGain, "config", zoneEta);
+        }
+        if (in.swordTarget != null) {
+            return base.with(Decision.WAIT, "sword", "unaffordable", swordGain, swordGainVia, swordEta);
+        }
+        return base.with(Decision.WAIT, null, "no-prices", null, null, null);
+    }
+
+    private static boolean horizonAllows(Inputs in, Double price, double gain) {
+        if (!in.horizonEnabled) return true;
+        return rebirthHorizonAllows(price, in.bal, in.rebirthTarget, in.incomePerMin, gain);
+    }
 }

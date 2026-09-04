@@ -374,4 +374,13 @@ public final class Amounts {
         }
         return s;
     }
+
+    /** Short ETA: "42s" under 90 s, "12m" under 90 min, else "1.5h" (shared by the HUD and the decision plan line). */
+    public static String eta(double ms) {
+        double s = ms / 1000.0;
+        if (s < 90) return Math.round(s) + "s";
+        double m = s / 60.0;
+        if (m < 90) return Math.round(m) + "m";
+        return String.format(Locale.ROOT, "%.1fh", m / 60.0);
+    }
 }

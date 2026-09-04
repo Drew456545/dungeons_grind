@@ -109,6 +109,15 @@ public class YCBotChallengeConfig {
     public Map<String, Double> rarityBonusBlocks = Map.of(
         "UNCOMMON", 1.5, "RARE", 4.0, "EPIC", 8.0, "LEGENDARY", 12.0);
     /**
+     * 0.9.33: the first kills of a new stage measure it (they open or close the zone gate),
+     * so while the stage has fewer than this many kills a tagged mob is penalised by
+     * stageProbeRarityPenaltyBlocks instead of earning its rarity bonus, and a common one
+     * is picked unless none is in range (Drew: rarity scales HP at a fixed rate; the first
+     * mob on a fresh stage should be common, purely for time). 0 = never.
+     */
+    public int stageProbeCommonKills = 1;
+    public double stageProbeRarityPenaltyBlocks = 30.0;
+    /**
      * While a tagged mob cooks we can't tag another. Movement toward the next
      * mob is still leash-limited; the camera is a one-shot look intent (see
      * track-style weights), not a lock on nextTarget.
@@ -986,6 +995,33 @@ public class YCBotChallengeConfig {
      */
     public int zoneMaxTtkMs = 10_000;
     /**
+     * 0.9.33 tri-state gate: OPEN when the stage's kill median (three or more kills) sits
+     * under the patience, HARD when it is above it, when one of the first two kills was,
+     * or when the mob being cooked has already taken longer (rarity-normalised elapsed
+     * time), and UNKNOWN before any of that. UNKNOWN allows the zone (the stage has not
+     * been shown to be too hard) and refuses the sword — the 0.9.32 gate read UNKNOWN as
+     * closed and, since every /zone max teleport empties the window, followed 11 of 12
+     * zone buys with a blind sword buy (15.98Q on lvl7 with 17.33Q in hand and a 4.4T zone
+     * floor; 2.48T four seconds before the median opened the gate). This is the number of
+     * kills on the stage a /zone max landed on before the next zone buy (a person looks at
+     * the new stage first); 0 = chain-buy on the teleport.
+     */
+    public int zoneMinStageKills = 1;
+    /**
+     * A bot toggle within this many ms on the same stage (no zone change or teleport in
+     * between) keeps the kill window and the patience roll instead of clearing them
+     * (2026-09-04 14:55: six toggles in 37 s emptied the window each time and the gate
+     * never opened). 0 = always clear (0.9.32 behaviour).
+     */
+    public int ttkKeepOnReenableMs = 60_000;
+    /**
+     * Legacy escape hatch: let the DPS prediction of the mob being cooked fill the gate
+     * while the stage is UNKNOWN (the 0.9.23-0.9.32 rule). Off since 0.9.33: one slow RARE
+     * mob's prediction (35 s at 05:56:13) closed the gate and bought a 5.79SS sword
+     * 12.3SS short of the rebirth while the median three seconds later was 5.5 s.
+     */
+    public boolean gateUsesPrediction = false;
+    /**
      * Zone patience (0.9.23): the TTK a player tolerates before wanting a sword instead
      * of the next stage is a mood, not a line. Every zone change and enable rolls this
      * stage's tolerance log-normally between zoneMaxTtkMs x min and x max (zone_patience),
@@ -1140,7 +1176,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 36;
+    public static final int CURRENT_CONFIG_VERSION = 37;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1430,6 +1466,14 @@ public class YCBotChallengeConfig {
                 captchaVoteRenders = fresh.captchaVoteRenders;
                 captchaVoteTemperature = fresh.captchaVoteTemperature;
             }
+            changed = true;
+        }
+        if (configVersion < 37) {
+            // v37 (0.9.33): tri-state zone gate (zoneMinStageKills, ttkKeepOnReenableMs,
+            // gateUsesPrediction off — the 2026-09-04 logs: 11 of 12 zone buys followed by a
+            // blind sword, 15.98Q against a 4.4T zone floor), common first target on a fresh
+            // stage (stageProbeCommonKills). Every new knob takes its default.
+            gateUsesPrediction = fresh.gateUsesPrediction;
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;
@@ -1722,6 +1766,10 @@ public class YCBotChallengeConfig {
         if (upgradeMinIntervalMs < 0) upgradeMinIntervalMs = 60_000;
         if (cooldownRelaxBalanceMult < 0) cooldownRelaxBalanceMult = 0;
         if (zoneMaxTtkMs < 0) zoneMaxTtkMs = 10_000;
+        if (zoneMinStageKills < 0) zoneMinStageKills = 0;
+        if (ttkKeepOnReenableMs < 0) ttkKeepOnReenableMs = 0;
+        if (stageProbeCommonKills < 0) stageProbeCommonKills = 0;
+        if (stageProbeRarityPenaltyBlocks < 0) stageProbeRarityPenaltyBlocks = 0;
         if (zonePatienceMinMult <= 0) zonePatienceMinMult = 0.6;
         if (zonePatienceMaxMult <= 0) zonePatienceMaxMult = 1.6;
         if (zonePatienceMaxMult < zonePatienceMinMult) {

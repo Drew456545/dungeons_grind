@@ -1028,7 +1028,52 @@ public class StatsTracker {
      * fresh evidence. Prices are kept — they are server state, not position state.
      */
     public void onEnable() {
+        long now = System.currentTimeMillis();
+        boolean keep = lastDisableAt > 0 && Economy.keepTtkWindow(now - lastDisableAt, cfg.ttkKeepOnReenableMs,
+            java.util.Objects.equals(zone, zoneAtDisable), zoneChangeSeq != zoneSeqAtDisable);
+        lastEnableKeptWindow = keep;
+        if (keep) {
+            log("ttk_reset", "via", "enable", "kept", true, "offMs", now - lastDisableAt,
+                "stageKills", killDurations.size(), "patienceMs", zoneTtkToleranceMs());
+            return;
+        }
         resetTtkWindow("enable");
+    }
+
+    private long lastDisableAt = 0;
+    private String zoneAtDisable = null;
+    private int zoneSeqAtDisable = -1;
+    /** Whether the last enable kept the kill window (0.9.33): the controller then keeps its first-kills roll too. */
+    public volatile boolean lastEnableKeptWindow = false;
+
+    /** Bot disabled: remember where we were so a quick re-enable on the same stage keeps the window. */
+    public void onDisable() {
+        lastDisableAt = System.currentTimeMillis();
+        zoneAtDisable = zone;
+        zoneSeqAtDisable = zoneChangeSeq;
+    }
+
+    /** Kills recorded on the current stage (the window is cleared on every zone change, teleport and rebirth). */
+    public int stageKills() {
+        return killDurations.size();
+    }
+
+    /** Slowest rarity-normalised kill on the current stage, or null with none. */
+    public Double stageMaxTtkMs() {
+        Long max = null;
+        for (Long d : killDurations) if (max == null || d > max) max = d;
+        return max != null ? max.doubleValue() : null;
+    }
+
+    /** Remaining money to the next stage ({@link Economy#zoneGapEstimate}: target, else last price x ladder growth). */
+    public Double zoneGapEstimate() {
+        if (zoneMaxed) return null;
+        return Economy.zoneGapEstimate(zoneTarget, lastPrice("zone"), priceGrowth("zone"), money());
+    }
+
+    public String zoneGapVia() {
+        if (zoneMaxed) return null;
+        return Economy.zoneGapVia(zoneTarget, lastPrice("zone"));
     }
 
     private void resetTtkWindow(String via) {

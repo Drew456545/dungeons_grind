@@ -18,9 +18,10 @@ import net.minecraft.util.math.Vec3d;
  * Sidebar money is truth (no {@code /bal}). Rebirth is seeded from the chat gap
  * {@code You need $29.99T Money to Rebirth.} Evaluations fire on a kill, on a
  * sidebar money increase, or on a timer; if rebirth is covered, sword/zone are
- * skipped. Zone is refused outright while the effective TTK (the stage's kill
- * median, or a fresh DPS prediction before three kills) is above this stage's rolled
- * patience (around {@code zoneMaxTtkMs}); with the gate open the zone is the buy.
+ * skipped. Since 0.9.33 every eval is one {@link Decision} from {@link Economy#decide}:
+ * the zone is the buy whenever the stage is not measured HARD (kill median, a slow first
+ * kill, or the mob being cooked already past the patience), the sword only when it is,
+ * or while it is cheap against the zone gap; the same object feeds the log and the HUD.
  */
 public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
@@ -97,6 +98,12 @@ public class UpgradeController {
     private Double evalTtkMs = null;
     /** Where evalTtkMs came from ("median" / "predicted" / null) — logged with every plan and skip. */
     private String evalTtkVia = null;
+    /** Fresh DPS prediction at the last eval (log-only since 0.9.33 unless gateUsesPrediction). */
+    private Double evalPredictedMs = null;
+    /** The last eval's decision (0.9.33): behaviour, log and HUD all read this one object. */
+    private Decision lastDecision = null;
+    /** Tag time of the cook whose "already past the patience" verdict was logged (zone_gate_hard). */
+    private long lastCookHardLogged = -1;
 
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -111,41 +118,11 @@ public class UpgradeController {
     /** The kind the rebirth horizon held back at the last eval ("zone"/"sword"), or null (0.9.28: the companion trigger reads it). */
     public String horizonBlockedKind() { return horizonBlocked; }
 
-    public String hudLine() {
-        if (!cfg.upgradesEnabled) return null;
-        String kind = hudKind();
-        Double bal = stats.money();
-        Double rate = stats.incomePerMinute();
-        StringBuilder sb = new StringBuilder("next ").append(kind == null ? "none" : kind);
-        if (bal != null) sb.append("  bal ").append(Amounts.format(bal));
-        if (rate != null) sb.append("  +").append(Amounts.format(rate)).append("/min");
-        if (stats.rebirthTarget != null) {
-            sb.append("  rb ").append(Amounts.format(stats.rebirthTarget));
-            Double etaMin = Economy.rebirthEtaMin(bal, stats.rebirthTarget, rate);
-            if (etaMin != null && etaMin > 0) sb.append("  eta ").append(formatEta(etaMin * 60_000.0));
-            if (horizonBlocked != null) sb.append("  §7(saving; ").append(horizonBlocked).append(" waits)§r");
-        }
-        if (savingZone && phase == Phase.IDLE) sb.append("  §7(sword waits for zone)§r");
-        if (phase != Phase.IDLE) {
-            sb.append("  §e").append(phase.name().toLowerCase(Locale.ROOT));
-        } else if (kind != null) {
-            Double price = targetOf(kind);
-            if (price != null && bal != null) {
-                double need = Math.max(0, price - bal);
-                sb.append("  need ").append(Amounts.format(need));
-                Double eta = Economy.etaMs(need, rate);
-                if (eta != null) sb.append("  ~").append(formatEta(eta));
-            } else if (price == null) {
-                Double last = stats.lastPrice(kind);
-                sb.append(last != null ? "  price ? (retry ≥ " + Amounts.format(last) + ")" : "  price ?");
-            }
-            long last = lastSendFor(kind);
-            int cap = capFor(kind);
-            long remainMs = last <= 0 || cap <= 0 ? 0 : (last + cap) - System.currentTimeMillis();
-            if (remainMs > 0) sb.append("  cd ").append((remainMs + 999) / 1000).append("s");
-        }
-        return sb.toString();
-    }
+    /** The last eval's decision, or null before the first one (HUD plan row, companion trigger). */
+    public Decision lastDecision() { return lastDecision; }
+
+    /** When the last eval ran (ms), 0 before the first. */
+    public long lastEvalAt() { return lastEvalAt; }
 
     /**
      * 0.9.31 HUD: one row per kind — "472.7S  26%  ~9m  predicted", "?" while unknown, the
@@ -203,11 +180,7 @@ public class UpgradeController {
     }
 
     private static String formatEta(double ms) {
-        double s = ms / 1000.0;
-        if (s < 90) return Math.round(s) + "s";
-        double m = s / 60.0;
-        if (m < 90) return Math.round(m) + "m";
-        return String.format(Locale.ROOT, "%.1fh", m / 60.0);
+        return Amounts.eta(ms);
     }
 
     public void reset(MinecraftClient client) {
@@ -236,6 +209,8 @@ public class UpgradeController {
         lastSeenMoney = null;
         evalReason = null;
         evalTtkMs = null;
+        lastDecision = null;
+        lastCookHardLogged = -1;
     }
 
     /**
@@ -250,11 +225,16 @@ public class UpgradeController {
             if (!startupProbed) {
                 startupProbed = true;
                 enabledAt = now;
-                killsAtEnable = combat.kills;
+                // A quick re-enable on the same stage keeps the kill window (0.9.33) and with
+                // it the first-kills roll; otherwise both start over.
+                boolean kept = stats.lastEnableKeptWindow && killsAtEnable > 0 && killsAtEnable <= combat.kills;
+                if (!kept) {
+                    killsAtEnable = combat.kills;
+                    firstKillsNeeded = HumanTiming.ticks(cfg.upgradeFirstKillsMin, Math.max(cfg.upgradeFirstKillsMin, cfg.upgradeFirstKillsMax));
+                }
                 // The kill counter carries over a toggle: without this the first eval after an
                 // enable read as "a kill happened" and typed /swordmax 5 s in (00:19 log).
                 lastKillCount = combat.kills;
-                firstKillsNeeded = HumanTiming.ticks(cfg.upgradeFirstKillsMin, Math.max(cfg.upgradeFirstKillsMin, cfg.upgradeFirstKillsMax));
                 seedKillsNeeded = HumanTiming.ticks(cfg.rebirthSeedMinKillsMin, Math.max(cfg.rebirthSeedMinKillsMin, cfg.rebirthSeedMinKillsMax));
                 seedDelayMs = HumanTiming.logNormalMs(cfg.rebirthSeedDelayMinMs, Math.max(cfg.rebirthSeedDelayMinMs + 1, cfg.rebirthSeedDelayMaxMs));
             }
@@ -281,7 +261,8 @@ public class UpgradeController {
                 dropNonRebirthQueue();
                 if (decision != null && !"rebirth".equals(decision)) {
                     decision = "rebirth";
-                    logPlan("rebirth");
+                    lastDecision = decide(combat, now, null);
+                    logPlan(lastDecision);
                 }
             }
             PendingCmd head = queue.peek();
@@ -349,46 +330,53 @@ public class UpgradeController {
             stats.publishSnapshot(true);
             Double predicted = Economy.freshPrediction(combat.lastPredictedTtkMs, combat.lastPredictedAt,
                 now, cfg.predictedTtkMaxAgeMs);
-            evalTtkMs = stats.effectiveTtkMs(predicted);
-            evalTtkVia = Economy.ttkSource(predicted, stats.medianTtkMs());
+            evalPredictedMs = predicted;
+            // 0.9.33: the gate reads the kill median only; the prediction is logged (and used
+            // only behind the legacy gateUsesPrediction switch).
+            evalTtkMs = cfg.gateUsesPrediction ? stats.effectiveTtkMs(predicted) : stats.medianTtkMs();
+            evalTtkVia = cfg.gateUsesPrediction ? Economy.ttkSource(predicted, stats.medianTtkMs())
+                : evalTtkMs != null ? "median" : null;
             stats.lastEffectiveTtkMs = evalTtkMs;
             updateAffordableMarks(combat.kills);
-            String kind = decideKind(combat.kills);
-            if (kind != null && !Economy.firstKillsReached(combat.kills - killsAtEnable, combat.kills - killsAtRebirth, firstKillsNeeded)) {
+            Decision d = decide(combat, now, predicted);
+            horizonBlocked = "rebirth-horizon".equals(d.reason()) ? d.kind() : null;
+            savingZone = "saving-zone".equals(d.reason());
+            if (d.acts() && !Economy.firstKillsReached(combat.kills - killsAtEnable, combat.kills - killsAtRebirth, firstKillsNeeded)) {
+                lastDecision = d.hold("first-kills", null);
                 evalAt = Long.MAX_VALUE;
                 if (logger != null && now - lastFirstKillsLogAt > 20_000) {
                     lastFirstKillsLogAt = now;
-                    logger.log("upgrade_skip", "reason", "first-kills", "kind", kind, "via", evalReason,
+                    logger.log("upgrade_skip", evalFields(lastDecision,
                         "killsSinceEnable", combat.kills - killsAtEnable, "killsSinceRebirth", combat.kills - killsAtRebirth,
-                        "needed", firstKillsNeeded);
+                        "needed", firstKillsNeeded));
                 }
                 return false;
             }
-            if (kind == null) {
-                if (horizonBlocked != null) {
-                    skipEval("rebirth-horizon", horizonBlocked);
-                    return false;
-                }
-                if (savingZone) {
-                    skipEval("saving-zone", "sword");
-                    return false;
-                }
-                boolean zoneGated = !Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs())
-                    && !stats.zoneMaxed && (knownAffordable("zone") || stats.zoneTarget == null);
-                skipEval(zoneGated ? "zone-gated" : "unaffordable", null);
+            if (!d.acts()) {
+                lastDecision = d;
+                skipEval(d);
+                return false;
+            }
+            String kind = d.kind();
+            if (!extraKillsOk(kind, combat.kills)) {
+                lastDecision = d.hold("extra-kills", null);
+                skipEval(lastDecision);
                 return false;
             }
             if (!Economy.cooldownElapsed(now, lastSendFor(kind), capFor(kind), false)) {
-                skipEval("cooldown", kind);
+                lastDecision = d.hold("cooldown", (double) Math.max(0, lastSendFor(kind) + capFor(kind) - now));
+                skipEval(lastDecision);
                 return false;
             }
             if (hesitate(kind, now)) {
-                skipEval("hesitate", kind);
+                lastDecision = d.hold("hesitate", (double) Math.max(0, hesitatingUntil - now));
+                skipEval(lastDecision);
                 return false;
             }
+            lastDecision = d;
             decision = kind;
             decisionAt = now + HumanTiming.logNormalMs(cfg.buyNoticeDelayMinMs, cfg.buyNoticeDelayMaxMs);
-            logPlan(kind);
+            logPlan(d);
             return false;
         }
 
@@ -724,117 +712,104 @@ public class UpgradeController {
         return true;
     }
 
-    private void logPlan(String kind) {
+    private void logPlan(Decision d) {
         if (logger == null) return;
-        Double price = targetOf(kind);
+        logger.log("upgrade_plan", evalFields(d));
+    }
+
+    /**
+     * Every fact behind the decision (0.9.33): the {@link Decision#kv()} vocabulary plus the
+     * prices, floors, rebirth horizon numbers and the log-only DPS prediction.
+     */
+    private Object[] evalFields(Decision d, Object... extra) {
+        String kind = d.kind();
+        Double price = kind == null ? null : targetOf(kind);
         Double bal = stats.money();
-        logger.log("upgrade_plan", "kind", kind,
+        Double income = stats.incomePerMinute();
+        double gain = d.gain() != null ? d.gain() : 1.0;
+        java.util.List<Object> out = new java.util.ArrayList<>(java.util.Arrays.asList(d.kv()));
+        java.util.Collections.addAll(out,
             "via", evalReason,
-            "priority", hudKind(),
+            "priority", kind,
             "target", price != null ? Amounts.format(price) : null,
             "bal", bal != null ? Amounts.format(bal) : null,
-            "pct", price != null && price > 0 && bal != null
-                ? Math.round(1000.0 * bal / price) / 10.0 : null,
-            "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
-            "ttkMs", evalTtkMs != null ? Math.round(evalTtkMs) : null,
-            "ttkVia", evalTtkVia,
-            "patienceMs", stats.zoneTtkToleranceMs(),
-            "zoneGate", Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs()) ? "open" : "closed",
+            "pct", price != null && price > 0 && bal != null ? Math.round(1000.0 * bal / price) / 10.0 : null,
+            "incomePerMin", income != null ? Amounts.format(income) : null,
+            "predictedMs", evalPredictedMs != null ? Math.round(evalPredictedMs) : null,
+            "stageMaxTtkMs", stats.stageMaxTtkMs() != null ? Math.round(stats.stageMaxTtkMs()) : null,
             "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
             "swordVia", stats.swordTarget == null ? null : stats.swordTargetPredicted ? "predicted" : "server",
             "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
             "zoneVia", stats.zoneTarget == null ? null : stats.zoneTargetPredicted ? "predicted" : "server",
             "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,
-            "zoneFloor", stats.lastPrice("zone") != null ? Amounts.format(stats.lastPrice("zone")) : null);
+            "zoneFloor", stats.lastPrice("zone") != null ? Amounts.format(stats.lastPrice("zone")) : null,
+            "rebirthTarget", stats.rebirthTarget != null ? Amounts.format(stats.rebirthTarget) : null,
+            "rebirthEtaMin", tenth(Economy.rebirthEtaMin(bal, stats.rebirthTarget, income)),
+            "buyEtaMin", price == null ? null : tenth(Economy.buyEtaMin(price, bal, stats.rebirthTarget, income, gain)),
+            "gapPct", price != null && bal != null && stats.rebirthTarget != null && stats.rebirthTarget - bal > 0
+                ? Math.round(1000.0 * price / (stats.rebirthTarget - bal)) / 10.0 : null);
+        java.util.Collections.addAll(out, extra);
+        return out.toArray();
     }
 
-    private boolean zoneOpen() {
-        return !stats.zoneMaxed && Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs());
-    }
-
+    /** Kind of the last decision (HUD "next" marker); null before the first eval. */
     private String hudKind() {
-        if (stats.rebirthTarget != null) return "rebirth";
-        return Economy.preferredKind(!stats.swordMaxed, zoneOpen());
+        return lastDecision != null ? lastDecision.kind() : null;
     }
 
     /**
-     * Rebirth when covered. Gate closed (TTK above this stage's patience): the sword, the only
-     * thing that helps. Gate open: the zone: bought when affordable, probed first when
-     * its price is unknown, saved for otherwise, with a sword allowed only while it is
-     * cheap against the zone gap and the TTK is above the movement floor (0.9.16; the
-     * 03-36 log spent 675K on swords at a 0.73s TTK next to a 145K zone).
+     * The eval (0.9.33): plain facts in, one {@link Decision} out ({@link Economy#decide}).
+     * The cook-elapsed HARD verdict is logged once per cook (zone_gate_hard) so a stage
+     * going hard mid-fight is visible between evals.
      */
-    private String decideKind(int kills) {
-        savingZone = false;
-        // With /autorebirth the server rebirths the moment the cost is covered; the
-        // GUI is only ever probed to learn that cost for the horizon rule.
-        if (!cfg.serverAutoRebirth && (rebirthAffordable() || rebirthRetryDue())) return "rebirth";
-        boolean zoneOpen = zoneOpen();
-        if (zoneOpen && stats.zoneTarget == null) {
-            // Learn the zone price before spending on a sword (one typed /zone max).
-            String probe = exploreKind("zone", true);
-            if (probe != null) return probe;
+    private Decision decide(CombatController combat, long now, Double predicted) {
+        Economy.Inputs in = new Economy.Inputs();
+        in.swordTarget = stats.swordTarget;
+        in.zoneTarget = stats.zoneTarget;
+        in.rebirthTarget = stats.rebirthTarget;
+        in.swordFloor = stats.lastPrice("sword");
+        in.zoneFloor = stats.lastPrice("zone");
+        in.zoneGrowth = stats.priceGrowth("zone");
+        in.bal = stats.money();
+        in.incomePerMin = stats.incomePerMinute();
+        in.medianTtkMs = stats.medianTtkMs();
+        in.stageKills = stats.stageKills();
+        in.stageMaxTtkMs = stats.stageMaxTtkMs();
+        in.predictedTtkMs = cfg.gateUsesPrediction ? predicted : null;
+        in.cookElapsedMs = combat.isCooking()
+            ? combat.cookElapsedMs() / Economy.rarityScale(combat.targetRarity(), cfg.rarityHpScale) : 0;
+        in.patienceMs = stats.zoneTtkToleranceMs();
+        in.swordMaxed = stats.swordMaxed;
+        in.zoneMaxed = stats.zoneMaxed;
+        in.swordSeeded = stats.seeded("sword");
+        in.swordExploratorySent = stats.exploratorySent("sword");
+        in.swordRetryGrowth = stats.retryGrowth("sword");
+        in.zoneSeeded = stats.seeded("zone");
+        in.zoneExploratorySent = stats.exploratorySent("zone");
+        in.zoneRetryGrowth = stats.retryGrowth("zone");
+        in.serverAutoRebirth = cfg.serverAutoRebirth;
+        in.rebirthAffordable = rebirthAffordable();
+        in.rebirthRetryDue = rebirthRetryDue();
+        in.savingMaxPct = cfg.swordWhileSavingMaxPct;
+        in.instantTtkMs = cfg.zoneInstantTtkMs;
+        in.horizonEnabled = cfg.rebirthHorizonEnabled;
+        in.zoneGain = cfg.rebirthHorizonZoneGain;
+        in.swordDpsMult = cfg.rebirthHorizonSwordDpsMult;
+        in.swordGainFloor = cfg.rebirthHorizonSwordGain;
+        in.zoneMinStageKills = cfg.zoneMinStageKills;
+        in.now = now;
+        Decision d = Economy.decide(in);
+        if ("cook".equals(d.gateVia()) && logger != null && combat.cookStartMs() != lastCookHardLogged) {
+            lastCookHardLogged = combat.cookStartMs();
+            logger.log("zone_gate_hard", "via", "cook", "elapsedMs", combat.cookElapsedMs(),
+                "normalizedMs", Math.round(in.cookElapsedMs), "patienceMs", in.patienceMs,
+                "rarity", combat.targetRarity(), "stageKills", in.stageKills);
         }
-        String buy = Economy.chooseBuyKind(
-            !stats.swordMaxed, zoneOpen,
-            knownAffordable("sword"), knownAffordable("zone"),
-            stats.swordTarget, stats.zoneTarget, stats.money(), evalTtkMs,
-            cfg.swordWhileSavingMaxPct, cfg.zoneInstantTtkMs);
-        if (buy != null) {
-            if (!horizonAllows(buy)) {
-                // The pricier kind failed the horizon; the cheaper one may still pay off.
-                String other = "zone".equals(buy) ? "sword" : "zone";
-                boolean otherOpen = "zone".equals(other) ? zoneOpen : !stats.swordMaxed;
-                if (otherOpen && knownAffordable(other) && horizonAllows(other)) {
-                    return extraKillsOk(other, kills) ? other : null;
-                }
-                horizonBlocked = buy;
-                return null;
-            }
-            return extraKillsOk(buy, kills) ? buy : null;
-        }
-        if (zoneOpen && stats.zoneTarget != null && !knownAffordable("zone") && knownAffordable("sword")) {
-            savingZone = true;
-            return null;
-        }
-        String pref = Economy.preferredKind(!stats.swordMaxed, zoneOpen);
-        String explore = exploreKind(pref, zoneOpen);
-        if (explore == null && pref != null) explore = exploreKind("zone".equals(pref) ? "sword" : "zone", zoneOpen);
-        return explore;
-    }
-
-    private String exploreKind(String kind, boolean zoneOpen) {
-        if (kind == null || "rebirth".equals(kind)) return null;
-        boolean zone = "zone".equals(kind);
-        if (zone ? !zoneOpen : stats.swordMaxed) return null;
-        Double price = zone ? stats.zoneTarget : stats.swordTarget;
-        if (price != null) return null;
-        if (!stats.seeded(kind)) return kind;
-        if (stats.exploratorySent(kind)) return null;
-        if (Economy.retryUnknownAllowed(stats.lastPrice(kind), stats.money(), stats.retryGrowth(kind))) return kind;
-        return null;
+        return d;
     }
 
     private boolean rebirthAffordable() {
         return Economy.knownAffordable(stats.rebirthTarget, stats.money());
-    }
-
-    /** Zone: the config constant. Sword: TTK-aware (0.9.30, {@link Economy#swordGain}), never below the config minimum. */
-    private double horizonGain(String kind) {
-        if ("zone".equals(kind)) return cfg.rebirthHorizonZoneGain;
-        return Economy.swordGain(evalTtkMs, cfg.rebirthHorizonSwordDpsMult, cfg.zoneInstantTtkMs, cfg.rebirthHorizonSwordGain);
-    }
-
-    /**
-     * Rebirth horizon: a known-price sword/zone is bought only when it pays for itself
-     * before the rebirth ({@link Economy#rebirthHorizonAllows}). Clears the blocked mark;
-     * the caller sets it when nothing else can be bought.
-     */
-    private boolean horizonAllows(String kind) {
-        horizonBlocked = null;
-        if (!cfg.rebirthHorizonEnabled || kind == null || "rebirth".equals(kind)) return true;
-        return Economy.rebirthHorizonAllows(targetOf(kind), stats.money(), stats.rebirthTarget,
-            stats.incomePerMinute(), horizonGain(kind));
     }
 
     private boolean knownAffordable(String kind) {
@@ -906,38 +881,10 @@ public class UpgradeController {
         return lastSendAt <= 0 || now - lastSendAt >= cd;
     }
 
-    private void skipEval(String reason, String kind) {
+    private void skipEval(Decision d) {
         evalAt = Long.MAX_VALUE;
         if (logger == null) return;
-        Double remaining = kind == null ? null : targetOf(kind);
-        Double bal = stats.money();
-        logger.log("upgrade_skip", "reason", reason,
-            "kind", kind,
-            "via", evalReason,
-            "target", remaining != null ? Amounts.format(remaining) : null,
-            "bal", bal != null ? Amounts.format(bal) : null,
-            "ttkMs", evalTtkMs != null ? Math.round(evalTtkMs) : null,
-            "ttkVia", evalTtkVia,
-            "patienceMs", stats.zoneTtkToleranceMs(),
-            "zoneGate", Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs()) ? "open" : "closed",
-            "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
-            "swordVia", stats.swordTarget == null ? null : stats.swordTargetPredicted ? "predicted" : "server",
-            "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
-            "zoneVia", stats.zoneTarget == null ? null : stats.zoneTargetPredicted ? "predicted" : "server",
-            "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,
-            "zoneFloor", stats.lastPrice("zone") != null ? Amounts.format(stats.lastPrice("zone")) : null,
-            "rebirthTarget", stats.rebirthTarget != null ? Amounts.format(stats.rebirthTarget) : null,
-            "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
-            "rebirthEtaMin", tenth(Economy.rebirthEtaMin(bal, stats.rebirthTarget, stats.incomePerMinute())),
-            "buyEtaMin", kind == null ? null
-                : tenth(Economy.buyEtaMin(remaining, bal, stats.rebirthTarget, stats.incomePerMinute(), horizonGain(kind))),
-            "gain", kind == null ? null : Math.round(horizonGain(kind) * 100.0) / 100.0,
-            "gapPct", kind != null && remaining != null && bal != null && stats.rebirthTarget != null
-                && stats.rebirthTarget - bal > 0
-                ? Math.round(1000.0 * remaining / (stats.rebirthTarget - bal)) / 10.0 : null,
-            "zoneGap", stats.zoneTarget != null && bal != null ? Amounts.format(Math.max(0, stats.zoneTarget - bal)) : null,
-            "swordPct", stats.swordTarget != null && stats.zoneTarget != null && bal != null && stats.zoneTarget - bal > 0
-                ? Math.round(1000.0 * stats.swordTarget / (stats.zoneTarget - bal)) / 10.0 : null);
+        logger.log("upgrade_skip", evalFields(d));
     }
 
     private static Double tenth(Double v) {

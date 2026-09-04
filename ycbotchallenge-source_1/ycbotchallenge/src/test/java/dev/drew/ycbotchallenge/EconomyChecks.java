@@ -70,6 +70,7 @@ public final class EconomyChecks {
         n += audit0930();
         n += companions0931();
         n += priceLadders();
+        n += audit0933Decision();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1494,6 +1495,171 @@ public final class EconomyChecks {
         n += eq("ratio below 1 rejected", Economy.growthAccepted(0.9, 3.5, 30), false);
         n += eq("blend from nothing", Economy.blendGrowth(null, 3.48, 0.3), 3.48, 1e-9);
         n += eq("blend ema", Economy.blendGrowth(3.5, 3.4, 0.3), 3.47, 1e-9);
+        return n;
+    }
+
+    /**
+     * 0.9.33 tri-state gate and zone-first decision, from the 2026-09-04 audit (logs
+     * events-baseline 03-48 / 05-39 / 05-55): every /zone max teleport emptied the kill
+     * window, "unknown" read as closed, and 11 of 12 zone buys were followed by a blind
+     * sword buy; a slow RARE mob's DPS prediction bought a 5.79SS sword 12.3SS short of
+     * the 19.68SS rebirth.
+     */
+    private static int audit0933Decision() {
+        int n = 0;
+        // --- the gate
+        n += eq("fresh stage: unknown", Economy.zoneGate(null, 0, null, 0, 9600, null).name(), "unknown");
+        n += eq("cook 12.0s past a 9.6s patience: hard via cook", Economy.zoneGate(null, 0, null, 12_000, 9600, null).via(), "cook");
+        n += eq("legendary scale 1.4", Economy.rarityScale("LEGENDARY", CFG.rarityHpScale), 1.4, 1e-9);
+        n += eq("rare scale 1.15", Economy.rarityScale("rare", CFG.rarityHpScale), 1.15, 1e-9);
+        n += eq("untagged scale 1", Economy.rarityScale(null, CFG.rarityHpScale), 1.0, 1e-9);
+        n += eq("cook 12.0s on a LEGENDARY (8.6s normalised): still unknown",
+            Economy.zoneGate(null, 0, null, 12_000 / 1.4, 9600, null).name(), "unknown");
+        n += eq("17:57 chicken 11.5s as the first kill: hard via kill", Economy.zoneGate(null, 1, 11_502.0, 0, 9600, null).via(), "kill");
+        n += eq("median 0.77s over three kills opens it despite the 11.5s first kill",
+            Economy.zoneGate(769.0, 3, 11_502.0, 0, 9600, null).name(), "open");
+        n += eq("median 14.1s: hard via median", Economy.zoneGate(14_100.0, 5, 20_000.0, 0, 9600, null).via(), "median");
+        n += eq("gate disabled: open", Economy.zoneGate(null, 0, null, 0, 0, null).name(), "open");
+        n += eq("legacy prediction fills unknown", Economy.zoneGate(null, 0, null, 0, 9600, 35_447.0).via(), "predicted");
+        n += eq("prediction never beats a median", Economy.zoneGate(5_500.0, 3, 7_000.0, 0, 9600, 35_447.0).name(), "open");
+        // --- common first target on a fresh stage
+        n += eq("rare penalised before the first kill", Economy.rarityScoreAdjust("RARE", 4.0, 0, 1, 30), 30.0, 1e-9);
+        n += eq("rare bonus after it", Economy.rarityScoreAdjust("RARE", 4.0, 1, 1, 30), -4.0, 1e-9);
+        n += eq("untagged unaffected", Economy.rarityScoreAdjust(null, 4.0, 0, 1, 30), 0.0, 1e-9);
+        n += eq("probe kills 0 = old behaviour", Economy.rarityScoreAdjust("EPIC", 8.0, 0, 0, 30), -8.0, 1e-9);
+        // --- keep the window across a quick toggle (14:55: six toggles in 37 s)
+        n += eq("37s off, same stage: keep", Economy.keepTtkWindow(37_000, 60_000, true, false), true);
+        n += eq("5 min off: reset", Economy.keepTtkWindow(300_000, 60_000, true, false), false);
+        n += eq("zone label changed: reset", Economy.keepTtkWindow(37_000, 60_000, false, false), false);
+        n += eq("teleported meanwhile: reset", Economy.keepTtkWindow(37_000, 60_000, true, true), false);
+        n += eq("keep disabled", Economy.keepTtkWindow(37_000, 0, true, false), false);
+        // --- the zone gap estimate replaces the zoneTarget==null bypass
+        n += eq("gap from target", Economy.zoneGapEstimate(11.49e24, null, 55, 7.42e24), 4.07e24, 1e21);
+        n += eq("gap from floor x growth is already covered at 17.33Q", Economy.zoneGapEstimate(null, 4.4e12, 55, 17.33e15), 0.0, 1e-9);
+        n += eq("nothing known: null", Economy.zoneGapEstimate(null, null, 55, 1.0) == null, true);
+        n += eq("gap via target", Economy.zoneGapVia(11.49e24, 4.4e12), "target");
+        n += eq("gap via floor", Economy.zoneGapVia(null, 4.4e12), "floor");
+        n += eq("15.98Q sword against a covered zone gap: not cheap", Economy.swordWhileSavingGap(15.98e15, 0.0, null, 25, 2000), false);
+        n += eq("fresh account, nothing known: exploration", Economy.swordWhileSavingGap(15.98e15, null, null, 25, 2000), true);
+
+        // --- 14:59:30 lvl7: bal 17.33Q, sword 15.98Q predicted, zone floor 4.4T, window just reset.
+        Economy.Inputs a = new Economy.Inputs();
+        a.bal = 17.33e15; a.incomePerMin = 2.62e21; a.swordTarget = 15.98e15; a.swordFloor = 5.79e15;
+        a.zoneFloor = 4.4e12; a.zoneSeeded = true; a.patienceMs = 13_318; a.stageKills = 0;
+        Decision d = Economy.decide(a);
+        n += eq("14:59:30 with no stage kill yet: wait for one", d.reason(), "zone-stage-kills");
+        n += eq("14:59:30 gate unknown", d.gate(), "unknown");
+        a.stageKills = 1; a.stageMaxTtkMs = 1251.0;
+        d = Economy.decide(a);
+        n += eq("14:59:30 after one kill: probe the zone, not the 15.98Q sword", d.action() + " " + d.kind(), "probe zone");
+        a.zoneExploratorySent = true;
+        d = Economy.decide(a);
+        n += eq("14:59:30 probe in flight: hold the sword for the zone", d.reason(), "saving-zone");
+        n += eq("14:59:30 never buys the sword", d.isBuy(), false);
+        a.zoneMinStageKills = 0; a.stageKills = 0; a.zoneExploratorySent = false;
+        n += eq("zoneMinStageKills 0 chain-probes on the teleport", Economy.decide(a).action(), "probe");
+
+        // --- 04:02:58 lvl4: 2.48T sword bought four seconds before the median opened the gate.
+        Economy.Inputs b = new Economy.Inputs();
+        b.bal = 2.6e12; b.incomePerMin = 23.24e21; b.swordTarget = 2.48e12; b.swordFloor = 386.2e6;
+        b.zoneFloor = 578.84e6; b.zoneSeeded = true; b.patienceMs = 16_605; b.stageKills = 2; b.stageMaxTtkMs = 7704.0;
+        d = Economy.decide(b);
+        n += eq("04:02:58 two fast kills: probe zone", d.action() + " " + d.kind(), "probe zone");
+        b.medianTtkMs = 8825.0; b.stageKills = 3;
+        n += eq("04:02:58 median 8.8s < 16.6s: still zone", Economy.decide(b).kind(), "zone");
+
+        // --- 05:56:13 lvl13: 5.79SS sword, 11.49SS zone target, 19.68SS rebirth, 1.21SS/min.
+        Economy.Inputs c = new Economy.Inputs();
+        c.bal = 7.42e24; c.incomePerMin = 1.21e24; c.swordTarget = 5.79e24; c.zoneTarget = 11.49e24;
+        c.rebirthTarget = 19.68e24; c.patienceMs = 9901; c.stageKills = 1; c.stageMaxTtkMs = 7003.0;
+        d = Economy.decide(c);
+        n += eq("05:56:13 holds the 5.79SS sword for the zone", d.reason(), "saving-zone");
+        n += eq("05:56:13 sword is 142% of the gap", d.swordPct(), 142.3, 0.5);
+        n += eq("05:56:13 the predicted 35s gain let the buy through (the bug)",
+            Economy.rebirthHorizonAllows(5.79e24, 7.42e24, 19.68e24, 1.21e24, Economy.swordGain(35_447.0, 2.0, 2000, 1.25)), true);
+        n += eq("05:56:13 the floor gain blocks it", Economy.rebirthHorizonAllows(5.79e24, 7.42e24, 19.68e24, 1.21e24, Economy.swordGain(null, 2.0, 2000, 1.25)), false);
+        c.zoneTarget = null; c.zoneFloor = 208.97e21; c.zoneSeeded = true; c.zoneExploratorySent = true;
+        d = Economy.decide(c);
+        n += eq("05:56:13 with only the zone floor known: still saving", d.reason(), "saving-zone");
+        n += eq("05:56:13 gap via floor", d.zoneGapVia(), "floor");
+
+        // --- the overshoot: /zone max landed on a stage the sword cannot handle (15:06:22).
+        Economy.Inputs o = new Economy.Inputs();
+        o.bal = 6.26e18; o.incomePerMin = 166.81e18; o.swordTarget = 1.71e18; o.swordFloor = 489.6e15;
+        o.zoneFloor = 7.52e18; o.zoneSeeded = true; o.patienceMs = 14_451; o.stageKills = 0; o.cookElapsedMs = 51_056;
+        d = Economy.decide(o);
+        n += eq("overshoot: hard via cook", d.gateVia(), "cook");
+        n += eq("overshoot: buy the sword mid-fight", d.action() + " " + d.kind() + " " + d.reason(), "buy sword sword-hard");
+        o.cookElapsedMs = 0; o.stageKills = 3; o.medianTtkMs = 3175.0; o.bal = 72.79e18;
+        d = Economy.decide(o);
+        n += eq("overshoot fixed, 72.79QQ in hand: probe the zone", d.action() + " " + d.kind(), "probe zone");
+        n += eq("overshoot fixed: gate open via median", d.gate() + "/" + d.gateVia(), "open/median");
+
+        // --- instant kills: the sword is useless, save for the known zone (15:05).
+        Economy.Inputs i = new Economy.Inputs();
+        i.bal = 1.09e18; i.incomePerMin = 327.76e18; i.swordTarget = 489.6e15; i.zoneTarget = 1.17e18;
+        i.patienceMs = 10_000; i.stageKills = 5; i.medianTtkMs = 1200.0;
+        d = Economy.decide(i);
+        n += eq("instant kills: wait for the zone", d.reason(), "sword-instant");
+        n += eq("instant kills: waiting on the zone", d.kind(), "zone");
+        n += eq("instant kills: eta known", d.waitMs() != null, true);
+        i.bal = 1.2e18;
+        n += eq("zone affordable: buy it", Economy.decide(i).reason(), "zone-affordable");
+
+        // --- cheap sword while saving (zone 3 numbers from 0.9.16): 22.52M sword, 252M zone, 31.91M bal, 4.7s kills.
+        Economy.Inputs ch = new Economy.Inputs();
+        ch.bal = 31.91e6; ch.incomePerMin = 10e6; ch.swordTarget = 22.52e6; ch.zoneTarget = 252e6;
+        ch.stageKills = 4; ch.medianTtkMs = 4742.0;
+        n += eq("cheap sword while saving", Economy.decide(ch).reason(), "sword-cheap");
+        ch.swordTarget = 78.82e6; ch.bal = 79.14e6;
+        n += eq("pricey sword while saving", Economy.decide(ch).reason(), "saving-zone");
+
+        // --- rebirth is ours to buy only without /autorebirth.
+        Economy.Inputs r = new Economy.Inputs();
+        r.serverAutoRebirth = false; r.rebirthAffordable = true; r.bal = 1e12;
+        n += eq("rebirth affordable, ours to buy", Economy.decide(r).kind(), "rebirth");
+        r.serverAutoRebirth = true; r.stageKills = 1;
+        n += eq("server auto-rebirth, fresh account: probe the zone first", Economy.decide(r).reason(), "zone-probe");
+        r.zoneSeeded = true; r.zoneExploratorySent = true; r.swordSeeded = true; r.swordExploratorySent = true;
+        n += eq("both probes in flight, nothing known: no prices", Economy.decide(r).reason(), "no-prices");
+        Economy.Inputs m = new Economy.Inputs();
+        m.swordMaxed = true; m.zoneMaxed = true; m.bal = 1e12;
+        n += eq("both maxed", Economy.decide(m).reason(), "maxed");
+
+        // --- the decision is the log and the HUD line.
+        Decision held = d.hold("cooldown", 41_000.0);
+        n += eq("hold keeps the kind", held.kind(), "zone");
+        n += eq("hold is a wait", held.action(), "wait");
+        n += eq("kv carries the gate", java.util.Arrays.asList(held.kv()).contains("gate"), true);
+        n += eq("closed only when hard", java.util.Arrays.asList(Economy.decide(o).kv()).indexOf("closed") < 0, true);
+        String plan = Economy.decide(i).hudPlan(1.17e18, 1.2e18);
+        n += eq("plan line: buy zone", plan.startsWith("buy zone 1.17QQ"), true);
+        n += eq("plan line short", plan.length() <= 64, true);
+        String hold = held.hudPlan(1.17e18, 1.09e18);
+        n += eq("plan line: cooldown", hold, "wait 41s · cooldown zone");
+        Economy.Inputs sv = new Economy.Inputs();
+        sv.bal = 79.14e6; sv.incomePerMin = 10e6; sv.swordTarget = 78.82e6; sv.zoneTarget = 252e6; sv.stageKills = 4; sv.medianTtkMs = 2678.0;
+        String save = Economy.decide(sv).hudPlan(252e6, 79.14e6);
+        n += eq("plan line: saving", save.startsWith("save for zone 252M 31% ~17m"), true);
+
+        // --- config
+        n += eq("fresh zoneMinStageKills", CFG.zoneMinStageKills, 1);
+        n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
+        n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
+        n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
+        n += eq("config version 37", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 37);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
+            YCBotChallengeConfig c36 = YCBotChallengeConfig.load(tmp);
+            n += eq("v36 migrates to 37", c36.configVersion, 37);
+            n += eq("v36 prediction gate forced off", c36.gateUsesPrediction, false);
+            n += eq("negative stage kills normalised", c36.zoneMinStageKills, 0);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v37 migration: " + ex);
+            n++;
+        }
         return n;
     }
 

@@ -223,6 +223,15 @@ public class CombatController {
         return connected ? System.currentTimeMillis() - tagAt : 0;
     }
 
+    /** Rarity tag of the current target ("RARE", "EPIC", ...), null when untagged or none. */
+    public String targetRarity() {
+        return targetRarity;
+    }
+
+    /** Whether the last pick passed over a rarer mob for a common one (0.9.33 stage probe); cleared by the next pick. */
+    public boolean lastPickCommonFirst = false;
+    private int commonFirstLoggedSeq = -1;
+
     // --- post-teleport settle ---
     private long settleUntil = 0;
     private String settleReason = null;
@@ -841,7 +850,8 @@ public class CombatController {
                     nextTargetDesc = n != null ? describe(n) : null;
                     if (logger != null && n != null) {
                         logger.log("next_picked", "mob", describe(n),
-                            "etaMs", currentEtaMs, "via", handoffDue ? "eta" : "fallback");
+                            "etaMs", currentEtaMs, "via", handoffDue ? "eta" : "fallback",
+                            "commonFirst", lastPickCommonFirst ? true : null);
                     }
                 }
                 nextPickedAt = now;
@@ -1301,6 +1311,8 @@ public class CombatController {
         float curYaw = client.player.getYaw();
         double turnCost = cfg.turnCostBlocks * speedFactor(client);   // same turn TIME, more ground covered
         ThreadLocalRandom rng = ThreadLocalRandom.current();
+        int stageKillsNow = stats.stageKills();
+        boolean sawRarity = false;
         for (LivingEntity le : candidates) {
             if (filterToDominant && le.getType() != dominantType) continue;
             double d = client.player.distanceTo(le);
@@ -1312,12 +1324,23 @@ public class CombatController {
             float yawTo = (float) (Math.toDegrees(Math.atan2(rel.z, rel.x)) - 90.0);
             double angleErr = Math.abs(MathHelper.wrapDegrees(yawTo - curYaw));
             double score = d + turnCost * (angleErr / 180.0);
-            // rarer mobs pay more: worth walking rarityBonusBlocks further for
-            score -= rarityBonus(parseRarity(le));
+            // rarer mobs pay more: worth walking rarityBonusBlocks further for — except for the
+            // first kills of a fresh stage, which measure it (0.9.33: a common mob first).
+            String rarity = parseRarity(le);
+            if (rarity != null) sawRarity = true;
+            score += Economy.rarityScoreAdjust(rarity, rarityBonus(rarity), stageKillsNow,
+                cfg.stageProbeCommonKills, cfg.stageProbeRarityPenaltyBlocks);
             if (cfg.targetCostJitter > 0) {
                 score *= 1.0 + (rng.nextDouble() * 2 - 1) * cfg.targetCostJitter;  // vary the lap
             }
             if (score < bestScore) { best = le; bestScore = score; }
+        }
+        lastPickCommonFirst = best != null && stageKillsNow < cfg.stageProbeCommonKills && sawRarity
+            && parseRarity(best) == null;
+        if (lastPickCommonFirst && logger != null && commonFirstLoggedSeq != stats.zoneChangeSeq()) {
+            commonFirstLoggedSeq = stats.zoneChangeSeq();
+            logger.log("target_common_first", "stageKills", stageKillsNow, "mob", describe(best),
+                "probeKills", cfg.stageProbeCommonKills);
         }
         // Ninja: occasionally pick a random in-range mob instead of the optimal one.
         if (cfg.ninja && best != null && candidates.size() > 1 && rng.nextDouble() < cfg.wrongTargetChance) {
