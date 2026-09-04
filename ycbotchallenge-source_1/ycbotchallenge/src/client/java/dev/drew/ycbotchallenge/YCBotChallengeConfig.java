@@ -719,6 +719,30 @@ public class YCBotChallengeConfig {
     /** First look at the Companion Eggs / Companions / Fuse menus (they borrowed rebirthLook* before 0.9.33). */
     public int companionLookMinMs = 600;
     public int companionLookMaxMs = 3500;
+
+    // ---- 0.9.33: Sword Skins scouting (price + tier from the enchanter's "Swords" menu)
+    /**
+     * At the end of an enchanter visit the bot clicks the "Swords" item ("Click to view your
+     * swords"), reads the Sword Skins menu and closes it: the equipped skin's Price is what
+     * the next /swordmax pays, its Tier n/5 is the HUD tier, a LOCKED skin's price is the
+     * promotion. Done whenever the sword price is unknown or only ladder-predicted, else
+     * with swordMenuScoutChance per visit. A menu price is trusted only within
+     * swordMenuPriceBandPct of the known target or of a ladder step from the last price
+     * (sword_menu_price verdict): the tooltip's suffix may be a font glyph the text does not
+     * carry ("$139.880" for 139.88Q), and a mis-read must never override the ladder.
+     */
+    public boolean swordMenuScoutEnabled = true;
+    public double swordMenuScoutChance = 0.35;
+    public double swordMenuPriceBandPct = 30;
+    public String swordSkinsButtonPattern = "/^swords?\\b/";
+    public String swordSkinsButtonLorePattern = "/click to view your swords/";
+    public String swordSkinsTitlePattern = "/^sword skins\\b/";
+    public String swordSkinSignaturePattern = "/^sword skin$/";
+    public String swordSkinPricePattern = "/price:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money/";
+    public String swordSkinTierPattern = "/tier:\\s*(?<cur>\\d+)\\s*\\/\\s*(?<max>\\d+)/";
+    public String swordSkinDamagePattern = "/damage:\\s*(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*dmg/";
+    public String swordSkinEquippedPattern = "/^equipped\\b/";
+    public String swordSkinLockedPattern = "/^locked\\b/";
     public int companionStageSettleKills = 10;
     public double companionRebirthEtaMinMax = 8.0;
     /** "Finish this kill, then go buy pets": delay between the decision and the walk. */
@@ -1483,6 +1507,8 @@ public class YCBotChallengeConfig {
             gateUsesPrediction = fresh.gateUsesPrediction;
             // Companions: visits/last stage/egg prices persisted per user (state file), auto-found
             // eggs saved (companion_egg_saved), cheap visits capped by companionMaxZoneGapPct.
+            // Sword Skins scouting (swordMenuScout*, swordSkin* patterns): price + tier from the
+            // enchanter's "Swords" menu, band-checked against the ladder.
             // Menus: one timing policy (gui* knobs); the dead pre-0.9.11 knobs (enchantVisitGap*,
             // enchantSkipChance, enchantMaxBuysPerVisit, enchantMinEtaMs, enchantMaxBuysBetweenKills,
             // enchantSkipFirstTabChance, upgradePeriod*, zoneEverySwords*, zoneOverSwordRatio,
@@ -1792,6 +1818,17 @@ public class YCBotChallengeConfig {
         if (guiReadMaxMs < guiReadMinMs) guiReadMaxMs = guiReadMinMs;
         if (companionLookMinMs < 0) companionLookMinMs = 0;
         if (companionLookMaxMs < companionLookMinMs) companionLookMaxMs = companionLookMinMs;
+        if (swordMenuScoutChance < 0 || swordMenuScoutChance > 1) swordMenuScoutChance = fresh.swordMenuScoutChance;
+        if (swordMenuPriceBandPct < 0) swordMenuPriceBandPct = 0;
+        if (swordSkinsButtonPattern == null || swordSkinsButtonPattern.isBlank()) swordSkinsButtonPattern = fresh.swordSkinsButtonPattern;
+        if (swordSkinsButtonLorePattern == null || swordSkinsButtonLorePattern.isBlank()) swordSkinsButtonLorePattern = fresh.swordSkinsButtonLorePattern;
+        if (swordSkinsTitlePattern == null || swordSkinsTitlePattern.isBlank()) swordSkinsTitlePattern = fresh.swordSkinsTitlePattern;
+        if (swordSkinSignaturePattern == null || swordSkinSignaturePattern.isBlank()) swordSkinSignaturePattern = fresh.swordSkinSignaturePattern;
+        if (swordSkinPricePattern == null || swordSkinPricePattern.isBlank()) swordSkinPricePattern = fresh.swordSkinPricePattern;
+        if (swordSkinTierPattern == null || swordSkinTierPattern.isBlank()) swordSkinTierPattern = fresh.swordSkinTierPattern;
+        if (swordSkinDamagePattern == null || swordSkinDamagePattern.isBlank()) swordSkinDamagePattern = fresh.swordSkinDamagePattern;
+        if (swordSkinEquippedPattern == null || swordSkinEquippedPattern.isBlank()) swordSkinEquippedPattern = fresh.swordSkinEquippedPattern;
+        if (swordSkinLockedPattern == null || swordSkinLockedPattern.isBlank()) swordSkinLockedPattern = fresh.swordSkinLockedPattern;
         if (stageProbeCommonKills < 0) stageProbeCommonKills = 0;
         if (stageProbeRarityPenaltyBlocks < 0) stageProbeRarityPenaltyBlocks = 0;
         if (zonePatienceMinMult <= 0) zonePatienceMinMult = 0.6;

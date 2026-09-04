@@ -29,12 +29,15 @@ import net.minecraft.util.hit.HitResult;
 public class EnchantController {
     private enum Phase {
         IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_PRESS, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
-        MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, CLOSE
+        MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, SWORDS_CLICK, SWORDS_PRESS, SWORDS_WAIT, SWORDS_READ, CLOSE
     }
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
     private final EnchantLore lore;
+    /** 0.9.33: the Sword Skins menu reached from the enchanter's "Swords" item. */
+    private final SwordSkinLore skins;
+    private int swordsSlot = -1;
     private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
@@ -76,6 +79,7 @@ public class EnchantController {
         this.cfg = cfg;
         this.stats = stats;
         this.lore = new EnchantLore(cfg);
+        this.skins = new SwordSkinLore(cfg);
     }
 
     public void setLogger(EventLogger logger) { this.logger = logger; }
@@ -90,7 +94,30 @@ public class EnchantController {
     /** A hand-opened enchanter (or its upgrade sub-GUI) must never be mistaken for a captcha. */
     public boolean isOurGui(MinecraftClient client) {
         EnchantScreens.Kind k = EnchantScreens.classify(client, lore);
-        return k == EnchantScreens.Kind.ENCHANTER || k == EnchantScreens.Kind.UPGRADE;
+        return k == EnchantScreens.Kind.ENCHANTER || k == EnchantScreens.Kind.UPGRADE || skinsOpen(client);
+    }
+
+    /** The Sword Skins menu is showing: by title, or by content (two or more SWORD SKIN items). */
+    private boolean skinsOpen(MinecraftClient client) {
+        if (GuiHuman.handler(client) == null) return false;
+        if (skins.isSkinsTitle(GuiHuman.title(client))) return true;
+        return SwordSkinLore.looksLikeSkins(parseSkins(client));
+    }
+
+    private List<SwordSkinLore.Skin> parseSkins(MinecraftClient client) {
+        List<SwordSkinLore.Skin> out = new ArrayList<>();
+        for (GuiHuman.Item it : GuiHuman.items(client)) {
+            SwordSkinLore.Skin sk = skins.parse(it.slot(), it.name(), it.lore());
+            if (sk != null) out.add(sk);
+        }
+        return out;
+    }
+
+    /** Whether this visit ends with a look at the Sword Skins menu. */
+    private boolean swordMenuDue() {
+        if (!cfg.swordMenuScoutEnabled) return false;
+        if (stats.swordTarget == null || stats.swordTargetPredicted || stats.swordTier == null) return true;
+        return ThreadLocalRandom.current().nextDouble() < cfg.swordMenuScoutChance;
     }
 
     public String hudLine() {
@@ -168,7 +195,12 @@ public class EnchantController {
                 phase = Phase.TAB_CLICK;
             }
             case TAB_CLICK -> {
-                if (wrapUp || tabIndex >= lore.tabs().size()) { phase = Phase.CLOSE; return true; }
+                if (wrapUp) { phase = Phase.CLOSE; return true; }
+                if (tabIndex >= lore.tabs().size()) {
+                    // Every tab seen: a look at the Sword Skins menu on the way out (0.9.33), or close.
+                    phase = swordMenuDue() ? Phase.SWORDS_CLICK : Phase.CLOSE;
+                    return true;
+                }
                 if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.ENCHANTER) {
                     onEnchanterGone(client, now);
                     return true;
@@ -382,6 +414,62 @@ public class EnchantController {
                 } else if (now >= phaseUntil) {
                     onEnchanterGone(client, now);
                 }
+            }
+            case SWORDS_CLICK -> {
+                if (wrapUp) { phase = Phase.CLOSE; return true; }
+                if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.ENCHANTER) { phase = Phase.CLOSE; return true; }
+                swordsSlot = -1;
+                List<GuiHuman.Item> items = GuiHuman.items(client);
+                for (GuiHuman.Item it : items) {
+                    if (skins.isSwordsButton(it.name(), it.lore())) { swordsSlot = it.slot(); break; }
+                }
+                if (swordsSlot < 0) {
+                    log("sword_menu_skip", "reason", "no-button", "menuItems", GuiHuman.describe(items));
+                    phase = Phase.CLOSE;
+                    return true;
+                }
+                phase = Phase.SWORDS_PRESS;
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+            }
+            case SWORDS_PRESS -> {
+                if (now < phaseUntil) return true;
+                if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.ENCHANTER) { phase = Phase.CLOSE; return true; }
+                GuiHuman.click(client, swordsSlot, "enchant", "swords", logger);
+                phase = Phase.SWORDS_WAIT;
+                phaseUntil = now + cfg.enchantOpenTimeoutMs;
+            }
+            case SWORDS_WAIT -> {
+                if (skinsOpen(client)) {
+                    phase = Phase.SWORDS_READ;
+                    phaseUntil = now + GuiHuman.lookDelayMs(cfg, "enchant");
+                } else if (now >= phaseUntil) {
+                    log("sword_menu_skip", "reason", "timeout", "title", GuiHuman.title(client),
+                        "kind", EnchantScreens.classify(client, lore).name().toLowerCase(Locale.ROOT));
+                    phase = Phase.CLOSE;
+                }
+            }
+            case SWORDS_READ -> {
+                if (now < phaseUntil) return true;
+                if (!skinsOpen(client)) {
+                    log("sword_menu_skip", "reason", "gone", "title", GuiHuman.title(client));
+                    phase = Phase.CLOSE;
+                    return true;
+                }
+                List<SwordSkinLore.Skin> all = parseSkins(client);
+                SwordSkinLore.Skin eq = SwordSkinLore.equipped(all);
+                SwordSkinLore.Skin next = SwordSkinLore.nextBuy(all);
+                boolean promotion = next != null && eq != null && next != eq;
+                log("sword_menu", "title", GuiHuman.title(client), "skins", all.size(),
+                    "equipped", eq != null ? eq.name() : null, "tier", eq != null ? eq.tier() : null,
+                    "tierMax", eq != null ? eq.tierMax() : null,
+                    "damage", eq != null && eq.damage() != null ? Amounts.format(eq.damage()) : null,
+                    "damageRaw", eq != null ? eq.damageRaw() : null,
+                    "nextPrice", next != null && next.price() != null ? Amounts.format(next.price()) : null,
+                    "nextPriceRaw", next != null ? next.priceRaw() : null, "nextSkin", next != null ? next.name() : null,
+                    "promotion", promotion ? true : null, "items", SwordSkinLore.summaries(all));
+                stats.onSwordMenu(next != null ? next.price() : null, next != null ? next.priceRaw() : null,
+                    eq != null ? eq.tier() : null, eq != null ? eq.tierMax() : null, eq != null ? eq.name() : null, promotion, now);
+                phase = Phase.CLOSE;
             }
             case CLOSE -> {
                 // Done with the menu: a beat, then Esc (0.9.33; it used to close instantly).

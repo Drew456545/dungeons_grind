@@ -1065,6 +1065,10 @@ public class StatsTracker {
         rebirthExploratorySent = false;
         swordBuysThisZone = 0;
         upgradeChatFrag = null;
+        swordTier = null;
+        swordTierMax = null;
+        swordSkin = null;
+        swordTierApprox = false;
         // Back to stage 1: every TTK sample belongs to the old progression.
         killDurations.clear();
         zoneBaselineTtkMs = null;
@@ -1196,9 +1200,58 @@ public class StatsTracker {
         zoneSeqAtDisable = zoneChangeSeq;
     }
 
-    /** "tier 3/5" from the Sword Skins menu (0.9.33 step 6), "~3/5" once /swordmax moved it since the last read; null unknown. */
+    // ---- 0.9.33: the sword's skin tier and the menu-quoted next price (Sword Skins scouting)
+    public volatile Integer swordTier = null;
+    public volatile Integer swordTierMax = null;
+    public volatile String swordSkin = null;
+    private volatile boolean swordTierApprox = false;
+
+    /** "tier 3/5" from the Sword Skins menu, "~4/5" once /swordmax moved it since the last read; null unknown. */
     public String swordTierLine() {
-        return null;
+        if (swordTier == null || swordTierMax == null) return null;
+        return (swordTierApprox ? "~" : "tier ") + swordTier + "/" + swordTierMax;
+    }
+
+    /** A sword level was bought: the tier climbs (wrapping into the next skin) until the menu is read again. */
+    private void bumpSwordTier() {
+        if (swordTier == null || swordTierMax == null) return;
+        int t = swordTier + 1;
+        if (t > swordTierMax) { t = 1; swordSkin = null; }
+        swordTier = t;
+        swordTierApprox = true;
+    }
+
+    /**
+     * The Sword Skins menu was read: the tier is exact again, and the equipped skin's price
+     * becomes the sword target when it agrees with what we know (sword_menu_price verdict).
+     */
+    public void onSwordMenu(Double nextPrice, String priceRaw, Integer tier, Integer tierMax, String skin, boolean promotion, long now) {
+        if (tier != null && tierMax != null) {
+            swordTier = tier;
+            swordTierMax = tierMax;
+            swordTierApprox = false;
+        }
+        if (skin != null) swordSkin = skin;
+        Double reference = swordTarget;
+        String verdict = SwordSkinLore.acceptMenuPrice(nextPrice, reference, swordLastPrice, priceGrowth("sword"), cfg.swordMenuPriceBandPct);
+        boolean accepted = "match".equals(verdict) || "ladder-match".equals(verdict) || "no-reference".equals(verdict);
+        boolean applied = false;
+        if (accepted && nextPrice != null && (swordTarget == null || swordTargetPredicted)) {
+            onServerPrice("sword", nextPrice, swordTargetPredicted ? swordTarget : null, swordLastPrice);
+            if (swordTarget == null || swordTargetPredicted) swordPriceSeenAt = now;
+            swordTarget = nextPrice;
+            swordTargetPredicted = false;
+            applied = true;
+            markStateDirty();
+        }
+        log("sword_menu_price", "price", nextPrice != null ? Amounts.format(nextPrice) : null, "raw", priceRaw,
+            "reference", reference != null ? Amounts.format(reference) : null,
+            "referenceVia", reference == null ? null : swordTargetPredicted && !applied ? "predicted" : "server",
+            "previous", swordLastPrice != null ? Amounts.format(swordLastPrice) : null,
+            "verdict", verdict, "applied", applied, "promotion", promotion ? true : null,
+            "errPct", nextPrice != null && reference != null && reference > 0
+                ? Math.round(1000.0 * (nextPrice - reference) / reference) / 10.0 : null,
+            "tier", tier, "tierMax", tierMax, "skin", skin);
     }
 
     /** Kills recorded on the current stage (the window is cleared on every zone change, teleport and rebirth). */
@@ -1656,6 +1709,7 @@ public class StatsTracker {
             watchSpend(kind, bal, now);
         } else if ("sword".equals(kind)) {
             swordExploratorySent = false;
+            bumpSwordTier();
             if (paid != null) {
                 swordLastPrice = swordLastPrice == null ? paid : Math.max(swordLastPrice, paid);
                 predictTarget(kind, swordLastPrice, now);
@@ -1727,7 +1781,7 @@ public class StatsTracker {
             // Further levels from the same /swordmax: the retry floor is the last price paid.
             if (paid != null && !"rebirth".equals(kind)) {
                 if (zone) zoneLastPrice = zoneLastPrice == null ? paid : Math.max(zoneLastPrice, paid);
-                else swordLastPrice = swordLastPrice == null ? paid : Math.max(swordLastPrice, paid);
+                else { swordLastPrice = swordLastPrice == null ? paid : Math.max(swordLastPrice, paid); bumpSwordTier(); }
                 lastSpendAt = now;
                 log("upgrade_result", "kind", kind, "success", true, "fail", false,
                     "paid", Amounts.format(paid), "via", via, "extraLevel", true);
@@ -1775,6 +1829,7 @@ public class StatsTracker {
             swordPriceSeenAt = 0;
             swordExploratorySent = false;
             swordBuysThisZone++;
+            bumpSwordTier();
         }
         predictTarget(kind, ladderBase, now);
         markStateDirty();

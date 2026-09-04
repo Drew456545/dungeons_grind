@@ -298,6 +298,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("captchaAutoSolve", "Captcha auto-solve", () -> config.captchaAutoSolve, v -> config.captchaAutoSolve = v,
             () -> { String c = captchaSolver.hudLine(); return c != null ? c : "no captcha"; }));
         opts.add(new BotOptionsScreen.Option("learnObservedUpgrades", "Learn manual buys", () -> config.learnObservedUpgrades, v -> config.learnObservedUpgrades = v));
+        opts.add(new BotOptionsScreen.Option("swordMenuScoutEnabled", "Sword Skins price scouting", () -> config.swordMenuScoutEnabled, v -> config.swordMenuScoutEnabled = v,
+            () -> { String t = stats.swordTierLine(); return t != null ? t + (stats.swordSkin != null ? " · " + stats.swordSkin : "") : "menu not read yet"; }));
         opts.add(new BotOptionsScreen.Option("gateUsesPrediction", "Legacy: prediction fills gate", () -> config.gateUsesPrediction, v -> config.gateUsesPrediction = v));
         opts.add(new BotOptionsScreen.Option("pricePredictionEnabled", "Price ladder prediction", () -> config.pricePredictionEnabled, v -> config.pricePredictionEnabled = v));
         opts.add(new BotOptionsScreen.Option("sprint", "Sprint", () -> config.sprint, v -> config.sprint = v));

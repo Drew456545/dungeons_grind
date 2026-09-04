@@ -75,6 +75,7 @@ public final class EconomyChecks {
         n += hudPlan0933();
         n += companions0933();
         n += gui0933();
+        n += swordSkins0933();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1829,6 +1830,54 @@ public final class EconomyChecks {
             System.err.println("FAIL gui config: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /**
+     * 0.9.33 Sword Skins scouting. Fixtures are from Drew's screenshots (2026-09-04); replace
+     * them with the first live sword_menu line once it lands — the suffix of "$139.880" in
+     * particular may be a font glyph the text component does not carry.
+     */
+    private static int swordSkins0933() {
+        int n = 0;
+        SwordSkinLore sl = new SwordSkinLore(CFG);
+        List<String> netherite = List.of("SWORD SKIN", "Custom Netherite Sword that will provide the wielder to do more damage against monsters.",
+            "Information:", "* Damage: 727.75B DMG", "* Price: $139.880 Money", "* Tier: 3/5 ★★★☆☆", "EQUIPPED",
+            "Click here to upgrade the tier of your sword", "When in Main Hand:", "8 Attack Damage", "1.6 Attack Speed");
+        SwordSkinLore.Skin eq = sl.parse(12, "Netherite Sword", netherite);
+        n += eq("netherite parsed", eq != null, true);
+        n += eq("netherite equipped", eq != null && eq.equipped(), true);
+        n += eq("netherite tier 3", eq != null ? eq.tier() : null, 3);
+        n += eq("netherite tier max 5", eq != null ? eq.tierMax() : null, 5);
+        n += eq("netherite damage 727.75B", eq != null ? eq.damage() : null, 727.75e9, 1e6);
+        n += eq("glyph price reads as 139.88", eq != null ? eq.price() : null, 139.88, 1e-6);
+        List<String> netheriteQ = List.of("SWORD SKIN", "* Damage: 727.75B DMG", "* Price: $139.88Q Money", "* Tier: 3/5", "EQUIPPED");
+        n += eq("real suffix reads as 139.88Q", sl.parse(12, "Netherite Sword", netheriteQ).price(), 139.88e15, 1e12);
+        List<String> samurai = List.of("SWORD SKIN", "* Damage: 15.13T DMG", "* Price: $600 Money", "* Tier: 0/5 ★★★★★", "LOCKED", "Click to buy this Sword Skin");
+        SwordSkinLore.Skin lk = sl.parse(13, "Samurai Sword", samurai);
+        n += eq("samurai locked", lk != null && lk.locked() && !lk.equipped(), true);
+        n += eq("samurai tier 0/5", lk != null ? lk.tier() + "/" + lk.tierMax() : null, "0/5");
+        n += eq("samurai price 600", lk != null ? lk.price() : null, 600.0, 1e-9);
+        n += eq("not a skin", sl.parse(1, "Rage Enchant", List.of("Level: 0 / 100", "Price: 20,000,000 Souls")) == null, true);
+        n += eq("swords button by lore", sl.isSwordsButton("Swords", List.of("Click to view your swords")), true);
+        n += eq("swords button by name", sl.isSwordsButton("Swords", List.of()), true);
+        n += eq("tab is not the button", sl.isSwordsButton("SOULS", List.of("Soul enchants")), false);
+        n += eq("skins title", sl.isSkinsTitle("Sword Skins"), true);
+        n += eq("enchanter glyph title is not skins", sl.isSkinsTitle("\u00a7f\u00a7r"), false);
+        List<SwordSkinLore.Skin> all = List.of(eq, lk);
+        n += eq("looks like skins", SwordSkinLore.looksLikeSkins(all), true);
+        n += eq("next buy is the equipped skin's tier", SwordSkinLore.nextBuy(all).name(), "Netherite Sword");
+        SwordSkinLore.Skin maxed = sl.parse(12, "Netherite Sword", List.of("SWORD SKIN", "* Price: $1Q Money", "* Tier: 5/5", "EQUIPPED"));
+        n += eq("maxed skin: next buy is the cheapest locked skin", SwordSkinLore.nextBuy(List.of(maxed, lk)).name(), "Samurai Sword");
+        // The band: a glyph-mangled 139.88 can never override the 139.88Q ladder.
+        n += eq("glyph price rejected against the target", SwordSkinLore.acceptMenuPrice(139.88, 139.88e15, 39.97e15, 3.5, 30), "rejected");
+        n += eq("menu agrees with the target", SwordSkinLore.acceptMenuPrice(139.88e15, 139.88e15, null, 3.5, 30), "match");
+        n += eq("menu is a ladder step from the last price", SwordSkinLore.acceptMenuPrice(139.88e15, null, 39.97e15, 3.5, 30), "ladder-match");
+        n += eq("menu two steps up is rejected", SwordSkinLore.acceptMenuPrice(489.6e15, null, 39.97e15, 3.5, 30), "rejected");
+        n += eq("nothing to check against", SwordSkinLore.acceptMenuPrice(1e9, null, null, 3.5, 30), "no-reference");
+        n += eq("null price rejected", SwordSkinLore.acceptMenuPrice(null, 1e9, null, 3.5, 30), "rejected");
+        n += eq("fresh swordMenuScoutEnabled", CFG.swordMenuScoutEnabled, true);
+        n += eq("fresh swordMenuScoutChance", CFG.swordMenuScoutChance, 0.35, 1e-9);
         return n;
     }
 
