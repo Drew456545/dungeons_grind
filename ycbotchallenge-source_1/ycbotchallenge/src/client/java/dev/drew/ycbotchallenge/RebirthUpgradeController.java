@@ -69,6 +69,9 @@ public class RebirthUpgradeController {
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
+    /** 0.9.30 HUD chip: suspended after repeated aborts (toggle to reset). */
+    public boolean isSuspended() { return suspended; }
+
     /** The Rebirth GUI and its Upgrades menu are ours (or hand-opened), never a captcha. */
     public boolean isOurGui(MinecraftClient client) {
         String title = title(client);
@@ -172,7 +175,8 @@ public class RebirthUpgradeController {
                 points = lore.points(star.lore());
                 log("rebirth_points", "points", points, "slot", starSlot, "lore", star.lore(), "via", visitVia);
                 if (points != null && points <= 0) {
-                    log("rebirth_upgrade_skip", "reason", "no-points");
+                    stats.notePointsChecked();
+                    log("rebirth_upgrade_skip", "reason", "no-points", "rebirths", stats.rebirths);
                     phase = Phase.CLOSE;
                     return true;
                 }
@@ -312,9 +316,15 @@ public class RebirthUpgradeController {
         if (plannedAt == 0 && !enableCheckDone
             && Economy.probeDue(combat.kills - killsAtEnable, enableKillsNeeded, now - enabledAt, enableDelayMs)) {
             enableCheckDone = true;
-            plannedAt = now;
-            planVia = "enable";
-            log("rebirth_upgrade_plan", "via", "enable", "killsSinceEnable", combat.kills - killsAtEnable);
+            if (stats.pointsCheckedThisRebirth()) {
+                // 0.9.30: 12 enable visits across two logs all read zero points with the
+                // rebirth counter unchanged between them — points only come with a rebirth.
+                log("rebirth_upgrade_skip", "reason", "checked-this-rebirth", "rebirths", stats.rebirths);
+            } else {
+                plannedAt = now;
+                planVia = "enable";
+                log("rebirth_upgrade_plan", "via", "enable", "killsSinceEnable", combat.kills - killsAtEnable);
+            }
         }
         if (plannedAt == 0 || now < plannedAt) return false;
         // Between fights, like a person: never mid-cook, never over another screen.

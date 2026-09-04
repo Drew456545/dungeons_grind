@@ -147,6 +147,54 @@ public class UpgradeController {
         return sb.toString();
     }
 
+    /** 0.9.30 HUD: "zone 208.97S  93%  ~2m" plus the holding reason, or the typing phase; null when nothing. */
+    public String hudNextLine() {
+        if (!cfg.upgradesEnabled) return null;
+        String kind = hudKind();
+        Double bal = stats.money();
+        Double rate = stats.incomePerMinute();
+        StringBuilder sb = new StringBuilder();
+        if (phase != Phase.IDLE) {
+            sb.append("§e").append(pendingKind != null ? pendingKind.name().toLowerCase(Locale.ROOT) + " " : "")
+                .append(phase.name().toLowerCase(Locale.ROOT)).append("§r");
+            return sb.toString();
+        }
+        if (kind == null) return horizonBlocked != null ? "§8holding " + horizonBlocked + " (rebirth sooner)§r" : null;
+        sb.append(kind);
+        Double price = targetOf(kind);
+        if (price != null && bal != null) {
+            sb.append(' ').append(Amounts.format(price));
+            int pct = (int) Math.min(999, Math.round(100.0 * bal / Math.max(1e-9, price)));
+            sb.append("  §7").append(pct).append('%');
+            double need = Math.max(0, price - bal);
+            Double eta = Economy.etaMs(need, rate);
+            if (need > 0 && eta != null) sb.append("  ~").append(formatEta(eta));
+            sb.append("§r");
+        } else if (price == null) {
+            Double last = stats.lastPrice(kind);
+            sb.append(last != null ? "  §7price ? (retry ≥ " + Amounts.format(last) + ")§r" : "  §7price ?§r");
+        }
+        long last = lastSendFor(kind);
+        int cap = capFor(kind);
+        long remainMs = last <= 0 || cap <= 0 ? 0 : (last + cap) - System.currentTimeMillis();
+        if (remainMs > 0) sb.append("  §8cd ").append((remainMs + 999) / 1000).append("s§r");
+        if (savingZone) sb.append("  §8(sword waits for zone)§r");
+        else if (horizonBlocked != null) sb.append("  §8(").append(horizonBlocked).append(" waits; rebirth sooner)§r");
+        return sb.toString();
+    }
+
+    /** 0.9.30 HUD: "656.09S  eta 27m", or null without a known rebirth target. */
+    public String hudRebirthLine() {
+        if (stats.rebirthTarget == null) return null;
+        Double bal = stats.money();
+        Double rate = stats.incomePerMinute();
+        StringBuilder sb = new StringBuilder(Amounts.format(stats.rebirthTarget));
+        Double etaMin = Economy.rebirthEtaMin(bal, stats.rebirthTarget, rate);
+        if (etaMin != null && etaMin > 0) sb.append("  §7eta ").append(formatEta(etaMin * 60_000.0)).append("§r");
+        else if (etaMin != null) sb.append("  §acovered§r");
+        return sb.toString();
+    }
+
     private static String formatEta(double ms) {
         double s = ms / 1000.0;
         if (s < 90) return Math.round(s) + "s";
@@ -762,8 +810,10 @@ public class UpgradeController {
         return Economy.knownAffordable(stats.rebirthTarget, stats.money());
     }
 
+    /** Zone: the config constant. Sword: TTK-aware (0.9.30, {@link Economy#swordGain}), never below the config minimum. */
     private double horizonGain(String kind) {
-        return "zone".equals(kind) ? cfg.rebirthHorizonZoneGain : cfg.rebirthHorizonSwordGain;
+        if ("zone".equals(kind)) return cfg.rebirthHorizonZoneGain;
+        return Economy.swordGain(evalTtkMs, cfg.rebirthHorizonSwordDpsMult, cfg.zoneInstantTtkMs, cfg.rebirthHorizonSwordGain);
     }
 
     /**
@@ -870,7 +920,7 @@ public class UpgradeController {
             "rebirthEtaMin", tenth(Economy.rebirthEtaMin(bal, stats.rebirthTarget, stats.incomePerMinute())),
             "buyEtaMin", kind == null ? null
                 : tenth(Economy.buyEtaMin(remaining, bal, stats.rebirthTarget, stats.incomePerMinute(), horizonGain(kind))),
-            "gain", kind == null ? null : horizonGain(kind),
+            "gain", kind == null ? null : Math.round(horizonGain(kind) * 100.0) / 100.0,
             "gapPct", kind != null && remaining != null && bal != null && stats.rebirthTarget != null
                 && stats.rebirthTarget - bal > 0
                 ? Math.round(1000.0 * remaining / (stats.rebirthTarget - bal)) / 10.0 : null,

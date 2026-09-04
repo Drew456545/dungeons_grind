@@ -67,6 +67,7 @@ public final class EconomyChecks {
         n += companions();
         n += transcend();
         n += firstKills();
+        n += audit0930();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -504,18 +505,42 @@ public final class EconomyChecks {
         EnchantLore.Item r50 = lore.parse("Rage Enchant", rage.subList(0, rage.size() - 1));
         n += eq("rage unlocked at 50 is upgradable", r50.upgradable(), true);
 
-        // Policy: first upgradable affordable in slot order; maxed/locked skipped; attempted skipped.
-        // Affordability uses the ITEM's price currency (0.9.11 spent essence against the souls balance).
+        // Policy (0.9.30): a weighted roll over the affordable non-maxed candidates; roll 0 = first in slot order.
+        // maxed/locked skipped; attempted skipped. Affordability uses the ITEM's price currency
+        // (0.9.11 spent essence against the souls balance).
         List<EnchantLore.Item> grid = List.of(g, r, m);
         java.util.Map<String, Double> rich = java.util.Map.of("souls", 8e6, "essence", 100.0);
         java.util.Map<String, Double> poor = java.util.Map.of("souls", 5e6, "essence", 1e12);
-        n += eq("choose magnet at 8M souls", EnchantLore.chooseEnchant(grid, rich, "souls", java.util.Set.of()) == m, true);
+        n += eq("choose magnet at 8M souls", EnchantLore.chooseEnchant(grid, rich, "souls", java.util.Set.of(), 0.0, 0.0) == m, true);
         n += eq("choose none at 5M souls (essence irrelevant)",
-            EnchantLore.chooseEnchant(grid, poor, "souls", java.util.Set.of()) == null, true);
+            EnchantLore.chooseEnchant(grid, poor, "souls", java.util.Set.of(), 0.0, 0.0) == null, true);
         n += eq("choose skips attempted",
-            EnchantLore.chooseEnchant(grid, rich, "souls", java.util.Set.of("Soul Magnet Enchant")) == null, true);
+            EnchantLore.chooseEnchant(grid, rich, "souls", java.util.Set.of("Soul Magnet Enchant"), 0.0, 0.0) == null, true);
         n += eq("choose rage once unlocked",
-            EnchantLore.chooseEnchant(List.of(g, r50, m), java.util.Map.of("souls", 25e6), "souls", java.util.Set.of()) == r50, true);
+            EnchantLore.chooseEnchant(List.of(g, r50, m), java.util.Map.of("souls", 25e6), "souls", java.util.Set.of(), 0.0, 0.0) == r50, true);
+        // 0.9.30 weighted pick: 10 essence visits in the 20:35/00:19 logs put the whole balance into
+        // Rocket (slot order) while Second Hand got the change and Wizard was never bought.
+        List<EnchantLore.Item> two = List.of(m, r50); // magnet 7.105M and rage 20M, both souls
+        java.util.Map<String, Double> both = java.util.Map.of("souls", 25e6);
+        java.util.Map<String, Double> oneOnly = java.util.Map.of("souls", 8e6);
+        n += eq("two candidates at 25M", EnchantLore.enchantCandidates(two, both, "souls", java.util.Set.of()).size(), 2);
+        n += eq("one candidate at 8M", EnchantLore.enchantCandidates(two, oneOnly, "souls", java.util.Set.of()).size(), 1);
+        n += eq("equal weights, roll 0.0 → first", EnchantLore.chooseEnchant(two, both, "souls", java.util.Set.of(), 0.0, 0.0) == m, true);
+        n += eq("equal weights, roll 0.49 → first", EnchantLore.chooseEnchant(two, both, "souls", java.util.Set.of(), 0.49, 0.0) == m, true);
+        n += eq("equal weights, roll 0.51 → second", EnchantLore.chooseEnchant(two, both, "souls", java.util.Set.of(), 0.51, 0.0) == r50, true);
+        n += eq("equal weights, roll 0.99 → second", EnchantLore.chooseEnchant(two, both, "souls", java.util.Set.of(), 0.99, 0.0) == r50, true);
+        n += eq("roll 1.0 stays in range", EnchantLore.chooseEnchant(two, both, "souls", java.util.Set.of(), 1.0, 0.0) == r50, true);
+        for (double roll : new double[] {0.0, 0.5, 0.99}) {
+            n += eq("unaffordable never chosen (roll " + roll + ")",
+                EnchantLore.chooseEnchant(two, oneOnly, "souls", java.util.Set.of(), roll, 0.0) == m, true);
+        }
+        n += eq("weight equal", EnchantLore.enchantWeight(m, 0.0), 1.0, 1e-9);
+        n += eq("weight lag: level 0/100 at bias 2 → 3", EnchantLore.enchantWeight(r50, 2.0), 3.0, 1e-9);
+        n += eq("weight lag: 1321/2000 at bias 2 → 1.68", EnchantLore.enchantWeight(m, 2.0), 1.679, 1e-3);
+        n += eq("lag bias 2 favours the level-0 enchant at roll 0.4",
+            EnchantLore.chooseEnchant(two, both, "souls", java.util.Set.of(), 0.4, 2.0) == r50, true);
+        n += eq("equal weights keep slot order at roll 0.4",
+            EnchantLore.chooseEnchant(two, both, "souls", java.util.Set.of(), 0.4, 0.0) == m, true);
         // Essence-priced item on whatever tab: judged against essence.
         EnchantLore.Item rocket = lore.parse("Rocket Enchant", List.of("ACTIVATION CHANCE: 100.000%",
             "| Level: 2,977 / 5,000", "| Price: 307,700 Essence", "[CLICK HERE TO UPGRADE THIS ENCHANT]"));
@@ -1325,6 +1350,52 @@ public final class EconomyChecks {
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
             System.err.println("FAIL eggStore: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    /**
+     * 0.9.30 log audit: the sword gain follows the TTK (kill medians around sword buys:
+     * 1.3x at the floor, 2–8x on long kills), Transcend activations without our press are
+     * the server's (37 at 190s spacing, bot off), and a zero-points /rebirth read is not
+     * repeated until the rebirth counter moves (12 empty visits across two logs).
+     */
+    private static int audit0930() {
+        int n = 0;
+        n += eq("sword gain at the floor", Economy.swordGain(1000.0, 2.0, 2000, 1.25), 1.25, 1e-9);
+        n += eq("sword gain 5s", Economy.swordGain(5000.0, 2.0, 2000, 1.25), 7000.0 / 4500.0, 1e-9);
+        n += eq("sword gain 8s", Economy.swordGain(8000.0, 2.0, 2000, 1.25), 10000.0 / 6000.0, 1e-9);
+        n += eq("sword gain 20s", Economy.swordGain(20000.0, 2.0, 2000, 1.25), 22000.0 / 12000.0, 1e-9);
+        n += eq("sword gain 60s", Economy.swordGain(60000.0, 2.0, 2000, 1.25), 62000.0 / 32000.0, 1e-9);
+        n += eq("unknown ttk → floor", Economy.swordGain(null, 2.0, 2000, 1.25), 1.25, 1e-9);
+        n += eq("dps mult 1 → floor", Economy.swordGain(20000.0, 1.0, 2000, 1.25), 1.25, 1e-9);
+        n += eq("no movement floor, mult 2 → 2", Economy.swordGain(6000.0, 2.0, 0, 1.25), 2.0, 1e-9);
+        // 00:19 log, 1744 s: 132S sword, 156S balance, 656S rebirth, ~17S/min, 5–8s kills.
+        double g = Economy.swordGain(6000.0, 2.0, 2000, 1.25);
+        n += eq("132S sword at a 6s ttk passes the horizon", Economy.rebirthHorizonAllows(132e21, 156e21, 656e21, 17e21, g), true);
+        n += eq("the same sword was refused at the fixed 1.25", Economy.rebirthHorizonAllows(132e21, 156e21, 656e21, 17e21, 1.25), false);
+        long t0 = 1_788_480_000_000L;
+        n += eq("activation with no press is the server's", Economy.transcendServerDriven(t0, 0, 2000), true);
+        n += eq("activation 1s after our press is ours", Economy.transcendServerDriven(t0 + 1000, t0, 2000), false);
+        n += eq("activation 190s after our press is the server's", Economy.transcendServerDriven(t0 + 190_000, t0, 2000), true);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-state30", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            StateStore s = new StateStore(tmp);
+            StateStore.Entry e = new StateStore.Entry();
+            e.rebirths = 8;
+            e.pointsCheckedAtRebirths = 8;
+            s.put("Ihazekids69420", e);
+            StateStore.Entry alt = new StateStore.Entry();
+            alt.rebirths = 2;
+            s.put("AltAccount", alt);
+            StateStore r = new StateStore(tmp);
+            n += eq("points check persisted", r.get("ihazekids69420").pointsCheckedAtRebirths, 8);
+            n += eq("alt never checked", r.get("altaccount").pointsCheckedAtRebirths == null, true);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL stateStore 0.9.30: " + ex);
             n++;
         }
         return n;

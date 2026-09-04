@@ -7,6 +7,8 @@ import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
@@ -37,6 +39,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private CaptchaDetector captchaDetector;
     private EventLogger logger;
     private KeyBinding toggleKey;
+    private KeyBinding optionsKey;
     private int tickCounter = 0;
     private long lastStatusAt = 0;
     private long guiRetryBlockUntil = 0;
@@ -80,6 +83,12 @@ public class YCBotChallengeClient implements ClientModInitializer {
             GLFW.GLFW_KEY_G,
             KeyBinding.Category.MISC));
 
+        optionsKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+            "key.ycbotchallenge.options",
+            InputUtil.Type.KEYSYM,
+            GLFW.GLFW_KEY_Y,
+            KeyBinding.Category.MISC));
+
         HudElementRegistry.addLast(
             Identifier.of("ycbotchallenge", "hud"),
             (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver, upgrades, enchants, rebirthUpgrades, companions, transcend).render(context));
@@ -95,16 +104,21 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             setEnabled(client, false, true);
+            transcend.reset();
             closeLogger("disconnect");
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onTick);
 
-        LOGGER.info("YCBotChallenge loaded — press G in game to toggle, Shift+G to toggle sprint, Ctrl+G to ignore the mob you look at.");
+        LOGGER.info("YCBotChallenge loaded — press G in game to toggle, Shift+G to toggle sprint, Ctrl+G to ignore the mob you look at, Y for the options screen.");
     }
 
     private void onTick(MinecraftClient client) {
+        while (optionsKey.wasPressed()) {
+            if (client.currentScreen == null && client.player != null) client.setScreen(newOptionsScreen());
+        }
         while (toggleKey.wasPressed()) {
+            if (client.currentScreen instanceof BotOptionsScreen) continue; // buttons, not hotkeys, on that screen
             // Ctrl + Shift + toggle = run the companion visit now (0.9.28);
             // Ctrl + toggle = ignore/unignore the mob under the crosshair (0.9.26);
             // Shift + toggle = flip sprinting (persisted to the config); plain = bot on/off
@@ -119,6 +133,12 @@ public class YCBotChallengeClient implements ClientModInitializer {
         if (tickCounter % 20 == 0) stats.poll(client);
 
         if (!enabled) return;
+
+        // 0.9.30: our own options screen is open — hands off the keys, nothing else runs.
+        if (client.currentScreen instanceof BotOptionsScreen) {
+            combat.releaseKeys(client);
+            return;
+        }
 
         // Captcha solving in progress: keep the player inert and drive the solver.
         if (captchaSolver.isActive()) {
@@ -239,6 +259,32 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 "bals", stats.formattedBalances(),
                 "zoneReady", Math.round(1000.0 * stats.zoneReadiness()) / 10.0);
         }
+    }
+
+    /** 0.9.30: the in-game options screen — one ON/OFF button per feature, saved to the config file at once. */
+    private BotOptionsScreen newOptionsScreen() {
+        List<BotOptionsScreen.Option> opts = new ArrayList<>();
+        opts.add(new BotOptionsScreen.Option("serverAutoRebirth", "Server auto-rebirth", () -> config.serverAutoRebirth, v -> config.serverAutoRebirth = v));
+        opts.add(new BotOptionsScreen.Option("upgradesEnabled", "Sword / zone buys", () -> config.upgradesEnabled, v -> config.upgradesEnabled = v));
+        opts.add(new BotOptionsScreen.Option("rebirthHorizonEnabled", "Rebirth horizon rule", () -> config.rebirthHorizonEnabled, v -> config.rebirthHorizonEnabled = v));
+        opts.add(new BotOptionsScreen.Option("enchantsEnabled", "Enchant visits", () -> config.enchantsEnabled, v -> config.enchantsEnabled = v));
+        opts.add(new BotOptionsScreen.Option("rebirthUpgradesEnabled", "Rebirth upgrades", () -> config.rebirthUpgradesEnabled, v -> config.rebirthUpgradesEnabled = v));
+        opts.add(new BotOptionsScreen.Option("companionsEnabled", "Companions", () -> config.companionsEnabled, v -> config.companionsEnabled = v));
+        opts.add(new BotOptionsScreen.Option("companionBulkDeleteEnabled", "Companion bulk delete", () -> config.companionBulkDeleteEnabled, v -> config.companionBulkDeleteEnabled = v));
+        opts.add(new BotOptionsScreen.Option("transcendEnabled", "Transcend (Q)", () -> config.transcendEnabled, v -> config.transcendEnabled = v));
+        opts.add(new BotOptionsScreen.Option("giveawaysEnabled", "Join giveaways", () -> config.giveawaysEnabled, v -> config.giveawaysEnabled = v));
+        opts.add(new BotOptionsScreen.Option("giveawayWinReplyEnabled", "Giveaway win reply", () -> config.giveawayWinReplyEnabled, v -> config.giveawayWinReplyEnabled = v));
+        opts.add(new BotOptionsScreen.Option("breaksEnabled", "Breaks", () -> config.breaksEnabled, v -> config.breaksEnabled = v));
+        opts.add(new BotOptionsScreen.Option("stopProtocolEnabled", "Stop protocol", () -> config.stopProtocolEnabled, v -> config.stopProtocolEnabled = v));
+        opts.add(new BotOptionsScreen.Option("captchaAutoSolve", "Captcha auto-solve", () -> config.captchaAutoSolve, v -> config.captchaAutoSolve = v));
+        opts.add(new BotOptionsScreen.Option("sprint", "Sprint", () -> config.sprint, v -> config.sprint = v));
+        opts.add(new BotOptionsScreen.Option("hud", "HUD", () -> config.hud, v -> config.hud = v));
+        opts.add(new BotOptionsScreen.Option("hudShowModules", "HUD module row", () -> config.hudShowModules, v -> config.hudShowModules = v));
+        return new BotOptionsScreen(opts, (key, value) -> {
+            config.save(configPath);
+            if (logger != null) logger.log("option_toggle", "name", key, "value", value);
+            LOGGER.info("option {} = {}", key, value);
+        });
     }
 
     private static boolean ctrlHeld(MinecraftClient client) {

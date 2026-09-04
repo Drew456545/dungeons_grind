@@ -123,6 +123,9 @@ public class CompanionController {
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
+    /** 0.9.30 HUD chip: suspended after repeated aborts (toggle to reset). */
+    public boolean isSuspended() { return suspended; }
+
     /** The egg GUI, the Companions GUI and the fuse GUI are ours (or hand-opened), never a captcha. */
     public boolean isOurGui(MinecraftClient client) {
         String t = title(client);

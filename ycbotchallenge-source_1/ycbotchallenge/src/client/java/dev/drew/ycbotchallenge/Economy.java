@@ -414,6 +414,35 @@ public final class Economy {
         return killsSinceEnable >= n && killsSinceRebirth >= n;
     }
 
+    /**
+     * 0.9.30: the income multiplier a sword tier is expected to bring, from the current
+     * TTK. Income goes as 1/(ttk + floor) — the movement floor doubles as walk/aim
+     * overhead — and a tier multiplies DPS by {@code dpsMult}, so the new TTK is
+     * max(floor, ttk/dpsMult). Logs 2026-09-03: same-zone kill medians around sword buys
+     * gave 1.3x at the floor and 2–8x on long kills (22.3s → 2.7s), while the fixed 1.25
+     * assumption held a 132S sword back at a 5–8s TTK with ~29 min of rebirth left.
+     * Floor 2s, mult 2: 1s → minGain, 5s → 1.56, 8s → 1.67, 20s → 1.83, 60s → 1.94.
+     * Unknown TTK → minGain.
+     */
+    public static double swordGain(Double ttkMs, double dpsMult, int floorMs, double minGain) {
+        double min = Math.max(1.0, minGain);
+        if (ttkMs == null || ttkMs <= 0 || dpsMult <= 1.0) return min;
+        double floor = Math.max(0, floorMs);
+        double after = Math.max(floor, ttkMs / dpsMult);
+        double gain = (ttkMs + floor) / (after + floor);
+        return Math.max(min, gain);
+    }
+
+    /**
+     * 0.9.30: a Transcend activation that arrived with no press of ours in the last
+     * {@code graceMs} is the server's own (the 00:19 log: 37 activations at exactly
+     * 190s spacing, two hours of them with the bot off; we pressed once).
+     */
+    public static boolean transcendServerDriven(long activatedAt, long lastPressAt, long graceMs) {
+        if (lastPressAt <= 0) return true;
+        return activatedAt - lastPressAt > Math.max(0, graceMs);
+    }
+
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);

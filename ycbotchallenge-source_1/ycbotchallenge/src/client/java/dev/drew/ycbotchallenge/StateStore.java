@@ -28,6 +28,8 @@ public final class StateStore {
         public Double zoneLastPrice;
         public Double rebirthLastPrice;
         public Integer rebirths;
+        /** 0.9.30: rebirth count when a /rebirth visit last read zero points — no re-check until it moves. */
+        public Integer pointsCheckedAtRebirths;
         public long savedAt;
     }
 

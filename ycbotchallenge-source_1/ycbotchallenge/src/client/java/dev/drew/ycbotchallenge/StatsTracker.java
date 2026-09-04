@@ -63,6 +63,19 @@ public class StatsTracker {
     public volatile long lastRebirthAt = 0;
     /** Learned prices persisted per username (see StateStore). */
     private StateStore stateStore;
+    /** 0.9.30: rebirth count at the last /rebirth visit that found zero points (persisted). */
+    public Integer pointsCheckedAtRebirths = null;
+
+    /** A /rebirth visit just read zero points: nothing to spend until the counter moves. */
+    public void notePointsChecked() {
+        pointsCheckedAtRebirths = rebirths;
+        markStateDirty();
+    }
+
+    /** True when a leftover-points check would only repeat the last empty read. */
+    public boolean pointsCheckedThisRebirth() {
+        return rebirths != null && rebirths.equals(pointsCheckedAtRebirths);
+    }
     private String stateUser;
     private long stateDirtyAt = 0;
     /** Why the next expected teleport happens ("zone" advance or "rebirth") — picks the settle length. */
@@ -472,6 +485,7 @@ public class StatsTracker {
         if (swordLastPrice == null) swordLastPrice = e.swordLastPrice;
         if (zoneLastPrice == null) zoneLastPrice = e.zoneLastPrice;
         if (rebirthLastPrice == null) rebirthLastPrice = e.rebirthLastPrice;
+        if (pointsCheckedAtRebirths == null) pointsCheckedAtRebirths = e.pointsCheckedAtRebirths;
         long now = System.currentTimeMillis();
         if (swordTarget != null && swordPriceSeenAt == 0) swordPriceSeenAt = now;
         if (zoneTarget != null && zonePriceSeenAt == 0) zonePriceSeenAt = now;
@@ -500,6 +514,7 @@ public class StatsTracker {
         e.zoneLastPrice = zoneLastPrice;
         e.rebirthLastPrice = rebirthLastPrice;
         e.rebirths = rebirths;
+        e.pointsCheckedAtRebirths = pointsCheckedAtRebirths;
         stateStore.put(stateUser, e);
         log("state_saved", "user", stateUser);
     }

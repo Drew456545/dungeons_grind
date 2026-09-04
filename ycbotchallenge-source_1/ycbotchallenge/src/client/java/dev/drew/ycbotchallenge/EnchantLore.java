@@ -142,24 +142,60 @@ public final class EnchantLore {
         return best;
     }
 
-    /**
-     * The bot's whole enchant policy: the FIRST upgradable enchant in slot order
-     * whose price fits the balance, skipping names already attempted this visit.
-     * No optimisation by design — "just hit max upgrade on the first unlocked
-     * non maxed out enchant".
-     */
+    /** First candidate in slot order (the 0.9.9 policy); kept for callers without a roll. */
     public static Item chooseEnchant(List<Item> inSlotOrder, java.util.Map<String, Double> balances,
                                      String fallbackCurrency, Set<String> skipNames) {
-        if (inSlotOrder == null || balances == null) return null;
+        return chooseEnchant(inSlotOrder, balances, fallbackCurrency, skipNames, 0.0, 0.0);
+    }
+
+    /**
+     * Everything the bot could click right now: upgradable (unlocked, not maxed, priced),
+     * not attempted this visit, and affordable by the ITEM's own price currency (never
+     * the tab's). Slot order preserved. Pure.
+     */
+    public static List<Item> enchantCandidates(List<Item> inSlotOrder, java.util.Map<String, Double> balances,
+                                               String fallbackCurrency, Set<String> skipNames) {
+        List<Item> out = new java.util.ArrayList<>();
+        if (inSlotOrder == null || balances == null) return out;
         for (Item it : inSlotOrder) {
             if (!it.upgradable()) continue;
             if (skipNames != null && skipNames.contains(it.name())) continue;
-            // The item's own price line names the currency; never assume the tab's.
             String cur = it.currency() != null ? it.currency() : fallbackCurrency;
             Double balance = cur != null ? balances.get(cur) : null;
-            if (balance != null && it.price() <= balance + 1e-6) return it;
+            if (balance != null && it.price() <= balance + 1e-6) out.add(it);
         }
-        return null;
+        return out;
+    }
+
+    /** Weight of one candidate: 1 + lagBias × (1 − level/maxLevel). lagBias 0 = every candidate equal. */
+    public static double enchantWeight(Item it, double lagBias) {
+        double frac = it.maxLevel() != null && it.maxLevel() > 0 && it.level() != null
+            ? Math.min(1.0, Math.max(0.0, it.level() / (double) it.maxLevel())) : 0.0;
+        return 1.0 + Math.max(0.0, lagBias) * (1.0 - frac);
+    }
+
+    /**
+     * The bot's whole enchant policy (0.9.30): a weighted roll over the candidates —
+     * equal chance per non-maxed affordable enchant by default (Drew: Rocket took the
+     * whole essence balance on ten visits in a row while Second Hand got the change and
+     * Wizard on the shards tab was never bought), optionally tilted toward the enchant
+     * furthest from max by {@code lagBias}. {@code roll} in [0,1) walks the cumulative
+     * weights, so tests are deterministic and the controller passes a random.
+     */
+    public static Item chooseEnchant(List<Item> inSlotOrder, java.util.Map<String, Double> balances,
+                                     String fallbackCurrency, Set<String> skipNames, double roll, double lagBias) {
+        List<Item> c = enchantCandidates(inSlotOrder, balances, fallbackCurrency, skipNames);
+        if (c.isEmpty()) return null;
+        double sum = 0;
+        double[] w = new double[c.size()];
+        for (int i = 0; i < c.size(); i++) { w[i] = enchantWeight(c.get(i), lagBias); sum += w[i]; }
+        double r = Math.min(0.999_999, Math.max(0.0, roll)) * sum;
+        double acc = 0;
+        for (int i = 0; i < c.size(); i++) {
+            acc += w[i];
+            if (r < acc) return c.get(i);
+        }
+        return c.get(c.size() - 1);
     }
 
     /** "<Name> Upgrade" — the sub-GUI's title is plain text (unlike the enchanter's). */

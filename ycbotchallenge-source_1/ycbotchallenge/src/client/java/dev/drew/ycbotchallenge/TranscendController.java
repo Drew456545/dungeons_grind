@@ -36,6 +36,9 @@ public class TranscendController {
     private long pendingCheckAt = 0;
     private int killsSeen = -1;
     private long lastSkipLogAt = 0;
+    /** 0.9.30: activations that arrived without a press of ours, in a row; serverAuto once the count is reached. */
+    private int serverStreak = 0;
+    private volatile boolean serverAuto = false;
 
     public TranscendController(YCBotChallengeConfig cfg, EnchantLore swordLore) {
         this.cfg = cfg;
@@ -80,7 +83,17 @@ public class TranscendController {
             activatedAt = System.currentTimeMillis();
             Integer s = cooldownSecondsOf(clean, cooldownRe);
             if (s != null) cooldownS = s;
-            log("transcend_active", "cooldownS", s, "raw", clean);
+            boolean ours = !Economy.transcendServerDriven(activatedAt, lastPressAt, cfg.transcendPressGraceMs);
+            if (ours) {
+                serverStreak = 0;
+            } else if (!serverAuto) {
+                serverStreak++;
+                if (serverStreak >= Math.max(1, cfg.transcendAutoDetectCount)) {
+                    serverAuto = true;
+                    log("transcend_auto", "streak", serverStreak, "cooldownS", s);
+                }
+            }
+            log("transcend_active", "cooldownS", s, "ours", ours, "raw", clean);
         } else if (endRe.matcher(clean).find()) {
             endedAt = System.currentTimeMillis();
             Integer s = cooldownSecondsOf(clean, cooldownRe);
@@ -106,7 +119,7 @@ public class TranscendController {
                 return;
             }
         }
-        if (!cfg.transcendEnabled) return;
+        if (!cfg.transcendEnabled || serverAuto) return;
         if (client.currentScreen != null) return;
         if (combat.kills == killsSeen) return; // one roll per kill
         killsSeen = combat.kills;
@@ -131,11 +144,31 @@ public class TranscendController {
         log("transcend_press", "sinceReadyMs", now - readyAt, "cooldownMs", cd, "hazard", Math.round(hazard * 1000.0) / 1000.0);
     }
 
-    public String hudLine() {
+    /** True once the server has been seen activating Transcend on its own (no press needed). */
+    public boolean serverAuto() { return serverAuto; }
+
+    /** Reconnect: the perk may differ on another account. */
+    public void reset() {
+        serverAuto = false;
+        serverStreak = 0;
+        activatedAt = 0;
+        endedAt = 0;
+        lastPressAt = 0;
+        pendingCheckAt = 0;
+    }
+
+    /** Short state for the HUD module chip: "auto", "ready", "120s", or null. */
+    public String hudState() {
         if (!cfg.transcendEnabled) return null;
+        if (serverAuto) return "auto";
         long since = Math.max(activatedAt, lastPressAt);
         if (since == 0) return null;
         long left = since + cooldownMs() - System.currentTimeMillis();
-        return left > 0 ? "transcend: " + (left + 999) / 1000 + "s" : "transcend: ready";
+        return left > 0 ? (left + 999) / 1000 + "s" : "ready";
+    }
+
+    public String hudLine() {
+        String s = hudState();
+        return s == null ? null : "transcend: " + s;
     }
 }

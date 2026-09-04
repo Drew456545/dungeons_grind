@@ -10,14 +10,15 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.screen.ScreenHandler;
+import net.minecraft.util.hit.HitResult;
 
 /**
  * Upgrades sword enchants during LONG kills. The server auto-attacks a tagged
  * mob until it dies, so a fresh-stage 50–120s kill is idle time: right-click
- * with the sword, walk the SOULS / ESSENCE / SHARDS tabs, and for the first
- * unlocked, non-maxed, affordable enchant in slot order open its "<Name>
- * Upgrade" GUI and click Max Upgrade. Then the next one, then the next tab.
- * No optimisation by design.
+ * with the sword, walk the SOULS / ESSENCE / SHARDS tabs, and for a randomly
+ * chosen unlocked, non-maxed, affordable enchant (equal chance each, 0.9.30)
+ * open its "<Name> Upgrade" GUI and click Max Upgrade. Then another, then the
+ * next tab. No optimisation by design.
  *
  * Realism: one visit per qualifying kill, spaced by a log-normal gap, with a
  * random skip roll, and only when a currency actually grew since the last
@@ -27,7 +28,7 @@ import net.minecraft.screen.ScreenHandler;
  */
 public class EnchantController {
     private enum Phase {
-        IDLE, OPEN_WAIT, LOOK, TAB_CLICK, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
+        IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
         MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, CLOSE
     }
 
@@ -81,6 +82,9 @@ public class EnchantController {
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
+    /** 0.9.30 HUD chip: suspended after repeated aborts (toggle to reset). */
+    public boolean isSuspended() { return suspended; }
+
     public EnchantLore lore() { return lore; }
 
     /** A hand-opened enchanter (or its upgrade sub-GUI) must never be mistaken for a captcha. */
@@ -129,6 +133,10 @@ public class EnchantController {
         }
 
         switch (phase) {
+            case OPEN_CLEAR -> {
+                if (now < phaseUntil || MouseDriver.INSTANCE.isBusy()) return true;
+                pressUse(client, now);
+            }
             case OPEN_WAIT -> {
                 EnchantScreens.Kind k = EnchantScreens.classify(client, lore);
                 if (k == EnchantScreens.Kind.ENCHANTER) {
@@ -229,7 +237,9 @@ public class EnchantController {
                         "balance", bal != null ? Amounts.format(bal) : null,
                         "count", items.size(), "items", summary);
                 }
-                EnchantLore.Item choice = EnchantLore.chooseEnchant(items, balances, currentTab, attempted);
+                double roll = ThreadLocalRandom.current().nextDouble();
+                List<EnchantLore.Item> candidates = EnchantLore.enchantCandidates(items, balances, currentTab, attempted);
+                EnchantLore.Item choice = EnchantLore.chooseEnchant(items, balances, currentTab, attempted, roll, cfg.enchantLagBias);
                 if (choice == null) {
                     log("enchant_skip", "reason", "none-affordable", "tab", currentTab,
                         "balance", bal != null ? Amounts.format(bal) : null, "buysThisTab", buysThisTab);
@@ -240,10 +250,14 @@ public class EnchantController {
                 pickedSlot = -1;
                 for (EnchantScreens.SlotItem si : slots) if (si.item() == choice) { pickedSlot = si.slot(); break; }
                 attempted.add(choice.name());
+                List<String> candidateNames = new ArrayList<>();
+                for (EnchantLore.Item it : candidates) candidateNames.add(it.name());
                 log("enchant_pick", "tab", currentTab, "name", choice.name(), "slot", pickedSlot,
                     "level", choice.level(), "maxLevel", choice.maxLevel(),
                     "price", choice.price() != null ? Amounts.format(choice.price()) : null,
-                    "balance", bal != null ? Amounts.format(bal) : null);
+                    "balance", bal != null ? Amounts.format(bal) : null,
+                    "candidates", candidateNames, "roll", Math.round(roll * 1000) / 1000.0,
+                    "lagBias", cfg.enchantLagBias);
                 phase = Phase.ENCHANT_CLICK;
                 phaseUntil = now + HumanTiming.logNormalMs(250, 600);
             }
@@ -459,7 +473,30 @@ public class EnchantController {
         openMenu(client, now);
     }
 
+    /**
+     * 0.9.30: 7 of 22 visits aborted "no-gui" and every one began the tick a kill landed —
+     * the dying mob was still under the crosshair for its death animation, so the use-key
+     * interacted with it instead of the sword. An entity under the crosshair gets a glance
+     * up first (enchantOpenClearPitchDeg); enchant_open records what was there either way.
+     */
     private void openMenu(MinecraftClient client, long now) {
+        HitResult hit = client.crosshairTarget;
+        String target = hit == null || hit.getType() == HitResult.Type.MISS ? "none"
+            : hit.getType() == HitResult.Type.ENTITY ? "entity" : "block";
+        boolean clear = "entity".equals(target) && cfg.enchantOpenClearPitchDeg > 0 && client.player != null;
+        log("enchant_open", "target", target, "cleared", clear, "reopen", reopened);
+        if (clear) {
+            float pitch = Math.max(-90f, client.player.getPitch() - cfg.enchantOpenClearPitchDeg);
+            MouseDriver.INSTANCE.cancel();
+            MouseDriver.INSTANCE.lookTo(client, client.player.getYaw(), pitch, "enchant-open-clear");
+            phase = Phase.OPEN_CLEAR;
+            phaseUntil = now + HumanTiming.logNormalMs(250, 550);
+            return;
+        }
+        pressUse(client, now);
+    }
+
+    private void pressUse(MinecraftClient client, long now) {
         EnchantScreens.pressUse(client, cfg.enchantOpenViaInteract);
         useHeld = false; // press counter only — the key is never held
         tabChecked = false; // a (re)opened menu shows whatever tab was last used — look first
