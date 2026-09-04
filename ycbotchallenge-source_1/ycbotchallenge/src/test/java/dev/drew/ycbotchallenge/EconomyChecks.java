@@ -76,6 +76,7 @@ public final class EconomyChecks {
         n += companions0933();
         n += gui0933();
         n += swordSkins0933();
+        n += captchaHedge0934();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1159,6 +1160,90 @@ public final class EconomyChecks {
      * pnGe all pnGe. The leader is right on all four; the old primary-render rule was wrong
      * on the first.
      */
+    /**
+     * 0.9.34 hedged reads and the health split. Evidence: 2026-09-04 16:07:13, one
+     * transient HTTP 503 on the QwenCloud /v1/models probe marked the reader offline for
+     * 97 s, and the pre-flight gate would have handed the bot over without capturing the
+     * map — on a route a solve never calls. A 503 is now DEGRADED, not death, and reads
+     * are hedged so no single call can sink a captcha.
+     */
+    private static int captchaHedge0934() {
+        int n = 0;
+
+        // --- health classification: the probe must agree with the solve path ---
+        n += eq("200 is online", CaptchaSolver.classify(200, null), CaptchaSolver.Reach.ONLINE);
+        // The 16:07:13 line itself: answered, so reachable.
+        n += eq("503 is degraded, not dead", CaptchaSolver.classify(503, null), CaptchaSolver.Reach.DEGRADED);
+        n += eq("500 is degraded", CaptchaSolver.classify(500, null), CaptchaSolver.Reach.DEGRADED);
+        n += eq("429 is degraded", CaptchaSolver.classify(429, null), CaptchaSolver.Reach.DEGRADED);
+        n += eq("401 is degraded", CaptchaSolver.classify(401, null), CaptchaSolver.Reach.DEGRADED);
+        n += eq("connect refused is unreachable",
+            CaptchaSolver.classify(0, new java.net.ConnectException("Connection refused")),
+            CaptchaSolver.Reach.UNREACHABLE);
+        n += eq("connect timeout is unreachable",
+            CaptchaSolver.classify(0, new java.net.http.HttpConnectTimeoutException("timed out")),
+            CaptchaSolver.Reach.UNREACHABLE);
+        // The pre-0.9.32 local-vLLM failure, which SHOULD still read as a dead port.
+        n += eq("closed channel is unreachable",
+            CaptchaSolver.classify(0, new java.io.IOException(new java.nio.channels.ClosedChannelException())),
+            CaptchaSolver.Reach.UNREACHABLE);
+        // A read timeout means it answered the connect: reachable but slow.
+        n += eq("read timeout is degraded",
+            CaptchaSolver.classify(0, new java.net.http.HttpTimeoutException("request timed out")),
+            CaptchaSolver.Reach.DEGRADED);
+
+        // --- hedge schedule ---
+        long budget = 25_000, perRead = 8_000, tail = 2_500 + CaptchaSolver.TYPING_ESTIMATE_MS;
+        // Read A always goes, immediately.
+        n += eq("read A fires at once",
+            CaptchaSolver.shouldHedge(0, budget, 0, 3, 0, 0, perRead, tail), true);
+        // Read B goes without waiting to learn whether A failed — the whole point.
+        n += eq("read B fires with A still in flight",
+            CaptchaSolver.shouldHedge(4_300, budget, 1, 3, 0, 0, perRead, tail), true);
+        // Read C only earns its place on a failure or a split ballot.
+        n += eq("no read C when A and B agree",
+            CaptchaSolver.shouldHedge(7_300, budget, 2, 3, 1, 0, perRead, tail), false);
+        n += eq("read C on a failure",
+            CaptchaSolver.shouldHedge(7_300, budget, 2, 3, 1, 1, perRead, tail), true);
+        n += eq("read C on a split ballot",
+            CaptchaSolver.shouldHedge(7_300, budget, 2, 3, 2, 0, perRead, tail), true);
+        n += eq("stops at captchaHedgeMax",
+            CaptchaSolver.shouldHedge(7_300, budget, 3, 3, 2, 1, perRead, tail), false);
+
+        // --- the budget guard: never start a read that cannot finish and still be typed ---
+        // 8s read + 2.5s answer delay + 2.5s typing = 13s of tail; past 12s there is no room.
+        n += eq("room at 11s", CaptchaSolver.shouldHedge(11_000, budget, 1, 3, 0, 1, perRead, tail), true);
+        n += eq("no room at 13s", CaptchaSolver.shouldHedge(13_000, budget, 1, 3, 0, 1, perRead, tail), false);
+        n += eq("no room at 20s", CaptchaSolver.shouldHedge(20_000, budget, 1, 3, 1, 1, perRead, tail), false);
+        // Read A is exempt: it is the only chance there is, so it goes out regardless.
+        n += eq("read A ignores the budget guard",
+            CaptchaSolver.shouldHedge(20_000, budget, 0, 3, 0, 0, perRead, tail), true);
+        // A one-hedge config degenerates to the old single-read behaviour.
+        n += eq("hedgeMax 1 fires once",
+            CaptchaSolver.shouldHedge(0, budget, 0, 1, 0, 0, perRead, tail), true);
+        n += eq("hedgeMax 1 never twice",
+            CaptchaSolver.shouldHedge(3_000, budget, 1, 1, 0, 1, perRead, tail), false);
+
+        // --- two hedges must be able to satisfy the send rule (v38 migrated 3 -> 2) ---
+        YCBotChallengeConfig c = new YCBotChallengeConfig();
+        n += eq("minReads reachable by the hedge schedule",
+            c.captchaVoteMinReads <= c.captchaHedgeMax, true);
+        n += eq("timeout leaves room for a hedge",
+            c.captchaTimeoutMs + c.captchaHedgeMs < c.captchaBudgetMs, true);
+        n += eq("budget leaves the human room in a ~30s window", c.captchaBudgetMs <= 25_000, true);
+        // The hedge must land inside the reading pause, or it is not free.
+        n += eq("hedge hides inside the answer delay",
+            c.captchaHedgeMs <= c.captchaAnswerDelayMaxMs, true);
+
+        // --- a split ballot still ranks the alternative for the rejection (0.9.26 KrA) ---
+        CaptchaBallot h = new CaptchaBallot();
+        h.cast("Kra", "x1", 0.0);   // read A
+        h.cast("KrA", "x1", 0.0);   // read B disagrees
+        n += eq("hedges disagreeing keeps both", h.distinct(), 2);
+        n += eq("rejection has an alternative ready", h.ranked(List.of("Kra")), List.of("KrA"));
+        return n;
+    }
+
     private static int ballot() {
         int n = 0;
         CaptchaBallot b = new CaptchaBallot();
