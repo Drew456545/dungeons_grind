@@ -30,6 +30,11 @@ public final class StateStore {
         public Integer rebirths;
         /** 0.9.30: rebirth count when a /rebirth visit last read zero points — no re-check until it moves. */
         public Integer pointsCheckedAtRebirths;
+        /** 0.9.31: price ladders learned on this account (sword ×3.5 / zone ×55 per step), and whether the targets are predictions. */
+        public Double swordGrowth;
+        public Double zoneGrowth;
+        public Boolean swordTargetPredicted;
+        public Boolean zoneTargetPredicted;
         public long savedAt;
     }
 

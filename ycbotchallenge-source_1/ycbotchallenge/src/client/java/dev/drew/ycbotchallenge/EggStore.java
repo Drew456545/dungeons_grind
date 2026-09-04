@@ -42,8 +42,14 @@ public final class EggStore {
             if (file != null && Files.exists(file)) {
                 Map<String, Egg> m = GSON.fromJson(Files.readString(file), MAP_TYPE);
                 if (m != null) {
+                    // Legacy per-stage keys ("lvl12") fold into their location ("loc2"); the newest wins.
                     Map<String, Egg> ok = new LinkedHashMap<>();
-                    m.forEach((k, v) -> { if (k != null && v != null) ok.put(key(k), v); });
+                    m.forEach((k, v) -> {
+                        if (k == null || v == null) return;
+                        String nk = key(k);
+                        Egg prev = ok.get(nk);
+                        if (prev == null || v.at >= prev.at) ok.put(nk, v);
+                    });
                     eggs = ok;
                 }
             }
@@ -52,8 +58,29 @@ public final class EggStore {
         }
     }
 
+    /** Stages per location on this server (Farm 1–10, Western 11–20, …). */
+    public static final int DEFAULT_STAGES_PER_LOCATION = 10;
+
+    /** 1-based location index of a stage: stages 1–10 → 1, 11–20 → 2. */
+    public static int locationOf(int stage, int perLocation) {
+        int per = Math.max(1, perLocation);
+        return (Math.max(1, stage) - 1) / per + 1;
+    }
+
+    /**
+     * 0.9.31: the key is the location, not the stage — "lvl12" → "loc2" — because one egg
+     * serves ten stages and the ten-stage teleport lands at a new one. Labels that are not
+     * "lvl<n>" keep their lowercase text; blank → "unknown".
+     */
+    public static String key(String stage, int perLocation) {
+        if (stage == null || stage.isBlank()) return "unknown";
+        Integer lvl = Economy.zoneLevelOf(stage);
+        if (lvl != null) return "loc" + locationOf(lvl, perLocation);
+        return stage.trim().toLowerCase(Locale.ROOT);
+    }
+
     public static String key(String stage) {
-        return stage == null || stage.isBlank() ? "unknown" : stage.trim().toLowerCase(Locale.ROOT);
+        return key(stage, DEFAULT_STAGES_PER_LOCATION);
     }
 
     public int size() { return eggs.size(); }

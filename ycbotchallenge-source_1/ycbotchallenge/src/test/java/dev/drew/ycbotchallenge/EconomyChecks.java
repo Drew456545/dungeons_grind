@@ -68,6 +68,8 @@ public final class EconomyChecks {
         n += transcend();
         n += firstKills();
         n += audit0930();
+        n += companions0931();
+        n += priceLadders();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1398,6 +1400,100 @@ public final class EconomyChecks {
             System.err.println("FAIL stateStore 0.9.30: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /**
+     * 0.9.31 companions: the Companion Eggs GUI (verbatim, 03:34 log) teaches SS = 1000 × S
+     * by its count ratio (250 × 6.34S printed as 1.58SS — the null price crashed the client
+     * twice), and the egg store is keyed by location (Farm 1–10, Western 11–20).
+     */
+    private static int companions0931() {
+        int n = 0;
+        // The ladder must know S for the lesson to have a basis (it is learned live, not built in).
+        Amounts.Learned s = new Amounts.Learned();
+        s.scale = 1e21; s.confirmed = true; s.via = "crossing"; s.basis = "QQ"; s.raw = "1.1S"; s.prevRaw = "980QQ"; s.at = 1;
+        Amounts.learn("S", s);
+        try {
+            List<CompanionLore.OpenOption> opts = List.of(
+                new CompanionLore.OpenOption(38, "open: [1x companion egg]", 1, 6.34e21, "6.34S"),
+                new CompanionLore.OpenOption(39, "open: [3x companion egg]", 3, 19.02e21, "19.02S"),
+                new CompanionLore.OpenOption(40, "open: [10x companion egg]", 10, 63.39e21, "63.39S"),
+                new CompanionLore.OpenOption(41, "open: [50x companion egg]", 50, 316.96e21, "316.96S"),
+                new CompanionLore.OpenOption(42, "open: [250x companion egg]", 250, null, "1.58SS"));
+            CompanionLore.RungLesson lesson = CompanionLore.rungFromOptions(opts);
+            n += eq("SS lesson found", lesson != null, true);
+            if (lesson != null) {
+                n += eq("SS suffix", lesson.suffix(), "SS");
+                n += eq("SS scale", lesson.learned().scale, 1e24, 1e12);
+                n += eq("SS confirmed", lesson.learned().confirmed, true);
+                n += eq("SS basis", lesson.learned().basis, "S");
+                n += eq("lesson count", lesson.count(), 250);
+            }
+            n += eq("pickOpen skips the unparsed option",
+                CompanionLore.pickOpen(opts, 250, 1e24, 10, 1e25, 100).count(), 50);
+            List<CompanionLore.OpenOption> wrong = List.of(
+                new CompanionLore.OpenOption(38, "open: [1x companion egg]", 1, 2e21, "2S"),
+                new CompanionLore.OpenOption(42, "open: [250x companion egg]", 250, null, "1.58SS"));
+            n += eq("mantissa that does not fit the rung → nothing learned", CompanionLore.rungFromOptions(wrong) == null, true);
+            n += eq("nothing unparsed → nothing learned", CompanionLore.rungFromOptions(opts.subList(0, 4)) == null, true);
+            n += eq("no parsed unit → nothing learned", CompanionLore.rungFromOptions(List.of(opts.get(4))) == null, true);
+        } finally {
+            Amounts.forget("S");
+        }
+        n += eq("lvl12 → loc2", EggStore.key("lvl12"), "loc2");
+        n += eq("lvl10 → loc1", EggStore.key("lvl10"), "loc1");
+        n += eq("lvl11 → loc2", EggStore.key("lvl11"), "loc2");
+        n += eq("lvl1 → loc1", EggStore.key("lvl1"), "loc1");
+        n += eq("lvl21 → loc3", EggStore.key("lvl21"), "loc3");
+        n += eq("LVL 12 spaced → loc2", EggStore.key("LVL 12"), "loc2");
+        n += eq("other label kept", EggStore.key("Hub"), "hub");
+        n += eq("location of 20 at 10 per", EggStore.locationOf(20, 10), 2);
+        n += eq("location of 21 at 10 per", EggStore.locationOf(21, 10), 3);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-eggs31", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"lvl12\": {\"x\": 314.5, \"y\": 67.75, \"z\": -41.5, \"label\": \"minecraft:dragon_egg\", \"at\": 5},"
+                + " \"lvl11\": {\"x\": 1, \"y\": 2, \"z\": 3, \"label\": \"old\", \"at\": 1}}");
+            EggStore legacy = new EggStore(tmp);
+            n += eq("legacy per-stage entries fold into the location", legacy.size(), 1);
+            n += eq("newest legacy entry wins", legacy.get("lvl15") != null ? Double.valueOf(legacy.get("lvl15").x) : null, 314.5, 1e-9);
+            n += eq("location 1 empty", legacy.get("lvl3") == null, true);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL eggStore 0.9.31: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    /**
+     * 0.9.31 price ladders, verbatim from every log: the sword price steps ×3.5 per level
+     * and the zone price ×55 per stage, so the next price is predictable after a purchase.
+     */
+    private static int priceLadders() {
+        int n = 0;
+        String[] sword = {"150.06K", "525.22K", "1.84M", "6.43M", "22.52M", "78.82M", "275.85M", "965.49M", "3.38B",
+            "11.83B", "41.4B", "144.89B", "507.09B", "1.77T", "6.21T", "21.74T", "76.1T", "266.34T", "932.17T",
+            "3.26Q", "11.42Q", "39.97Q", "139.88Q", "489.6Q", "1.71QQ", "6QQ", "21QQ", "73.47QQ", "257.14QQ", "900.01QQ"};
+        for (int i = 1; i < sword.length; i++) {
+            double a = Amounts.parse(sword[i - 1]), b = Amounts.parse(sword[i]);
+            n += eq("sword ladder " + sword[i - 1] + " → " + sword[i], b / a, 3.5, 0.035);
+        }
+        String[] zone = {"137.26B", "7.55T", "415.21T", "22.83Q", "1.26QQ", "69.08QQ"};
+        for (int i = 1; i < zone.length; i++) {
+            double a = Amounts.parse(zone[i - 1]), b = Amounts.parse(zone[i]);
+            n += eq("zone ladder " + zone[i - 1] + " → " + zone[i], b / a, 55.0, 1.2);
+        }
+        n += eq("predict sword after 135.06S", Economy.predictNext(135.06e21, 3.5), 472.71e21, 1e19);
+        n += eq("predict zone after 3.8S", Economy.predictNext(3.8e21, 55.0), 209e21, 1e19);
+        n += eq("no last price → no prediction", Economy.predictNext(null, 3.5) == null, true);
+        n += eq("growth 1 → no prediction", Economy.predictNext(1e9, 1.0) == null, true);
+        n += eq("ratio 3.45 accepted", Economy.growthAccepted(3.45, 3.5, 30), true);
+        n += eq("two-level jump 12.25 rejected", Economy.growthAccepted(12.25, 3.5, 30), false);
+        n += eq("zone 55.2 accepted", Economy.growthAccepted(55.2, 55.0, 30), true);
+        n += eq("ratio below 1 rejected", Economy.growthAccepted(0.9, 3.5, 30), false);
+        n += eq("blend from nothing", Economy.blendGrowth(null, 3.48, 0.3), 3.48, 1e-9);
+        n += eq("blend ema", Economy.blendGrowth(3.5, 3.4, 0.3), 3.47, 1e-9);
         return n;
     }
 

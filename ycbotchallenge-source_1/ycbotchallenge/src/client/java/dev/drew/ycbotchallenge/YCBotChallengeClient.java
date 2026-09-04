@@ -280,6 +280,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("sprint", "Sprint", () -> config.sprint, v -> config.sprint = v));
         opts.add(new BotOptionsScreen.Option("hud", "HUD", () -> config.hud, v -> config.hud = v));
         opts.add(new BotOptionsScreen.Option("hudShowModules", "HUD module row", () -> config.hudShowModules, v -> config.hudShowModules = v));
+        opts.add(new BotOptionsScreen.Option("hudShowBalances", "HUD balances row", () -> config.hudShowBalances, v -> config.hudShowBalances = v));
+        opts.add(new BotOptionsScreen.Option("pricePredictionEnabled", "Price ladder prediction", () -> config.pricePredictionEnabled, v -> config.pricePredictionEnabled = v));
         return new BotOptionsScreen(opts, (key, value) -> {
             config.save(configPath);
             if (logger != null) logger.log("option_toggle", "name", key, "value", value);

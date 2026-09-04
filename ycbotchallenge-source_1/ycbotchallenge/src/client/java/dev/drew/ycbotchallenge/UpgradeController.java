@@ -147,39 +147,46 @@ public class UpgradeController {
         return sb.toString();
     }
 
-    /** 0.9.30 HUD: "zone 208.97S  93%  ~2m" plus the holding reason, or the typing phase; null when nothing. */
-    public String hudNextLine() {
-        if (!cfg.upgradesEnabled) return null;
-        String kind = hudKind();
+    /**
+     * 0.9.31 HUD: one row per kind — "472.7S  26%  ~9m  predicted", "?" while unknown, the
+     * chosen kind marked "◂ next", the typing phase while a send is in flight, and the
+     * holding reason on the row it applies to. Null when upgrades are off.
+     */
+    public String hudKindLine(String kind) {
+        if (!cfg.upgradesEnabled || kind == null) return null;
+        boolean zone = "zone".equals(kind);
+        if (zone ? stats.zoneMaxed : stats.swordMaxed) return "§8maxed§r";
         Double bal = stats.money();
         Double rate = stats.incomePerMinute();
         StringBuilder sb = new StringBuilder();
-        if (phase != Phase.IDLE) {
-            sb.append("§e").append(pendingKind != null ? pendingKind.name().toLowerCase(Locale.ROOT) + " " : "")
-                .append(phase.name().toLowerCase(Locale.ROOT)).append("§r");
-            return sb.toString();
-        }
-        if (kind == null) return horizonBlocked != null ? "§8holding " + horizonBlocked + " (rebirth sooner)§r" : null;
-        sb.append(kind);
         Double price = targetOf(kind);
-        if (price != null && bal != null) {
-            sb.append(' ').append(Amounts.format(price));
-            int pct = (int) Math.min(999, Math.round(100.0 * bal / Math.max(1e-9, price)));
-            sb.append("  §7").append(pct).append('%');
-            double need = Math.max(0, price - bal);
-            Double eta = Economy.etaMs(need, rate);
-            if (need > 0 && eta != null) sb.append("  ~").append(formatEta(eta));
-            sb.append("§r");
-        } else if (price == null) {
+        if (price != null) {
+            sb.append(Amounts.format(price));
+            if (bal != null) {
+                int pct = (int) Math.min(999, Math.round(100.0 * bal / Math.max(1e-9, price)));
+                sb.append("  §7").append(pct).append('%');
+                double need = Math.max(0, price - bal);
+                Double eta = Economy.etaMs(need, rate);
+                if (need > 0 && eta != null) sb.append("  ~").append(formatEta(eta));
+                sb.append("§r");
+            }
+            if (stats.targetPredicted(kind)) sb.append("  §8predicted§r");
+        } else {
             Double last = stats.lastPrice(kind);
-            sb.append(last != null ? "  §7price ? (retry ≥ " + Amounts.format(last) + ")§r" : "  §7price ?§r");
+            sb.append(last != null ? "§7? (retry ≥ " + Amounts.format(last) + ")§r" : "§7?§r");
         }
-        long last = lastSendFor(kind);
-        int cap = capFor(kind);
-        long remainMs = last <= 0 || cap <= 0 ? 0 : (last + cap) - System.currentTimeMillis();
-        if (remainMs > 0) sb.append("  §8cd ").append((remainMs + 999) / 1000).append("s§r");
-        if (savingZone) sb.append("  §8(sword waits for zone)§r");
-        else if (horizonBlocked != null) sb.append("  §8(").append(horizonBlocked).append(" waits; rebirth sooner)§r");
+        if (phase != Phase.IDLE && pendingKind != null && pendingKind.name().equalsIgnoreCase(kind)) {
+            sb.append("  §e").append(phase.name().toLowerCase(Locale.ROOT)).append("§r");
+        } else {
+            String next = hudKind();
+            if (kind.equals(next)) sb.append("  §a◂ next§r");
+            long last = lastSendFor(kind);
+            int cap = capFor(kind);
+            long remainMs = last <= 0 || cap <= 0 ? 0 : (last + cap) - System.currentTimeMillis();
+            if (remainMs > 0) sb.append("  §8cd ").append((remainMs + 999) / 1000).append("s§r");
+            if (!zone && savingZone) sb.append("  §8(waits for zone)§r");
+            else if (kind.equals(horizonBlocked)) sb.append("  §8(waits; rebirth sooner)§r");
+        }
         return sb.toString();
     }
 
@@ -734,7 +741,9 @@ public class UpgradeController {
             "patienceMs", stats.zoneTtkToleranceMs(),
             "zoneGate", Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs()) ? "open" : "closed",
             "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
+            "swordVia", stats.swordTarget == null ? null : stats.swordTargetPredicted ? "predicted" : "server",
             "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
+            "zoneVia", stats.zoneTarget == null ? null : stats.zoneTargetPredicted ? "predicted" : "server",
             "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,
             "zoneFloor", stats.lastPrice("zone") != null ? Amounts.format(stats.lastPrice("zone")) : null);
     }
@@ -912,7 +921,9 @@ public class UpgradeController {
             "patienceMs", stats.zoneTtkToleranceMs(),
             "zoneGate", Economy.zoneAllowed(evalTtkMs, stats.zoneTtkToleranceMs()) ? "open" : "closed",
             "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
+            "swordVia", stats.swordTarget == null ? null : stats.swordTargetPredicted ? "predicted" : "server",
             "zoneTarget", stats.zoneTarget != null ? Amounts.format(stats.zoneTarget) : null,
+            "zoneVia", stats.zoneTarget == null ? null : stats.zoneTargetPredicted ? "predicted" : "server",
             "swordFloor", stats.lastPrice("sword") != null ? Amounts.format(stats.lastPrice("sword")) : null,
             "zoneFloor", stats.lastPrice("zone") != null ? Amounts.format(stats.lastPrice("zone")) : null,
             "rebirthTarget", stats.rebirthTarget != null ? Amounts.format(stats.rebirthTarget) : null,

@@ -443,6 +443,30 @@ public final class Economy {
         return activatedAt - lastPressAt > Math.max(0, graceMs);
     }
 
+    /**
+     * 0.9.31 price ladders. Every log agrees: a sword level costs ×3.5 the last (36 steps
+     * from 150.06K to 472.7S, every ratio 3.49–3.50) and a zone stage ×55 the last (137.26B
+     * → 7.55T → 415.21T → 22.83Q → 1.26QQ → 69.08QQ → 3.8S → 208.97S). So after a purchase
+     * the next price is last × growth — known before the server says so.
+     */
+    public static Double predictNext(Double lastPrice, double growth) {
+        if (lastPrice == null || lastPrice <= 0 || growth <= 1.0) return null;
+        return lastPrice * growth;
+    }
+
+    /** A measured price ratio is a lesson only when it sits within bandPct of the expected growth (a /zone max that bought two stages is not). */
+    public static boolean growthAccepted(double ratio, double expected, double bandPct) {
+        if (ratio <= 1.0 || expected <= 1.0) return false;
+        return Math.abs(ratio - expected) / expected <= Math.max(0, bandPct) / 100.0;
+    }
+
+    /** Blend a measured ratio into the learned growth (EMA, weight w). */
+    public static double blendGrowth(Double learned, double ratio, double w) {
+        if (learned == null) return ratio;
+        double k = Math.max(0, Math.min(1, w));
+        return learned * (1 - k) + ratio * k;
+    }
+
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);

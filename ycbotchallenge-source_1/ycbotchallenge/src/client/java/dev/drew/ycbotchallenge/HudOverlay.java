@@ -10,8 +10,9 @@ import net.minecraft.client.gui.DrawContext;
  * The stats panel (0.9.30 layout). Two aligned columns — dim labels, plain values, one
  * accent colour per meaning (green good, yellow busy, red stopped, grey off) — with a
  * row per thing worth knowing and nothing else: header + alerts, what combat is doing,
- * money and income, the next buy, the rebirth, the one module that is busy, a chip row
- * of every module's state, the other balances, kills. Rows with nothing to say are
+ * money and income, the next sword and zone prices (server-quoted or ladder-predicted,
+ * 0.9.31), the rebirth, the one module that is busy, a chip row of every module's state,
+ * optionally the other balances, kills. Rows with nothing to say are
  * omitted, so the panel is short while the bot idles.
  */
 public class HudOverlay {
@@ -122,16 +123,20 @@ public class HudOverlay {
                 + (rate != null ? "  §7+" + Amounts.format(rate) + "/min§r" : "")));
         }
         if (on) {
-            String next = upgrades != null ? upgrades.hudNextLine() : null;
-            if (next != null) rows.add(new Row("next", next));
+            String sw = upgrades != null ? upgrades.hudKindLine("sword") : null;
+            if (sw != null) rows.add(new Row("sword", sw));
+            String zn = upgrades != null ? upgrades.hudKindLine("zone") : null;
+            if (zn != null) rows.add(new Row("zone", zn));
             String rb = upgrades != null ? upgrades.hudRebirthLine() : null;
             if (rb != null) rows.add(new Row("rebirth", rb));
             String act = activity();
             if (act != null) rows.add(new Row("busy", act));
             if (cfg.hudShowModules) rows.add(new Row("mods", modules()));
         }
-        String bals = otherBalances();
-        if (bals != null) rows.add(new Row("bals", bals));
+        if (cfg.hudShowBalances) {
+            String bals = otherBalances();
+            if (bals != null) rows.add(new Row("bals", bals));
+        }
         rows.add(new Row("kills", combat.kills + "  §7" + String.format(Locale.ROOT, "%.1f", stats.killsPerMinute(60_000))
             + "/min · " + String.format(Locale.ROOT, "%.2f", stats.killsPerSecond(30_000)) + "/s§r"));
         return rows;

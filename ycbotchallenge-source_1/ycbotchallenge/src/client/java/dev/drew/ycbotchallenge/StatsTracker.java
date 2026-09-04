@@ -43,6 +43,12 @@ public class StatsTracker {
     public Double swordTarget = null;
     public Double zoneTarget = null;
     public Double rebirthTarget = null;
+    /** 0.9.31: the target is last price × growth (price ladder), not yet quoted by the server. */
+    public boolean swordTargetPredicted = false;
+    public boolean zoneTargetPredicted = false;
+    /** 0.9.31: the ladder growth learned on this account (null = the config value). */
+    public Double swordGrowthLearned = null;
+    public Double zoneGrowthLearned = null;
     /** Last seen remaining gap ("You need X Money") per kind — HUD/logging. */
     private Double swordGap = null;
     private Double zoneGap = null;
@@ -426,6 +432,16 @@ public class StatsTracker {
         }
     }
 
+    /**
+     * 0.9.31: a rung proven by a GUI count ratio (the Companion Eggs menu's 250× line) —
+     * same learning path as a sidebar crossing, confirmed, persisted.
+     */
+    public boolean learnSuffixFromGui(String sfx, Amounts.Learned e, String source) {
+        if (!cfg.suffixLearningEnabled || sfx == null || e == null || Amounts.confirmed(sfx)) return false;
+        applyLearned(sfx, e, source, "count-ratio");
+        return true;
+    }
+
     /** The one place a suffix scale is learned, confirmed or corrected; persists and logs. */
     private void applyLearned(String sfx, Amounts.Learned e, String source, String reason) {
         String key = sfx.toUpperCase(Locale.ROOT);
@@ -463,8 +479,8 @@ public class StatsTracker {
     /** Learned prices at or above a corrected rung were computed on the wrong scale: forget them. */
     private List<String> dropPricesAbove(double scale) {
         List<String> dropped = new ArrayList<>();
-        if (swordTarget != null && swordTarget >= scale) { swordTarget = null; swordGap = null; swordPriceSeenAt = 0; dropped.add("swordTarget"); }
-        if (zoneTarget != null && zoneTarget >= scale) { zoneTarget = null; zoneGap = null; zonePriceSeenAt = 0; dropped.add("zoneTarget"); }
+        if (swordTarget != null && swordTarget >= scale) { swordTarget = null; swordTargetPredicted = false; swordGap = null; swordPriceSeenAt = 0; dropped.add("swordTarget"); }
+        if (zoneTarget != null && zoneTarget >= scale) { zoneTarget = null; zoneTargetPredicted = false; zoneGap = null; zonePriceSeenAt = 0; dropped.add("zoneTarget"); }
         if (rebirthTarget != null && rebirthTarget >= scale) { rebirthTarget = null; rebirthGap = null; rebirthPriceSeenAt = 0; dropped.add("rebirthTarget"); }
         if (swordLastPrice != null && swordLastPrice >= scale) { swordLastPrice = null; dropped.add("swordFloor"); }
         if (zoneLastPrice != null && zoneLastPrice >= scale) { zoneLastPrice = null; dropped.add("zoneFloor"); }
@@ -486,12 +502,18 @@ public class StatsTracker {
         if (zoneLastPrice == null) zoneLastPrice = e.zoneLastPrice;
         if (rebirthLastPrice == null) rebirthLastPrice = e.rebirthLastPrice;
         if (pointsCheckedAtRebirths == null) pointsCheckedAtRebirths = e.pointsCheckedAtRebirths;
+        if (swordGrowthLearned == null) swordGrowthLearned = e.swordGrowth;
+        if (zoneGrowthLearned == null) zoneGrowthLearned = e.zoneGrowth;
+        if (swordTarget != null && swordTarget.equals(e.swordTarget) && Boolean.TRUE.equals(e.swordTargetPredicted)) swordTargetPredicted = true;
+        if (zoneTarget != null && zoneTarget.equals(e.zoneTarget) && Boolean.TRUE.equals(e.zoneTargetPredicted)) zoneTargetPredicted = true;
         long now = System.currentTimeMillis();
         if (swordTarget != null && swordPriceSeenAt == 0) swordPriceSeenAt = now;
         if (zoneTarget != null && zonePriceSeenAt == 0) zonePriceSeenAt = now;
         if (rebirthTarget != null && rebirthPriceSeenAt == 0) rebirthPriceSeenAt = now;
         log("state_loaded", "user", username, "found", true, "savedAt", e.savedAt,
             "swordTarget", fmt(swordTarget), "zoneTarget", fmt(zoneTarget), "rebirthTarget", fmt(rebirthTarget),
+            "swordPredicted", swordTargetPredicted, "zonePredicted", zoneTargetPredicted,
+            "swordGrowth", swordGrowthLearned, "zoneGrowth", zoneGrowthLearned,
             "swordFloor", fmt(swordLastPrice), "zoneFloor", fmt(zoneLastPrice), "rebirthFloor", fmt(rebirthLastPrice));
     }
 
@@ -515,6 +537,10 @@ public class StatsTracker {
         e.rebirthLastPrice = rebirthLastPrice;
         e.rebirths = rebirths;
         e.pointsCheckedAtRebirths = pointsCheckedAtRebirths;
+        e.swordGrowth = swordGrowthLearned;
+        e.zoneGrowth = zoneGrowthLearned;
+        e.swordTargetPredicted = swordTargetPredicted;
+        e.zoneTargetPredicted = zoneTargetPredicted;
         stateStore.put(stateUser, e);
         log("state_saved", "user", stateUser);
     }
@@ -524,6 +550,49 @@ public class StatsTracker {
         if ("zone".equals(kind)) return zonePriceSeenAt;
         if ("rebirth".equals(kind)) return rebirthPriceSeenAt;
         return swordPriceSeenAt;
+    }
+
+    /** 0.9.31: the price ladder growth in use for a kind (learned on this account, else the config value). */
+    public double priceGrowth(String kind) {
+        if ("zone".equals(kind)) return zoneGrowthLearned != null ? zoneGrowthLearned : cfg.zonePriceGrowth;
+        return swordGrowthLearned != null ? swordGrowthLearned : cfg.swordPriceGrowth;
+    }
+
+    /** True when the kind's target is a ladder prediction rather than a server quote. */
+    public boolean targetPredicted(String kind) {
+        return "zone".equals(kind) ? zoneTargetPredicted : swordTargetPredicted;
+    }
+
+    /** Predict the next price of a kind from its last price (after a purchase); logs price_predicted. */
+    private void predictTarget(String kind, Double last, long now) {
+        if (!cfg.pricePredictionEnabled || "rebirth".equals(kind)) return;
+        Double next = Economy.predictNext(last, priceGrowth(kind));
+        if (next == null) return;
+        if ("zone".equals(kind)) { zoneTarget = next; zoneTargetPredicted = true; zonePriceSeenAt = now; }
+        else { swordTarget = next; swordTargetPredicted = true; swordPriceSeenAt = now; }
+        log("price_predicted", "kind", kind, "from", Amounts.format(last), "growth", Math.round(priceGrowth(kind) * 1000.0) / 1000.0,
+            "target", Amounts.format(next), "learned", "zone".equals(kind) ? zoneGrowthLearned != null : swordGrowthLearned != null);
+    }
+
+    /** A server-quoted price arrived: check the prediction and learn the ratio against the previous known price. */
+    private void onServerPrice(String kind, double actual, Double predicted, Double previous) {
+        if ("rebirth".equals(kind)) return;
+        if (predicted != null) {
+            log("price_check", "kind", kind, "predicted", Amounts.format(predicted), "actual", Amounts.format(actual),
+                "errPct", Math.round(1000.0 * (predicted - actual) / actual) / 10.0);
+        }
+        if (previous != null && previous > 0 && cfg.pricePredictionEnabled) {
+            double ratio = actual / previous;
+            double expected = "zone".equals(kind) ? cfg.zonePriceGrowth : cfg.swordPriceGrowth;
+            boolean ok = Economy.growthAccepted(ratio, expected, cfg.priceGrowthLearnBandPct);
+            if (ok) {
+                if ("zone".equals(kind)) zoneGrowthLearned = Economy.blendGrowth(zoneGrowthLearned, ratio, 0.3);
+                else swordGrowthLearned = Economy.blendGrowth(swordGrowthLearned, ratio, 0.3);
+            }
+            log("price_ratio", "kind", kind, "previous", Amounts.format(previous), "actual", Amounts.format(actual),
+                "ratio", Math.round(ratio * 1000.0) / 1000.0, "accepted", ok,
+                "growth", Math.round(priceGrowth(kind) * 1000.0) / 1000.0);
+        }
     }
 
     /** Rolled growth margin for the unknown-price retry of a kind. */
@@ -829,6 +898,8 @@ public class StatsTracker {
         swordTarget = null;
         zoneTarget = null;
         rebirthTarget = null;
+        swordTargetPredicted = false;
+        zoneTargetPredicted = false;
         swordGap = null;
         zoneGap = null;
         rebirthGap = null;
@@ -1344,7 +1415,12 @@ public class StatsTracker {
         if ("zone".equals(kind)) {
             zoneGap = gap;
             zoneExploratorySent = false;
-            if (price != null) { if (zoneTarget == null) zonePriceSeenAt = now; zoneTarget = price; }
+            if (price != null) {
+                onServerPrice(kind, price, zoneTargetPredicted ? zoneTarget : null, zoneLastPrice);
+                if (zoneTarget == null || zoneTargetPredicted) zonePriceSeenAt = now;
+                zoneTarget = price;
+                zoneTargetPredicted = false;
+            }
             else zoneLastPrice = zoneLastPrice == null ? gap : Math.max(zoneLastPrice, gap);
             lastZoneFailAt = now;
         } else if ("rebirth".equals(kind)) {
@@ -1356,7 +1432,12 @@ public class StatsTracker {
         } else {
             swordGap = gap;
             swordExploratorySent = false;
-            if (price != null) { if (swordTarget == null) swordPriceSeenAt = now; swordTarget = price; }
+            if (price != null) {
+                onServerPrice(kind, price, swordTargetPredicted ? swordTarget : null, swordLastPrice);
+                if (swordTarget == null || swordTargetPredicted) swordPriceSeenAt = now;
+                swordTarget = price;
+                swordTargetPredicted = false;
+            }
             else swordLastPrice = swordLastPrice == null ? gap : Math.max(swordLastPrice, gap);
             lastSwordFailAt = now;
         }
@@ -1393,6 +1474,8 @@ public class StatsTracker {
                 lastSpendAt = now;
                 log("upgrade_result", "kind", kind, "success", true, "fail", false,
                     "paid", Amounts.format(paid), "via", via, "extraLevel", true);
+                // The ladder climbs one rung per level: the prediction follows the last line.
+                predictTarget(kind, zone ? zoneLastPrice : swordLastPrice, now);
             }
             return;
         }
@@ -1406,12 +1489,21 @@ public class StatsTracker {
             return;
         }
         Double price = zone ? zoneTarget : swordTarget;
+        boolean wasPredicted = zone ? zoneTargetPredicted : swordTargetPredicted;
+        if (wasPredicted && price != null) {
+            log("price_predicted_ok", "kind", kind, "target", Amounts.format(price), "via", via,
+                "paid", paid != null ? Amounts.format(paid) : null);
+        }
         Double retryFloor = paid != null ? paid : (price != null ? price : lastSendBal);
+        // A real price (paid amount or the target we bought at) seeds the ladder; the
+        // balance at send is only a retry floor, never a rung.
+        Double ladderBase = paid != null ? paid : price;
         double growth = rollGrowth(cfg.retryPriceGrowthMinPct, cfg.retryPriceGrowthMaxPct);
         if (zone) {
             zoneLastPrice = retryFloor != null ? retryFloor : zoneLastPrice;
             zoneRetryGrowth = growth;
             zoneTarget = null;
+            zoneTargetPredicted = false;
             zoneGap = null;
             zonePriceSeenAt = 0;
             zoneExploratorySent = false;
@@ -1419,17 +1511,20 @@ public class StatsTracker {
             swordLastPrice = retryFloor != null ? retryFloor : swordLastPrice;
             swordRetryGrowth = growth;
             swordTarget = null;
+            swordTargetPredicted = false;
             swordGap = null;
             swordPriceSeenAt = 0;
             swordExploratorySent = false;
             swordBuysThisZone++;
         }
+        predictTarget(kind, ladderBase, now);
         markStateDirty();
         Double floor = zone ? zoneLastPrice : swordLastPrice;
         log("upgrade_result", "kind", kind, "success", true, "fail", false,
             "paid", paid != null ? Amounts.format(paid) : (price != null ? Amounts.format(price) : null),
             "via", via,
-            "retryAt", floor != null ? Amounts.format(floor * (1.0 + growth)) : null);
+            "retryAt", floor != null ? Amounts.format(floor * (1.0 + growth)) : null,
+            "predicted", zone ? (zoneTarget != null ? Amounts.format(zoneTarget) : null) : (swordTarget != null ? Amounts.format(swordTarget) : null));
     }
 
     private static boolean anyMatch(List<Pattern> res, String text) {

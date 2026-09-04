@@ -414,6 +414,8 @@ public class YCBotChallengeConfig {
     /** 0.9.30 HUD: backdrop opacity (0–1) and whether the module chip row is drawn. */
     public double hudAlpha = 0.55;
     public boolean hudShowModules = true;
+    /** 0.9.31: the souls/essence/shards/credits row (off: the sword and zone price rows carry what matters). */
+    public boolean hudShowBalances = false;
     public String runLabel = "baseline";
     public int statusIntervalSeconds = 5;
 
@@ -493,6 +495,18 @@ public class YCBotChallengeConfig {
      */
     public int upgradeFirstKillsMin = 1;
     public int upgradeFirstKillsMax = 3;
+    /**
+     * 0.9.31 price ladders: every log agrees a sword level costs ×3.5 the last (36 steps,
+     * ratios 3.49–3.50) and a zone stage ×55 (137.26B → 7.55T → 415.21T → 22.83Q → 1.26QQ →
+     * 69.08QQ → 3.8S → 208.97S). After a purchase the next price is predicted as last ×
+     * growth and used as the target (HUD "predicted"); the next fail line checks it
+     * (price_check) and a measured ratio within priceGrowthLearnBandPct of the config value
+     * is blended into the per-account growth (price_ratio, state file).
+     */
+    public boolean pricePredictionEnabled = true;
+    public double swordPriceGrowth = 3.5;
+    public double zonePriceGrowth = 55.0;
+    public double priceGrowthLearnBandPct = 30;
 
     // ---- 0.9.17: server auto-rebirth, giveaways, rebirth upgrades
     /**
@@ -623,6 +637,15 @@ public class YCBotChallengeConfig {
     public int companionEggScanRadius = 64;
     public int companionEggScanVertical = 12;
     public double companionEggHologramReach = 2.5;
+    /**
+     * 0.9.31: how far under / over an egg block's centre its hologram lines may hang and
+     * still count as its own (the Western egg's plate group spans about a block under to
+     * a block over the egg; the old 0.5-under window lost the price line and paired nothing).
+     */
+    public double companionEggHologramBelow = 3.0;
+    public double companionEggHologramAbove = 5.0;
+    /** Stages per location (Farm 1–10, Western 11–20, …): one egg per location, saved and forgotten per location. */
+    public int companionStagesPerLocation = 10;
     /** Where to look for the egg's hologram, how close to walk, how far under the lowest line the egg block sits, and how far a crosshair hit may be from that point. */
     public double companionEggSearchRadius = 80.0;
     public double companionEggReach = 2.5;
@@ -1105,7 +1128,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 34;
+    public static final int CURRENT_CONFIG_VERSION = 35;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1377,6 +1400,12 @@ public class YCBotChallengeConfig {
             // screen (Y). Every new knob takes its default.
             changed = true;
         }
+        if (configVersion < 35) {
+            // v35: egg hologram pairing window, per-location egg store, identity aim; price
+            // ladders (sword x3.5, zone x55) predict the next target; HUD sword/zone rows,
+            // balances row off. Every new knob takes its default.
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1521,6 +1550,13 @@ public class YCBotChallengeConfig {
         if (companionEggScanVertical < 1) companionEggScanVertical = 1;
         if (companionEggScanVertical > 64) companionEggScanVertical = 64;
         if (companionEggHologramReach < 0.5) companionEggHologramReach = 2.5;
+        if (companionEggHologramBelow < 0) companionEggHologramBelow = 3.0;
+        if (companionEggHologramAbove < 0.5) companionEggHologramAbove = 5.0;
+        if (companionStagesPerLocation < 1) companionStagesPerLocation = 10;
+        if (swordPriceGrowth < 1.01) swordPriceGrowth = 3.5;
+        if (zonePriceGrowth < 1.01) zonePriceGrowth = 55.0;
+        if (priceGrowthLearnBandPct < 0) priceGrowthLearnBandPct = 0;
+        if (priceGrowthLearnBandPct > 90) priceGrowthLearnBandPct = 90;
         if (upgradeFirstKillsMin < 0) upgradeFirstKillsMin = 0;
         if (upgradeFirstKillsMax < upgradeFirstKillsMin) upgradeFirstKillsMax = upgradeFirstKillsMin;
         if (companionEggReach < 1) companionEggReach = 2.5;
