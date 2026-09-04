@@ -74,6 +74,7 @@ public final class EconomyChecks {
         n += logging0933();
         n += hudPlan0933();
         n += companions0933();
+        n += gui0933();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1798,6 +1799,34 @@ public final class EconomyChecks {
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
             System.err.println("FAIL companion state: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    /** 0.9.33 menu manners: one timing policy for every container flow; the dead pre-0.9.11 knobs are gone. */
+    private static int gui0933() {
+        int n = 0;
+        n += eq("fresh guiClickMinMs", CFG.guiClickMinMs, 250);
+        n += eq("fresh guiClickMaxMs", CFG.guiClickMaxMs, 900);
+        n += eq("fresh guiCloseMinMs", CFG.guiCloseMinMs, 400);
+        n += eq("fresh guiBetweenMaxMs", CFG.guiBetweenMaxMs, 3500);
+        n += eq("fresh companionLookMaxMs", CFG.companionLookMaxMs, 3500);
+        for (String dead : new String[]{"enchantSkipChance", "enchantVisitGapMinMs", "upgradePeriodMinMs", "zoneEverySwordsMin",
+            "zoneOverSwordRatio", "zoneMinReadiness", "retryPriceGrowthPct", "enchantMaxBuysPerVisit"}) {
+            boolean gone;
+            try { YCBotChallengeConfig.class.getDeclaredField(dead); gone = false; } catch (NoSuchFieldException e) { gone = true; }
+            n += eq("dead knob removed: " + dead, gone, true);
+        }
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"enchantSkipChance\":0.5,\"guiClickMinMs\":900,\"guiClickMaxMs\":100}");
+            YCBotChallengeConfig c = YCBotChallengeConfig.load(tmp);
+            n += eq("old file with a dead knob still loads", c.configVersion, 37);
+            n += eq("swapped click range normalises", c.guiClickMaxMs >= c.guiClickMinMs, true);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL gui config: " + ex);
             n++;
         }
         return n;

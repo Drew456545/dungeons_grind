@@ -27,6 +27,8 @@ public class RebirthUpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, GUI_WAIT, LOOK, STAR_CLICK, MENU_WAIT, SCAN, CLICK, AFTER, CLOSE }
 
     private record Entry(int slot, String name, List<String> lore) {}
+    /** Close beat (0.9.33). */
+    private long closeAt = 0;
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
@@ -181,12 +183,12 @@ public class RebirthUpgradeController {
                     return true;
                 }
                 phase = Phase.STAR_CLICK;
-                phaseUntil = now + HumanTiming.logNormalMs(250, 700);
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
             }
             case STAR_CLICK -> {
                 if (!rebirthGuiOpen(client)) { abort(client, "gui-closed"); return false; }
                 if (now < phaseUntil) return true;
-                EnchantScreens.click(client, handler(client), starSlot);
+                GuiHuman.click(client, starSlot, "rebirth-upgrade", "star", logger);
                 log("rebirth_upgrade_star_click", "slot", starSlot);
                 phase = Phase.MENU_WAIT;
                 phaseUntil = now + cfg.rebirthUpgradeOpenTimeoutMs;
@@ -236,12 +238,12 @@ public class RebirthUpgradeController {
                 log("rebirth_upgrade_pick", "name", pick.name(), "slot", chosenSlot, "level", pick.level(),
                     "maxLevel", pick.maxLevel(), "cost", pick.cost(), "points", points, "orderIndex", lore.orderIndex(pick));
                 phase = Phase.CLICK;
-                phaseUntil = now + HumanTiming.logNormalMs(300, 900);
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
             }
             case CLICK -> {
                 if (!menuOpen(client)) { onMenuGone(client, now); return true; }
                 if (now < phaseUntil) return true;
-                EnchantScreens.click(client, handler(client), chosenSlot);
+                GuiHuman.click(client, chosenSlot, "rebirth-upgrade", "upgrade:" + (chosen != null ? chosen.name() : "?"), logger);
                 clicks++;
                 log("rebirth_upgrade_click", "name", chosen != null ? chosen.name() : null, "slot", chosenSlot, "clicks", clicks);
                 phase = Phase.AFTER;
@@ -258,7 +260,7 @@ public class RebirthUpgradeController {
                     log("rebirth_upgrade_bought", "name", chosen != null ? chosen.name() : null, "clicks", clicks,
                         "before", chosenLoreBefore, "after", after, "level", nowItem.level(), "pointsLeft", points);
                     phase = Phase.SCAN;
-                    phaseUntil = now + HumanTiming.logNormalMs(400, 1100);
+                    phaseUntil = now + GuiHuman.readDelayMs(cfg);
                 } else {
                     log("rebirth_upgrade_stop", "reason", "no-change", "name", chosen != null ? chosen.name() : null,
                         "lore", after, "points", points);
@@ -266,7 +268,11 @@ public class RebirthUpgradeController {
                 }
             }
             case CLOSE -> {
-                if (isOurGui(client)) EnchantScreens.closeGui(client);
+                if (isOurGui(client)) {
+                    if (closeAt == 0) { closeAt = now + GuiHuman.closeDelayMs(cfg); return true; }
+                    if (now < closeAt) return true;
+                    GuiHuman.close(client, "rebirth-upgrade", logger);
+                }
                 log("rebirth_upgrade_close", "clicks", clicks, "points", points, "visitMs", now - visitStartedAt, "via", visitVia);
                 consecutiveAborts = 0;
                 phase = Phase.IDLE;
@@ -327,11 +333,12 @@ public class RebirthUpgradeController {
             }
         }
         if (plannedAt == 0 || now < plannedAt) return false;
-        // Between fights, like a person: never mid-cook, never over another screen.
-        if (combat.isCooking() || client.currentScreen != null) return false;
+        // Between fights, like a person: never mid-cook, never over another screen, never on a break (0.9.33).
+        if (combat.isCooking() || client.currentScreen != null || combat.isOnBreak()) return false;
         plannedAt = 0;
         visitVia = planVia;
         visitStartedAt = now;
+        closeAt = 0;
         points = null;
         clicks = 0;
         menuLogged = false;
@@ -375,28 +382,19 @@ public class RebirthUpgradeController {
     }
 
     private static ScreenHandler handler(MinecraftClient client) {
-        return client.currentScreen instanceof HandledScreen<?> hs ? hs.getScreenHandler() : null;
+        return GuiHuman.handler(client);
     }
 
-    /** Non-empty container slots (player inventory excluded), in slot order. */
+    /** Non-empty container slots (player inventory excluded), in slot order (GuiHuman since 0.9.33). */
     private static List<Entry> containerItems(MinecraftClient client) {
         List<Entry> out = new ArrayList<>();
-        ScreenHandler h = handler(client);
-        if (h == null || h.slots == null) return out;
-        int chestEnd = Math.max(0, h.slots.size() - 36);
-        for (int i = 0; i < chestEnd; i++) {
-            Slot slot = h.slots.get(i);
-            if (slot == null) continue;
-            ItemStack stack = slot.getStack();
-            if (stack == null || stack.isEmpty()) continue;
-            out.add(new Entry(slot.id, EnchantScreens.name(stack), EnchantScreens.loreLines(stack)));
-        }
+        for (GuiHuman.Item it : GuiHuman.items(client)) out.add(new Entry(it.slot(), it.name(), it.lore()));
         return out;
     }
 
     private static List<String> describe(List<Entry> entries) {
-        List<String> out = new ArrayList<>();
-        for (Entry e : entries) out.add(e.slot() + ":" + e.name() + (e.lore().isEmpty() ? "" : " | " + String.join(" | ", e.lore())));
-        return out;
+        List<GuiHuman.Item> items = new ArrayList<>();
+        for (Entry e : entries) items.add(new GuiHuman.Item(e.slot(), e.name(), e.lore()));
+        return GuiHuman.describe(items);
     }
 }

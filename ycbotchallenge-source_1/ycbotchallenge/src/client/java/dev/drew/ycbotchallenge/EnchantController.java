@@ -28,7 +28,7 @@ import net.minecraft.util.hit.HitResult;
  */
 public class EnchantController {
     private enum Phase {
-        IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
+        IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_PRESS, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
         MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, CLOSE
     }
 
@@ -112,6 +112,10 @@ public class EnchantController {
     }
 
     /** @return true if combat should yield this tick. */
+    /** Close beat (0.9.33): when the CLOSE phase will send Esc; 0 until armed. */
+    private long closeAt = 0;
+    private int pendingTabSlot = -1;
+
     public boolean tick(MinecraftClient client, CombatController combat) {
         if (!cfg.enchantsEnabled || client.player == null) return false;
         long now = System.currentTimeMillis();
@@ -188,10 +192,21 @@ public class EnchantController {
                     nextTab();
                     return true;
                 }
-                EnchantScreens.click(client, h, slot);
+                // Notice the tab, then click it (0.9.33: this used to click in the same tick).
+                pendingTabSlot = slot;
+                phase = Phase.TAB_PRESS;
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+            }
+            case TAB_PRESS -> {
+                if (now < phaseUntil) return true;
+                if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.ENCHANTER) {
+                    onEnchanterGone(client, now);
+                    return true;
+                }
+                GuiHuman.click(client, pendingTabSlot, "enchant", "tab:" + currentTab, logger);
                 tabClicked = true;
                 Double bal = stats.currency(currentTab);
-                log("enchant_tab", "tab", currentTab, "slot", slot, "balance", bal != null ? Amounts.format(bal) : null);
+                log("enchant_tab", "tab", currentTab, "slot", pendingTabSlot, "balance", bal != null ? Amounts.format(bal) : null);
                 attempted.clear();
                 scansThisTab = 0;
                 phase = Phase.TAB_WAIT;
@@ -259,7 +274,7 @@ public class EnchantController {
                     "candidates", candidateNames, "roll", Math.round(roll * 1000) / 1000.0,
                     "lagBias", cfg.enchantLagBias);
                 phase = Phase.ENCHANT_CLICK;
-                phaseUntil = now + HumanTiming.logNormalMs(250, 600);
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
             }
             case ENCHANT_CLICK -> {
                 if (now < phaseUntil) return true;
@@ -267,7 +282,7 @@ public class EnchantController {
                     onEnchanterGone(client, now);
                     return true;
                 }
-                EnchantScreens.click(client, EnchantScreens.handler(client), pickedSlot);
+                GuiHuman.click(client, pickedSlot, "enchant", "enchant:" + (picked != null ? picked.name() : "?"), logger);
                 phase = Phase.UPGRADE_WAIT;
                 phaseUntil = now + cfg.enchantOpenTimeoutMs;
             }
@@ -275,7 +290,7 @@ public class EnchantController {
                 EnchantScreens.Kind k = EnchantScreens.classify(client, lore);
                 if (k == EnchantScreens.Kind.UPGRADE) {
                     phase = Phase.MAX_READ;
-                    phaseUntil = now + HumanTiming.logNormalMs(300, 800);
+                    phaseUntil = now + GuiHuman.readDelayMs(cfg);
                 } else if (now >= phaseUntil) {
                     if (k == EnchantScreens.Kind.ENCHANTER) {
                         log("enchant_skip", "reason", "no-upgrade-gui", "name", picked != null ? picked.name() : null);
@@ -296,7 +311,7 @@ public class EnchantController {
                 EnchantScreens.SlotItem mi = EnchantScreens.maxUpgradeItem(h, lore);
                 if (mi == null) {
                     log("enchant_skip", "reason", "no-max-item", "name", picked != null ? picked.name() : null);
-                    EnchantScreens.closeGui(client);
+                    GuiHuman.close(client, "enchant", logger);
                     phase = Phase.RETURN_WAIT;
                     phaseUntil = now + 1500;
                     return true;
@@ -316,13 +331,13 @@ public class EnchantController {
                     log("enchant_skip", "reason", "max-unaffordable", "name", picked != null ? picked.name() : null,
                         "levels", levels, "price", price != null ? Amounts.format(price) : null,
                         "currency", cur, "balance", bal != null ? Amounts.format(bal) : null);
-                    EnchantScreens.closeGui(client);
+                    GuiHuman.close(client, "enchant", logger);
                     phase = Phase.RETURN_WAIT;
                     phaseUntil = now + 1500;
                     return true;
                 }
                 phase = Phase.MAX_CLICK;
-                phaseUntil = now + HumanTiming.logNormalMs(200, 500);
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
             }
             case MAX_CLICK -> {
                 if (now < phaseUntil) return true;
@@ -331,7 +346,7 @@ public class EnchantController {
                     phaseUntil = now + 1500;
                     return true;
                 }
-                EnchantScreens.click(client, EnchantScreens.handler(client), maxSlot);
+                GuiHuman.click(client, maxSlot, "enchant", "max-upgrade", logger);
                 buys++;
                 buysThisTab++;
                 Double price = maxItem != null ? maxItem.maxPrice() : null;
@@ -351,7 +366,7 @@ public class EnchantController {
                 if (now < phaseUntil) return true;
                 EnchantScreens.Kind k = EnchantScreens.classify(client, lore);
                 if (k == EnchantScreens.Kind.UPGRADE) {
-                    EnchantScreens.closeGui(client);
+                    GuiHuman.close(client, "enchant", logger);
                     phase = Phase.RETURN_WAIT;
                     phaseUntil = now + 1500;
                 } else if (k == EnchantScreens.Kind.ENCHANTER) {
@@ -369,7 +384,12 @@ public class EnchantController {
                 }
             }
             case CLOSE -> {
-                if (isOurGui(client)) EnchantScreens.closeGui(client);
+                // Done with the menu: a beat, then Esc (0.9.33; it used to close instantly).
+                if (isOurGui(client)) {
+                    if (closeAt == 0) { closeAt = now + GuiHuman.closeDelayMs(cfg); return true; }
+                    if (now < closeAt) return true;
+                    GuiHuman.close(client, "enchant", logger);
+                }
                 finish(client, now, "done");
                 return false;
             }
@@ -453,6 +473,8 @@ public class EnchantController {
 
     private void begin(MinecraftClient client, long now, String via, Double eta, double hazard, double pull, boolean curiosity) {
         visitStartedAt = now;
+        closeAt = 0;
+        pendingTabSlot = -1;
         tabIndex = 0;
         currentTab = null;
         attempted.clear();

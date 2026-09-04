@@ -472,8 +472,6 @@ public class YCBotChallengeConfig {
     public String swordCommand = "/swordmax";
     public String zoneCommand = "/zone max";
     public String rebirthCommand = "/rebirth";
-    /** Legacy, inert since 0.9.16 (the buy order is zone-first while the TTK gate is open). */
-    public double zoneOverSwordRatio = 1.25;
     /**
      * Zone-first economy (0.9.16). A zone multiplies per-kill money x20 and costs about
      * one kill of the next zone (03-36 log: 137B for zone 6 whose kills pay 183B), so
@@ -701,6 +699,26 @@ public class YCBotChallengeConfig {
      * The end-of-rebirth visit is exempt (zone buys have stopped by then).
      */
     public double companionMaxZoneGapPct = 25;
+
+    // ---- 0.9.33: menu manners, one policy for every container flow (GuiHuman)
+    /**
+     * A server sees only click/close packets and their spacing, so every menu click is
+     * preceded by a notice beat (this range), every close by guiClose*, two menus in a row
+     * by guiBetween*, a sub-menu read by guiRead*. Before 0.9.33 the companion egg opens
+     * and the enchanter tab clicked in the same tick as the decision and each flow closed
+     * on its own schedule.
+     */
+    public int guiClickMinMs = 250;
+    public int guiClickMaxMs = 900;
+    public int guiCloseMinMs = 400;
+    public int guiCloseMaxMs = 1500;
+    public int guiBetweenMinMs = 1500;
+    public int guiBetweenMaxMs = 3500;
+    public int guiReadMinMs = 300;
+    public int guiReadMaxMs = 900;
+    /** First look at the Companion Eggs / Companions / Fuse menus (they borrowed rebirthLook* before 0.9.33). */
+    public int companionLookMinMs = 600;
+    public int companionLookMaxMs = 3500;
     public int companionStageSettleKills = 10;
     public double companionRebirthEtaMinMax = 8.0;
     /** "Finish this kill, then go buy pets": delay between the decision and the walk. */
@@ -784,15 +802,8 @@ public class YCBotChallengeConfig {
     public double enchantLagBias = 0.0;
     /** 0.9.30: an entity under the crosshair when the enchanter is opened gets this glance up first (0 = off). */
     public int enchantOpenClearPitchDeg = 15;
-    /** Legacy (0.9.9 "45s mob" gate); inert since the 0.9.11 hazard trigger. */
-    public int enchantMinEtaMs = 45_000;
     /** Cook this long before opening the menu mid-cook (the DPS/ETA read needs a few samples). */
     public int enchantCookSettleMs = 3_000;
-    /** Legacy (0.9.9 visit gap); inert. */
-    public int enchantVisitGapMinMs = 150_000;
-    public int enchantVisitGapMaxMs = 330_000;
-    /** Legacy (0.9.9 skip roll); inert — the hazard supplies the randomness. */
-    public double enchantSkipChance = 0.0;
     /**
      * Hazard trigger (0.9.11): every post-kill lull (and once per long cook) rolls
      * against a chance that is 0 until enchantHazardRampStartMs since the last visit,
@@ -812,8 +823,6 @@ public class YCBotChallengeConfig {
     /** No visit rolls for a random window after a zone advance, so visits never land a fixed beat after arriving. */
     public int enchantPostZoneQuietMinMs = 30_000;
     public int enchantPostZoneQuietMaxMs = 90_000;
-    /** Legacy (0.9.11); inert. */
-    public int enchantMaxBuysBetweenKills = 2;
     /** A visit needs at least one tab currency to have grown this much since the last visit. */
     public double enchantMinBalanceGrowthPct = 0.10;
     /** Wrap the visit up (finish the click in flight, close) once the mob has this little time left. */
@@ -829,8 +838,6 @@ public class YCBotChallengeConfig {
     public int enchantBuySettleMaxMs = 2_500;
     /** Safety cap on one visit; the menu is closed when it elapses. A full three-tab visit with several buys takes 30–90s. */
     public int enchantMaxMenuMs = 180_000;
-    /** Legacy (0.9.9–0.9.11 purchase caps); inert — every affordable enchant on every tab is bought, at human pace. */
-    public int enchantMaxBuysPerVisit = 6;
     /** Open the menu via the interaction manager instead of a synthetic use-key press (fallback). */
     public boolean enchantOpenViaInteract = false;
     /** After this many aborted visits in a row (menu never opens, GUI keeps vanishing) stop trying until the next toggle. */
@@ -872,12 +879,6 @@ public class YCBotChallengeConfig {
     public String enchantUpgradeTitlePattern = "/\\bupgrade\\s*$/";
     /** The held item counts as the sword when its name or lore matches. */
     public String enchantSwordPattern = "/\\bsword\\b|enchants:/";
-    /** Legacy: inert since the kill-driven scheduler replaced the fixed buy timer. */
-    public int upgradePeriodMinMs = 132_000;
-    public int upgradePeriodMaxMs = 240_000;
-    /** Legacy; no longer used as a zone trigger (TTK readiness is the signal). */
-    public int zoneEverySwordsMin = 5;
-    public int zoneEverySwordsMax = 6;
     public int upgradeStopPauseMinMs = 200;
     public int upgradeStopPauseMaxMs = 800;
     public int typeKeyMinMs = 80;
@@ -930,11 +931,6 @@ public class YCBotChallengeConfig {
     public int upgradeResponseWindowMs = 4000;
     /** No fail line this long after a send = the purchase succeeded (silence-success). */
     public int successSilenceMs = 3000;
-    /**
-     * After a successful buy the new price is unknown; retry once the balance
-     * passes the old price × (1 + this). 0 = retry at the old price.
-     */
-    public double retryPriceGrowthPct = 0.0;
     /** Humanized "notice" delay between becoming affordable and typing the buy. */
     public int buyNoticeDelayMinMs = 2000;
     public int buyNoticeDelayMaxMs = 15000;
@@ -994,8 +990,6 @@ public class YCBotChallengeConfig {
      * hop, or an AFK gap. Learned prices are kept (server state, not position).
      */
     public boolean resetTtkOnEnable = true;
-    /** Legacy; TTK readiness no longer requires a sword buy this zone. */
-    public int zoneMinSwordBuysThisZone = 0;
     /**
      * Hard zone gate: /zone max is refused — affordable or not — while the effective
      * TTK (DPS-predicted for the mob being cooked, else the rolling kill median) is
@@ -1061,9 +1055,6 @@ public class YCBotChallengeConfig {
      * 0 keeps every prediction.
      */
     public int predictedTtkMaxAgeMs = 4000;
-    /** Legacy (pre-0.9.7 log-lerp readiness); inert. */
-    public int zoneReadyTtkMs = 2000;
-    public double zoneMinReadiness = 0.5;
     /** Rolling window (kills) for the median time-to-kill. */
     public int ttkWindowKills = 8;
     /**
@@ -1156,8 +1147,6 @@ public class YCBotChallengeConfig {
     public int cookGlanceAfterMs = 10_000;
     public int cookGlanceMinMs = 10_000;
     public int cookGlanceMaxMs = 25_000;
-    /** Legacy (0.9.10); inert — the showing tab is now detected from the items and never clicked when already selected. */
-    public double enchantSkipFirstTabChance = 0.5;
     /** "ignore" = ghost filter untouched; "sometimes" = attack movers with movingTargetAttackChance. */
     public String movingTargetPolicy = "ignore";
     public double movingTargetAttackChance = 0.15;
@@ -1234,8 +1223,6 @@ public class YCBotChallengeConfig {
             scoreboardSnapshotMs = fresh.scoreboardSnapshotMs;
             sidebarMoneyPattern = fresh.sidebarMoneyPattern;
             playerRadarWhitelist = fresh.playerRadarWhitelist;
-            zoneMinSwordBuysThisZone = 0;
-            zoneMinReadiness = fresh.zoneMinReadiness;
             if (moneyCurrency != null && moneyCurrency.equalsIgnoreCase("chicken")) moneyCurrency = "money";
             changed = true;
         }
@@ -1287,7 +1274,6 @@ public class YCBotChallengeConfig {
             upgradeNeedAmountPattern = fresh.upgradeNeedAmountPattern;
             upgradeFailPatterns = fresh.upgradeFailPatterns;
             upgradeSuccessPatterns = fresh.upgradeSuccessPatterns;
-            zoneOverSwordRatio = fresh.zoneOverSwordRatio;
             rebirthCommand = fresh.rebirthCommand;
             commandCooldownMs = fresh.commandCooldownMs;
             changed = true;
@@ -1329,7 +1315,6 @@ public class YCBotChallengeConfig {
             // buy hesitation, reaction floor, bimodal breaks, aim/movement realism.
             if (reactionDelayMinMs == 120) reactionDelayMinMs = fresh.reactionDelayMinMs;
             if (buyNoticeDelayMaxMs == 8000) buyNoticeDelayMaxMs = fresh.buyNoticeDelayMaxMs;
-            retryPriceGrowthMinPct = Math.max(fresh.retryPriceGrowthMinPct, retryPriceGrowthPct);
             retryPriceGrowthMaxPct = Math.max(retryPriceGrowthMinPct, fresh.retryPriceGrowthMaxPct);
             rebirthLookMinMs = fresh.rebirthLookMinMs;
             rebirthLookMaxMs = fresh.rebirthLookMaxMs;
@@ -1343,7 +1328,6 @@ public class YCBotChallengeConfig {
         }
         if (configVersion < 15) {
             // v15: hazard-based enchanter visits replace the "45s mob + 3 min" gate.
-            enchantSkipChance = fresh.enchantSkipChance;
             enchantHazardRampStartMs = fresh.enchantHazardRampStartMs;
             enchantHazardRampFullMs = fresh.enchantHazardRampFullMs;
             enchantHazardFullChance = fresh.enchantHazardFullChance;
@@ -1499,6 +1483,11 @@ public class YCBotChallengeConfig {
             gateUsesPrediction = fresh.gateUsesPrediction;
             // Companions: visits/last stage/egg prices persisted per user (state file), auto-found
             // eggs saved (companion_egg_saved), cheap visits capped by companionMaxZoneGapPct.
+            // Menus: one timing policy (gui* knobs); the dead pre-0.9.11 knobs (enchantVisitGap*,
+            // enchantSkipChance, enchantMaxBuysPerVisit, enchantMinEtaMs, enchantMaxBuysBetweenKills,
+            // enchantSkipFirstTabChance, upgradePeriod*, zoneEverySwords*, zoneOverSwordRatio,
+            // zoneMinSwordBuysThisZone, zoneReadyTtkMs, zoneMinReadiness, retryPriceGrowthPct)
+            // are gone; Gson ignores them in an old file.
             // HUD: plan row on, module chip row off (its state lives on the Y screen now).
             hudShowModules = fresh.hudShowModules;
             hudShowPlan = fresh.hudShowPlan;
@@ -1596,7 +1585,6 @@ public class YCBotChallengeConfig {
         if (swordCommand == null || swordCommand.isBlank()) swordCommand = "/swordmax";
         if (zoneCommand == null || zoneCommand.isBlank()) zoneCommand = "/zone max";
         if (rebirthCommand == null || rebirthCommand.isBlank()) rebirthCommand = "/rebirth";
-        if (zoneOverSwordRatio <= 0) zoneOverSwordRatio = 1.25;
         if (swordWhileSavingMaxPct < 0) swordWhileSavingMaxPct = 0;
         if (giveawayCommand == null || giveawayCommand.isBlank()) giveawayCommand = fresh.giveawayCommand;
         if (giveawayJoinChance < 0 || giveawayJoinChance > 1) giveawayJoinChance = fresh.giveawayJoinChance;
@@ -1743,7 +1731,6 @@ public class YCBotChallengeConfig {
         if (cookGlanceAfterMs < 0) cookGlanceAfterMs = 10_000;
         if (cookGlanceMinMs < 1000) cookGlanceMinMs = 10_000;
         if (cookGlanceMaxMs < cookGlanceMinMs) cookGlanceMaxMs = cookGlanceMinMs;
-        if (enchantSkipFirstTabChance < 0 || enchantSkipFirstTabChance > 1) enchantSkipFirstTabChance = 0.5;
         YCBotChallengeConfig freshEnchant = new YCBotChallengeConfig();
         if (enchantTabs == null || enchantTabs.isEmpty()) enchantTabs = freshEnchant.enchantTabs;
         if (enchantSignaturePattern == null || enchantSignaturePattern.isBlank()) enchantSignaturePattern = freshEnchant.enchantSignaturePattern;
@@ -1754,11 +1741,7 @@ public class YCBotChallengeConfig {
         if (enchantMaxUpgradeName == null || enchantMaxUpgradeName.isBlank()) enchantMaxUpgradeName = freshEnchant.enchantMaxUpgradeName;
         if (enchantUpgradeTitlePattern == null || enchantUpgradeTitlePattern.isBlank()) enchantUpgradeTitlePattern = freshEnchant.enchantUpgradeTitlePattern;
         if (enchantSwordPattern == null || enchantSwordPattern.isBlank()) enchantSwordPattern = freshEnchant.enchantSwordPattern;
-        if (enchantMinEtaMs < 0) enchantMinEtaMs = 45_000;
         if (enchantCookSettleMs < 0) enchantCookSettleMs = 3_000;
-        if (enchantVisitGapMinMs < 0) enchantVisitGapMinMs = 150_000;
-        if (enchantVisitGapMaxMs < enchantVisitGapMinMs) enchantVisitGapMaxMs = enchantVisitGapMinMs;
-        if (enchantSkipChance < 0 || enchantSkipChance > 1) enchantSkipChance = 0;
         if (enchantHazardRampStartMs < 0) enchantHazardRampStartMs = 120_000;
         if (enchantHazardRampFullMs <= enchantHazardRampStartMs) enchantHazardRampFullMs = enchantHazardRampStartMs + 600_000;
         if (enchantHazardFullChance < 0 || enchantHazardFullChance > 1) enchantHazardFullChance = 0.08;
@@ -1768,7 +1751,6 @@ public class YCBotChallengeConfig {
         if (enchantCuriosityChance < 0 || enchantCuriosityChance > 1) enchantCuriosityChance = 0.10;
         if (enchantPostZoneQuietMinMs < 0) enchantPostZoneQuietMinMs = 0;
         if (enchantPostZoneQuietMaxMs < enchantPostZoneQuietMinMs) enchantPostZoneQuietMaxMs = enchantPostZoneQuietMinMs;
-        if (enchantMaxBuysBetweenKills < 1) enchantMaxBuysBetweenKills = 2;
         if (enchantMinBalanceGrowthPct < 0) enchantMinBalanceGrowthPct = 0;
         if (enchantWrapUpEtaMs < 0) enchantWrapUpEtaMs = 5_000;
         if (enchantOpenTimeoutMs < 500) enchantOpenTimeoutMs = 2_500;
@@ -1776,7 +1758,6 @@ public class YCBotChallengeConfig {
         if (enchantTabSettleMaxMs < enchantTabSettleMinMs) enchantTabSettleMaxMs = enchantTabSettleMinMs;
         if (enchantBuySettleMaxMs < enchantBuySettleMinMs) enchantBuySettleMaxMs = enchantBuySettleMinMs;
         if (enchantMaxMenuMs < 5_000) enchantMaxMenuMs = 180_000;
-        if (enchantMaxBuysPerVisit < 1) enchantMaxBuysPerVisit = 6;
         if (enchantMaxConsecutiveAborts < 1) enchantMaxConsecutiveAborts = 3;
         if (guiRecognizeGraceMs < 0) guiRecognizeGraceMs = 300;
         if (strayGuiCloseMs < 0) strayGuiCloseMs = 0;
@@ -1793,7 +1774,6 @@ public class YCBotChallengeConfig {
             sidebarCurrencies = List.of("money", "souls", "essence", "shards", "credits");
         }
         if (scoreboardSnapshotMs < 500) scoreboardSnapshotMs = 5000;
-        if (zoneMinReadiness < 0 || zoneMinReadiness > 1) zoneMinReadiness = 0.5;
         if (upgradeMinIntervalMs < 0) upgradeMinIntervalMs = 60_000;
         if (cooldownRelaxBalanceMult < 0) cooldownRelaxBalanceMult = 0;
         if (zoneMaxTtkMs < 0) zoneMaxTtkMs = 10_000;
@@ -1802,6 +1782,16 @@ public class YCBotChallengeConfig {
         if (offBotLogIntervalMs < 0) offBotLogIntervalMs = 0;
         if (companionMaxZoneGapPct < 0) companionMaxZoneGapPct = 0;
         if (companionMaxZoneGapPct > 100) companionMaxZoneGapPct = 100;
+        if (guiClickMinMs < 0) guiClickMinMs = 0;
+        if (guiClickMaxMs < guiClickMinMs) guiClickMaxMs = guiClickMinMs;
+        if (guiCloseMinMs < 0) guiCloseMinMs = 0;
+        if (guiCloseMaxMs < guiCloseMinMs) guiCloseMaxMs = guiCloseMinMs;
+        if (guiBetweenMinMs < 0) guiBetweenMinMs = 0;
+        if (guiBetweenMaxMs < guiBetweenMinMs) guiBetweenMaxMs = guiBetweenMinMs;
+        if (guiReadMinMs < 0) guiReadMinMs = 0;
+        if (guiReadMaxMs < guiReadMinMs) guiReadMaxMs = guiReadMinMs;
+        if (companionLookMinMs < 0) companionLookMinMs = 0;
+        if (companionLookMaxMs < companionLookMinMs) companionLookMaxMs = companionLookMinMs;
         if (stageProbeCommonKills < 0) stageProbeCommonKills = 0;
         if (stageProbeRarityPenaltyBlocks < 0) stageProbeRarityPenaltyBlocks = 0;
         if (zonePatienceMinMult <= 0) zonePatienceMinMult = 0.6;

@@ -37,7 +37,7 @@ import net.minecraft.util.math.Vec3d;
  * Every GUI is dumped verbatim (companion_gui) — the fixture net for the next version.
  */
 public class CompanionController {
-    private enum Phase { IDLE, WALK, AIM, OPEN_WAIT, EGG_LOOK, BUY, BUY_SETTLE, CLOSE_EGG, TYPE_COMPANION, COMP_WAIT,
+    private enum Phase { IDLE, WALK, AIM, OPEN_WAIT, EGG_LOOK, BUY, BUY_CLICK, BUY_SETTLE, CLOSE_EGG, TYPE_COMPANION, COMP_WAIT,
         COMP_LOOK, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, DELETE, DELETE_TYPE, DONE }
 
     private record Entry(int slot, String name, List<String> lore) {}
@@ -102,6 +102,7 @@ public class CompanionController {
     private double spent;
     private Double balanceBefore;
     private CompanionLore.OpenOption pendingOption;
+    private Double pendingMinutes;
     private Double observedEggPrice;
     private boolean eggsGuiLogged;
     private boolean unparsedLogged;
@@ -323,7 +324,7 @@ public class CompanionController {
             case OPEN_WAIT -> {
                 if (eggsGuiOpen(client)) {
                     phase = Phase.EGG_LOOK;
-                    phaseUntil = now + HumanTiming.logNormalMs(cfg.rebirthLookMinMs, cfg.rebirthLookMaxMs);
+                    phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
                 } else if (now >= phaseUntil) {
                     if (client.currentScreen != null) {
                         log("companion_skip", "reason", "other-gui", "title", title(client), "items", describe(containerItems(client)));
@@ -383,16 +384,26 @@ public class CompanionController {
                         "incomePerMin", income != null ? Amounts.format(income) : null, "balance", bal != null ? Amounts.format(bal) : null,
                         "maxMinutes", maxMinutes);
                     phase = Phase.CLOSE_EGG;
-                    phaseUntil = now + HumanTiming.logNormalMs(400, 1200);
+                    phaseUntil = now + GuiHuman.closeDelayMs(cfg);
                     return true;
                 }
                 pendingOption = pick;
-                balanceBefore = bal;
-                EnchantScreens.click(client, handler(client), pick.slot());
+                pendingMinutes = CompanionLore.incomeMinutes(pick.price(), income);
+                // Notice the option, then click it (0.9.33: this used to click in the same tick).
+                phase = Phase.BUY_CLICK;
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+            }
+            case BUY_CLICK -> {
+                if (!eggsGuiOpen(client)) { onEggsGuiGone(client, now); return true; }
+                if (now < phaseUntil) return true;
+                CompanionLore.OpenOption pick = pendingOption;
+                if (pick == null) { phase = Phase.BUY; return true; }
+                balanceBefore = stats.money();
+                GuiHuman.click(client, pick.slot(), "companion", "open:" + pick.count(), logger);
                 opensClicked++;
                 log("companion_open_click", "slot", pick.slot(), "count", pick.count(),
                     "price", pick.price() != null ? Amounts.format(pick.price()) : null,
-                    "minutes", tenth(CompanionLore.incomeMinutes(pick.price(), income)), "opens", opensClicked);
+                    "minutes", tenth(pendingMinutes), "opens", opensClicked);
                 phase = Phase.BUY_SETTLE;
                 phaseUntil = now + HumanTiming.logNormalMs(cfg.companionSettleMinMs, Math.max(cfg.companionSettleMinMs + 1, cfg.companionSettleMaxMs));
             }
@@ -415,16 +426,16 @@ public class CompanionController {
                 if (!eggsGuiOpen(client)) { onEggsGuiGone(client, now); return true; }
                 if (!bought || eggsOpened >= eggsTarget || opensClicked >= cfg.companionMaxOpensPerVisit) {
                     phase = Phase.CLOSE_EGG;
-                    phaseUntil = now + HumanTiming.logNormalMs(400, 1200);
+                    phaseUntil = now + GuiHuman.closeDelayMs(cfg);
                 } else {
                     phase = Phase.BUY;
                 }
             }
             case CLOSE_EGG -> {
                 if (now < phaseUntil) return true;
-                if (isOurGui(client)) EnchantScreens.closeGui(client);
+                if (isOurGui(client)) GuiHuman.close(client, "companion", logger);
                 phase = Phase.TYPE_COMPANION;
-                phaseUntil = now + HumanTiming.logNormalMs(1500, 3500);
+                phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
             }
             case TYPE_COMPANION -> {
                 if (now < phaseUntil) return true;
@@ -455,7 +466,7 @@ public class CompanionController {
             case COMP_WAIT -> {
                 if (companionsGuiOpen(client)) {
                     phase = Phase.COMP_LOOK;
-                    phaseUntil = now + HumanTiming.logNormalMs(cfg.rebirthLookMinMs, cfg.rebirthLookMaxMs);
+                    phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
                 } else if (now >= phaseUntil) {
                     abort(client, combat, "no-companions-gui");
                     return false;
@@ -476,16 +487,16 @@ public class CompanionController {
                 if (equipSlot < 0) {
                     log("companion_skip", "reason", "no-equip-best");
                     phase = Phase.FUSE_CLICK;
-                    phaseUntil = now + HumanTiming.logNormalMs(400, 1200);
+                    phaseUntil = now + GuiHuman.closeDelayMs(cfg);
                     return true;
                 }
                 phase = Phase.EQUIP;
-                phaseUntil = now + HumanTiming.logNormalMs(300, 900);
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
             }
             case EQUIP -> {
                 if (!companionsGuiOpen(client)) { abort(client, combat, "companions-gui-closed"); return false; }
                 if (now < phaseUntil) return true;
-                EnchantScreens.click(client, handler(client), equipSlot);
+                GuiHuman.click(client, equipSlot, "companion", "equip-best", logger);
                 log("companion_equip_click", "slot", equipSlot);
                 phase = Phase.EQUIP_SETTLE;
                 phaseUntil = now + HumanTiming.logNormalMs(cfg.companionSettleMinMs, Math.max(cfg.companionSettleMinMs + 1, cfg.companionSettleMaxMs));
@@ -497,7 +508,7 @@ public class CompanionController {
                     phase = Phase.DELETE;
                     deleteIdx = 0;
                     prepareDeletes();
-                    phaseUntil = now + HumanTiming.logNormalMs(1500, 3500);
+                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
                     return true;
                 }
                 List<Entry> entries = containerItems(client);
@@ -505,7 +516,7 @@ public class CompanionController {
                 log("companion_equip", "guiOpen", true, "before", summaries(equippedBefore), "after", summaries(equippedAfter),
                     "storage", storage.size());
                 phase = Phase.FUSE_CLICK;
-                phaseUntil = now + HumanTiming.logNormalMs(600, 1800);
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
             }
             case FUSE_CLICK -> {
                 if (now < phaseUntil) return true;
@@ -515,10 +526,10 @@ public class CompanionController {
                     phase = Phase.DELETE;
                     deleteIdx = 0;
                     if (isOurGui(client)) EnchantScreens.closeGui(client);
-                    phaseUntil = now + HumanTiming.logNormalMs(1500, 3500);
+                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
                     return true;
                 }
-                EnchantScreens.click(client, handler(client), fuseSlot);
+                GuiHuman.click(client, fuseSlot, "companion", "fuse", logger);
                 log("companion_fuse_click", "slot", fuseSlot);
                 phase = Phase.FUSE_WAIT;
                 phaseUntil = now + cfg.companionOpenTimeoutMs;
@@ -526,14 +537,14 @@ public class CompanionController {
             case FUSE_WAIT -> {
                 if (fuseGuiOpen(client)) {
                     phase = Phase.FUSE_LOG;
-                    phaseUntil = now + HumanTiming.logNormalMs(cfg.rebirthLookMinMs, cfg.rebirthLookMaxMs);
+                    phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
                 } else if (now >= phaseUntil) {
                     log("companion_skip", "reason", "no-fuse-gui", "title", title(client));
                     prepareDeletes();
                     phase = Phase.DELETE;
                     deleteIdx = 0;
                     if (isOurGui(client)) EnchantScreens.closeGui(client);
-                    phaseUntil = now + HumanTiming.logNormalMs(1500, 3500);
+                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
                 }
             }
             case FUSE_LOG -> {
@@ -544,7 +555,7 @@ public class CompanionController {
                 prepareDeletes();
                 phase = Phase.DELETE;
                 deleteIdx = 0;
-                phaseUntil = now + HumanTiming.logNormalMs(1500, 3500);
+                phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
             }
             case DELETE -> {
                 if (now < phaseUntil) return true;
@@ -1020,7 +1031,7 @@ public class CompanionController {
         log("companion_egg_gui_gone", "title", title(client), "eggs", eggsOpened, "opens", opensClicked);
         if (client.currentScreen != null && !isOurGui(client)) EnchantScreens.closeGui(client);
         phase = Phase.CLOSE_EGG;
-        phaseUntil = now + HumanTiming.logNormalMs(400, 1200);
+        phaseUntil = now + GuiHuman.closeDelayMs(cfg);
     }
 
     private void finish(MinecraftClient client, CombatController combat) {
@@ -1070,16 +1081,7 @@ public class CompanionController {
     /** Non-empty container slots (player inventory excluded), in slot order. */
     private static List<Entry> containerItems(MinecraftClient client) {
         List<Entry> out = new ArrayList<>();
-        ScreenHandler h = handler(client);
-        if (h == null || h.slots == null) return out;
-        int chestEnd = Math.max(0, h.slots.size() - 36);
-        for (int i = 0; i < chestEnd; i++) {
-            Slot slot = h.slots.get(i);
-            if (slot == null) continue;
-            ItemStack stack = slot.getStack();
-            if (stack == null || stack.isEmpty()) continue;
-            out.add(new Entry(slot.id, EnchantScreens.name(stack), EnchantScreens.loreLines(stack)));
-        }
+        for (GuiHuman.Item it : GuiHuman.items(client)) out.add(new Entry(it.slot(), it.name(), it.lore()));
         return out;
     }
 

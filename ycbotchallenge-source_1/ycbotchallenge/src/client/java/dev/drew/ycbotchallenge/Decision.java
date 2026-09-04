@@ -109,6 +109,6 @@ public record Decision(
     private static String sp(String s) { return s == null || s.isEmpty() ? "" : " " + s; }
 
     private static String seconds(double ms) {
-        return String.format(Locale.ROOT, ms < 10_000 ? "%.1fs" : "%.0fs", ms / 1000.0);
+        return String.format(Locale.ROOT, ms < 100_000 ? "%.1fs" : "%.0fs", ms / 1000.0);
     }
 }

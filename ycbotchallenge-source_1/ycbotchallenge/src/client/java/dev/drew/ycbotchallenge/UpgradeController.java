@@ -523,23 +523,23 @@ public class UpgradeController {
                 }
                 if (stats.failSince("rebirth", lastSendAt)) {
                     phase = Phase.GUI_ESC;
-                    phaseUntil = now + HumanTiming.logNormalMs(200, 600);
+                    phaseUntil = now + GuiHuman.closeDelayMs(cfg);
                     return true;
                 }
                 if (now < phaseUntil) return true;
                 if (rebirthAffordable()) {
                     phase = Phase.GUI_CLICK;
-                    phaseUntil = now + HumanTiming.logNormalMs(200, 500);
+                    phaseUntil = now + GuiHuman.clickDelayMs(cfg);
                     return true;
                 }
                 if (stats.rebirthTarget != null) {
                     phase = Phase.GUI_ESC;
-                    phaseUntil = now + HumanTiming.logNormalMs(200, 600);
+                    phaseUntil = now + GuiHuman.closeDelayMs(cfg);
                     return true;
                 }
                 // No gap yet — click once in case we already cover the unknown cost.
                 phase = Phase.GUI_CLICK;
-                phaseUntil = now + HumanTiming.logNormalMs(200, 500);
+                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
             }
             case GUI_CLICK -> {
                 combat.releaseKeys(client);
@@ -588,8 +588,7 @@ public class UpgradeController {
         if (!(client.currentScreen instanceof HandledScreen<?> hs)) return false;
         ScreenHandler handler = hs.getScreenHandler();
         Integer slot = RebirthScreens.diamondSlot(handler);
-        if (slot == null || client.interactionManager == null || client.player == null) return false;
-        client.interactionManager.clickSlot(handler.syncId, slot, 0, SlotActionType.PICKUP, client.player);
+        if (slot == null || !GuiHuman.click(client, slot, "rebirth", "diamond", logger)) return false;
         stats.armTeleport(cfg.expectedTeleportAfterRebirthMs);
         if (logger != null) logger.log("rebirth_click", "slot", slot);
         return true;
