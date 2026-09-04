@@ -60,10 +60,11 @@ public class CompanionController {
 
     // trigger bookkeeping
     private long lastRebirthSeen = -1;
-    private int visitsThisRebirth = 0;
-    private boolean endFallbackDone = false;
-    private Integer lastBoughtStage = null;
+    // visitsThisRebirth / endFallbackDone / lastBoughtStage live in StatsTracker since 0.9.33 (persisted per user).
     private Integer lastPriceLogStage = null;
+    /** Zone-gap facts of the last decide() for the skip log. */
+    private Double lastZoneGap = null;
+    private Double lastBatchPct = null;
     private int zoneSeqSeen = -1;
     private int killsAtStage = 0;
     private long lastEggScanAt = 0;
@@ -404,6 +405,7 @@ public class CompanionController {
                     eggsOpened += pendingOption.count();
                     spent += delta;
                     observedEggPrice = delta / pendingOption.count();
+                    stats.noteCompanionEggPrice(visitStage, observedEggPrice);
                 }
                 log("companion_open", "count", pendingOption != null ? pendingOption.count() : null, "bought", bought,
                     "paid", bought ? Amounts.format(delta) : null, "perEgg", bought ? Amounts.format(observedEggPrice) : null,
@@ -565,13 +567,13 @@ public class CompanionController {
             }
             case DONE -> {
                 if (isOurGui(client)) EnchantScreens.closeGui(client);
-                visitsThisRebirth++;
-                if (eggsOpened > 0 && visitStage != null) lastBoughtStage = visitStage;
+                stats.noteCompanionVisit(visitStage, eggsOpened > 0);
                 log("companion_visit_done", "via", visitVia, "eggs", eggsOpened, "opens", opensClicked,
                     "spent", spent > 0 ? Amounts.format(spent) : null,
                     "perEgg", observedEggPrice != null ? Amounts.format(observedEggPrice) : null,
                     "stage", visitStage, "before", summaries(equippedBefore), "after", summaries(equippedAfter),
-                    "deletes", deletes.size(), "visitMs", now - visitStartedAt, "visitsThisRebirth", visitsThisRebirth);
+                    "deletes", deletes.size(), "visitMs", now - visitStartedAt,
+                    "visitsThisRebirth", stats.companionVisitsThisRebirth(), "persisted", true);
                 consecutiveAborts = 0;
                 finish(client, combat);
                 return false;
@@ -591,8 +593,7 @@ public class CompanionController {
         if (rb != lastRebirthSeen) {
             boolean first = lastRebirthSeen == -1;
             lastRebirthSeen = rb;
-            visitsThisRebirth = 0;
-            endFallbackDone = false;
+            if (!first) stats.companionRebirthRollover();
             plannedAt = 0;
             if (!first) forgetEgg("rebirth");
         }
@@ -636,7 +637,8 @@ public class CompanionController {
                 log("companion_plan", "via", via, "delayMs", delay, "stage", stats.confirmedZoneLevel(),
                     "price", lastEgg != null && lastEgg.price() != null ? Amounts.format(lastEgg.price()) : null,
                     "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
-                    "visitsThisRebirth", visitsThisRebirth, "lastBoughtStage", lastBoughtStage);
+                    "visitsThisRebirth", stats.companionVisitsThisRebirth(), "lastBoughtStage", stats.companionLastBoughtStage,
+                    "zoneGap", lastZoneGap != null ? Amounts.format(lastZoneGap) : null, "batchPctOfGap", tenth(lastBatchPct));
             }
         }
         if (plannedAt == 0 || now < plannedAt) return false;
@@ -649,7 +651,7 @@ public class CompanionController {
             dumpPlates(client, combat);
             plannedAt = 0;
             if ("manual".equals(planVia)) return false;
-            visitsThisRebirth++; // do not retry every 15s; the next rebirth gets another look
+            stats.noteCompanionVisit(null, false); // do not retry every 15s; the next rebirth gets another look
             return false;
         }
         plannedAt = 0;
@@ -696,21 +698,38 @@ public class CompanionController {
         Double income = stats.incomePerMinute();
         Double bal = stats.money();
         if (income == null || income <= 0 || bal == null) return skip("no-income", stage, null);
-        double batch = lastEgg.price() * Math.max(1, cfg.companionEggsMin);
+        // The persisted per-egg price of this stage beats the hologram read (the first open of a
+        // visit used to be a blind probe against a possibly mis-scaled string).
+        Double known = stats.companionEggPrice(stage);
+        double perEgg = known != null ? known : lastEgg.price();
+        double batch = perEgg * Math.max(1, cfg.companionEggsMin);
         double minutes = batch / income;
         boolean underBalance = batch <= bal * Math.max(0, cfg.companionMaxBalancePct) / 100.0;
-        if (visitsThisRebirth >= cfg.companionMaxVisitsPerRebirth) return skip("visits", stage, minutes);
-        boolean stageOk = lastBoughtStage == null || stage >= lastBoughtStage + cfg.companionMinStageGain;
-        if (minutes <= cfg.companionMaxIncomeMinutes && underBalance) {
-            if (stageOk) return "cheap";
-            return skip("stage-gain", stage, minutes);
-        }
+        Double zoneGap = stats.zoneGapEstimate();
+        lastZoneGap = zoneGap;
+        lastBatchPct = zoneGap != null && zoneGap > 0 ? 100.0 * batch / zoneGap : null;
+        Decision last = upgrades.lastDecision();
+        boolean zoneNext = last != null && "zone".equals(last.kind()) && last.acts();
+        boolean zoneAffordable = zoneNext || Economy.knownAffordable(stats.zoneTarget, bal);
+        boolean withinGap = CompanionLore.batchWithinZoneGap(batch, zoneGap, cfg.companionMaxZoneGapPct);
+        int visits = stats.companionVisitsThisRebirth();
+        if (visits >= cfg.companionMaxVisitsPerRebirth) return skip("visits", stage, minutes);
+        Integer lastBought = stats.companionLastBoughtStage;
+        boolean stageOk = lastBought == null || stage >= lastBought + cfg.companionMinStageGain;
         Double eta = Economy.rebirthEtaMin(bal, stats.rebirthTarget, income);
         boolean zoneStopped = "zone".equals(upgrades.horizonBlockedKind()) || stats.zoneMaxed
             || (eta != null && eta <= cfg.companionRebirthEtaMinMax);
-        if (zoneStopped && visitsThisRebirth == 0 && !endFallbackDone
+        if (minutes <= cfg.companionMaxIncomeMinutes && underBalance) {
+            if (!stageOk) return skip("stage-gain", stage, minutes);
+            // 0.9.33: eggs never delay a stage that is within reach (14:22 log: 3.31SS on eggs
+            // with 1.58SS left to the zone).
+            if (zoneAffordable && !zoneStopped) return skip("zone-affordable", stage, minutes);
+            if (!withinGap && !zoneStopped) return skip("zone-gap", stage, minutes);
+            return "cheap";
+        }
+        if (zoneStopped && visits == 0 && !stats.companionEndFallbackDone()
             && minutes <= cfg.companionEndOfRebirthMaxIncomeMinutes && underBalance) {
-            endFallbackDone = true;
+            stats.noteCompanionEndFallback();
             return "end-of-rebirth";
         }
         return skip(underBalance ? "price" : "balance", stage, minutes);
@@ -721,7 +740,9 @@ public class CompanionController {
         if (now - lastSkipLogAt > 120_000) {
             lastSkipLogAt = now;
             log("companion_skip", "reason", reason, "stage", stage, "minutesPerBatch", tenth(minutes),
-                "visitsThisRebirth", visitsThisRebirth, "lastBoughtStage", lastBoughtStage);
+                "visitsThisRebirth", stats.companionVisitsThisRebirth(), "lastBoughtStage", stats.companionLastBoughtStage,
+                "zoneGap", lastZoneGap != null ? Amounts.format(lastZoneGap) : null, "zoneGapVia", stats.zoneGapVia(),
+                "batchPctOfGap", tenth(lastBatchPct), "maxPct", cfg.companionMaxZoneGapPct);
         }
         return null;
     }
@@ -865,6 +886,24 @@ public class CompanionController {
         log("companion_egg_scan", "eggs", eggs.size(), "radius", r, "vertical", v, "found", seen,
             "chosen", best != null ? best.via() : null);
         if (best != null) { lastEgg = best; lastEggAt = now; eggLocation = locationNow(); }
+        // 0.9.33: an egg found by its block and hologram is worth remembering (only the manual
+        // spotlight wrote the egg file before), so the next visit at this location walks straight to it.
+        if (best != null && eggStore != null && stats.zone != null
+            && ("block".equals(best.via()) || "block-near-hologram".equals(best.via()))) {
+            String key = EggStore.key(stats.zone, cfg.companionStagesPerLocation);
+            EggStore.Egg saved = eggStore.get(key);
+            Vec3d aim = best.aim();
+            boolean moved = saved == null || Math.abs(saved.x - aim.x) > 1.0 || Math.abs(saved.y - aim.y) > 1.0 || Math.abs(saved.z - aim.z) > 1.0;
+            if (moved) {
+                EggStore.Egg e = new EggStore.Egg();
+                e.x = aim.x; e.y = aim.y; e.z = aim.z;
+                e.label = "scan:" + best.via();
+                e.at = now;
+                eggStore.put(key, e);
+                log("companion_egg_saved", "via", "scan", "key", key, "x", Math.round(aim.x), "y", Math.round(aim.y),
+                    "z", Math.round(aim.z), "replaced", saved != null);
+            }
+        }
         return best;
     }
 

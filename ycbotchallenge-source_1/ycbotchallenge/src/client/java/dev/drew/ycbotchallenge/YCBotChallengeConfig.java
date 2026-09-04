@@ -694,6 +694,13 @@ public class YCBotChallengeConfig {
     public double companionMaxBalancePct = 40;
     public int companionMinStageGain = 2;
     public int companionMaxVisitsPerRebirth = 2;
+    /**
+     * 0.9.33: a cheap visit's batch (companionEggsMin eggs) must also be at most this
+     * percent of the money still needed for the next stage, and no cheap visit happens
+     * while a zone is affordable (14:22 log: 3.31SS on eggs with 1.58SS left to the zone).
+     * The end-of-rebirth visit is exempt (zone buys have stopped by then).
+     */
+    public double companionMaxZoneGapPct = 25;
     public int companionStageSettleKills = 10;
     public double companionRebirthEtaMinMax = 8.0;
     /** "Finish this kill, then go buy pets": delay between the decision and the walk. */
@@ -1490,6 +1497,8 @@ public class YCBotChallengeConfig {
             // blind sword, 15.98Q against a 4.4T zone floor), common first target on a fresh
             // stage (stageProbeCommonKills). Every new knob takes its default.
             gateUsesPrediction = fresh.gateUsesPrediction;
+            // Companions: visits/last stage/egg prices persisted per user (state file), auto-found
+            // eggs saved (companion_egg_saved), cheap visits capped by companionMaxZoneGapPct.
             // HUD: plan row on, module chip row off (its state lives on the Y screen now).
             hudShowModules = fresh.hudShowModules;
             hudShowPlan = fresh.hudShowPlan;
@@ -1791,6 +1800,8 @@ public class YCBotChallengeConfig {
         if (zoneMinStageKills < 0) zoneMinStageKills = 0;
         if (ttkKeepOnReenableMs < 0) ttkKeepOnReenableMs = 0;
         if (offBotLogIntervalMs < 0) offBotLogIntervalMs = 0;
+        if (companionMaxZoneGapPct < 0) companionMaxZoneGapPct = 0;
+        if (companionMaxZoneGapPct > 100) companionMaxZoneGapPct = 100;
         if (stageProbeCommonKills < 0) stageProbeCommonKills = 0;
         if (stageProbeRarityPenaltyBlocks < 0) stageProbeRarityPenaltyBlocks = 0;
         if (zonePatienceMinMult <= 0) zonePatienceMinMult = 0.6;

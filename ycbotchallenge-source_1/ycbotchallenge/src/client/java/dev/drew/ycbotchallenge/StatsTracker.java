@@ -82,6 +82,61 @@ public class StatsTracker {
     public boolean pointsCheckedThisRebirth() {
         return rebirths != null && rebirths.equals(pointsCheckedAtRebirths);
     }
+
+    // ---- 0.9.33: companion facts, persisted per user so a restart does not re-buy at the same stage
+    public Integer companionLastBoughtStage = null;
+    private int companionVisits = 0;
+    private Integer companionVisitsAtRebirths = null;
+    private boolean companionEndFallbackDone = false;
+    public final Map<String, Double> companionEggPriceByStage = new LinkedHashMap<>();
+
+    /** Visits made this rebirth (0 once the sidebar rebirth counter moved past the one they belong to). */
+    public int companionVisitsThisRebirth() {
+        return Economy.visitsThisRebirth(companionVisits, companionVisitsAtRebirths, rebirths);
+    }
+
+    /** Whether the once-per-rebirth end visit already happened in the current rebirth. */
+    public boolean companionEndFallbackDone() {
+        if (rebirths != null && companionVisitsAtRebirths != null && !rebirths.equals(companionVisitsAtRebirths)) return false;
+        return companionEndFallbackDone;
+    }
+
+    /** A rebirth happened (controller-side signal): the per-rebirth counters start over. */
+    public void companionRebirthRollover() {
+        companionVisits = 0;
+        companionEndFallbackDone = false;
+        companionVisitsAtRebirths = rebirths;
+        markStateDirty();
+    }
+
+    /** A visit ended (or was written off): count it, remember the stage when something was bought. */
+    public void noteCompanionVisit(Integer stage, boolean bought) {
+        if (companionVisitsThisRebirth() == 0 && companionVisits != 0) {
+            companionVisits = 0;
+            companionEndFallbackDone = false;
+        }
+        companionVisits++;
+        companionVisitsAtRebirths = rebirths;
+        if (bought && stage != null) companionLastBoughtStage = stage;
+        markStateDirty();
+    }
+
+    public void noteCompanionEndFallback() {
+        companionEndFallbackDone = true;
+        companionVisitsAtRebirths = rebirths;
+        markStateDirty();
+    }
+
+    /** The true per-egg price seen at a stage (sidebar delta of an open), kept for the next visit's first pick. */
+    public void noteCompanionEggPrice(Integer stage, Double price) {
+        if (stage == null || price == null || price <= 0) return;
+        companionEggPriceByStage.put(String.valueOf(stage), price);
+        markStateDirty();
+    }
+
+    public Double companionEggPrice(Integer stage) {
+        return stage == null ? null : companionEggPriceByStage.get(String.valueOf(stage));
+    }
     private String stateUser;
     private long stateDirtyAt = 0;
     /** Why the next expected teleport happens ("zone" advance or "rebirth") — picks the settle length. */
@@ -513,6 +568,13 @@ public class StatsTracker {
         if (zoneLastPrice == null) zoneLastPrice = e.zoneLastPrice;
         if (rebirthLastPrice == null) rebirthLastPrice = e.rebirthLastPrice;
         if (pointsCheckedAtRebirths == null) pointsCheckedAtRebirths = e.pointsCheckedAtRebirths;
+        if (companionLastBoughtStage == null) companionLastBoughtStage = e.companionLastBoughtStage;
+        if (companionVisitsAtRebirths == null && e.companionVisitsAtRebirths != null) {
+            companionVisitsAtRebirths = e.companionVisitsAtRebirths;
+            companionVisits = e.companionVisitsThisRebirth != null ? e.companionVisitsThisRebirth : 0;
+            companionEndFallbackDone = Boolean.TRUE.equals(e.companionEndFallbackDone);
+        }
+        if (companionEggPriceByStage.isEmpty() && e.companionEggPriceByStage != null) companionEggPriceByStage.putAll(e.companionEggPriceByStage);
         if (swordGrowthLearned == null) swordGrowthLearned = e.swordGrowth;
         if (zoneGrowthLearned == null) zoneGrowthLearned = e.zoneGrowth;
         if (swordTarget != null && swordTarget.equals(e.swordTarget) && Boolean.TRUE.equals(e.swordTargetPredicted)) swordTargetPredicted = true;
@@ -525,7 +587,9 @@ public class StatsTracker {
             "swordTarget", fmt(swordTarget), "zoneTarget", fmt(zoneTarget), "rebirthTarget", fmt(rebirthTarget),
             "swordPredicted", swordTargetPredicted, "zonePredicted", zoneTargetPredicted,
             "swordGrowth", swordGrowthLearned, "zoneGrowth", zoneGrowthLearned,
-            "swordFloor", fmt(swordLastPrice), "zoneFloor", fmt(zoneLastPrice), "rebirthFloor", fmt(rebirthLastPrice));
+            "swordFloor", fmt(swordLastPrice), "zoneFloor", fmt(zoneLastPrice), "rebirthFloor", fmt(rebirthLastPrice),
+            "companionLastBoughtStage", companionLastBoughtStage, "companionVisits", companionVisits,
+            "companionVisitsAtRebirths", companionVisitsAtRebirths, "companionEggPrices", companionEggPriceByStage.size());
     }
 
     private static String fmt(Double v) { return v != null ? Amounts.format(v) : null; }
@@ -552,6 +616,11 @@ public class StatsTracker {
         e.zoneGrowth = zoneGrowthLearned;
         e.swordTargetPredicted = swordTargetPredicted;
         e.zoneTargetPredicted = zoneTargetPredicted;
+        e.companionLastBoughtStage = companionLastBoughtStage;
+        e.companionVisitsThisRebirth = companionVisits;
+        e.companionVisitsAtRebirths = companionVisitsAtRebirths;
+        e.companionEndFallbackDone = companionEndFallbackDone;
+        e.companionEggPriceByStage = companionEggPriceByStage.isEmpty() ? null : new LinkedHashMap<>(companionEggPriceByStage);
         stateStore.put(stateUser, e);
         log("state_saved", "user", stateUser);
     }

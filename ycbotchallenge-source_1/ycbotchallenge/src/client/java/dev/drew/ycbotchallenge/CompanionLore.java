@@ -206,6 +206,17 @@ public final class CompanionLore {
     public boolean isFuseTitle(String title) { return title != null && fuseTitleRe.matcher(title.trim()).find(); }
 
     /** Minutes of income a price costs, or null when either is unknown. */
+    /**
+     * 0.9.33: a "cheap" egg batch must also be small against the money still needed for
+     * the next stage (14:22 log: 3.31SS of 9.91SS went on eggs with 1.58SS left to the
+     * zone; 05:45: 2.32SS against an 8.81SS gap for an unchanged equip list). An unknown
+     * gap (nothing known about the zone) does not block.
+     */
+    public static boolean batchWithinZoneGap(double batch, Double zoneGap, double maxPct) {
+        if (zoneGap == null) return true;
+        return batch <= zoneGap * Math.max(0.0, maxPct) / 100.0 + 1e-6;
+    }
+
     public static Double incomeMinutes(Double price, Double incomePerMin) {
         if (price == null || incomePerMin == null || incomePerMin <= 0) return null;
         return price / incomePerMin;

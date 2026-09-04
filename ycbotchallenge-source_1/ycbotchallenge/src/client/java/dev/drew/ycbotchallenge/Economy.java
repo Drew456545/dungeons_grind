@@ -709,6 +709,13 @@ public final class Economy {
         return balAfter < balBefore - 1e-6 ? balBefore - balAfter : null;
     }
 
+    /** Persisted companion visits count for the current rebirth: 0 once the rebirth counter moved past the one they were made in. */
+    public static int visitsThisRebirth(Integer visits, Integer atRebirths, Integer rebirths) {
+        if (visits == null) return 0;
+        if (rebirths != null && atRebirths != null && !rebirths.equals(atRebirths)) return 0;
+        return Math.max(0, visits);
+    }
+
     private static boolean horizonAllows(Inputs in, Double price, double gain) {
         if (!in.horizonEnabled) return true;
         return rebirthHorizonAllows(price, in.bal, in.rebirthTarget, in.incomePerMin, gain);

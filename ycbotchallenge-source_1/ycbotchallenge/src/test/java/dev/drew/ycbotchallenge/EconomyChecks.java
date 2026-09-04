@@ -73,6 +73,7 @@ public final class EconomyChecks {
         n += audit0933Decision();
         n += logging0933();
         n += hudPlan0933();
+        n += companions0933();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1754,6 +1755,50 @@ public final class EconomyChecks {
         n += eq("plan: maxed", none.hudPlan(null, null), "nothing left to buy");
         for (Decision d : new Decision[]{base, hard, probe, inst, hz, none}) {
             n += eq("plan length " + d.reason(), d.hudPlan(1e12, 1e12).length() <= 64, true);
+        }
+        return n;
+    }
+
+    /** 0.9.33 companions: eggs never delay a stage within reach; visits, last stage and egg prices survive a restart. */
+    private static int companions0933() {
+        int n = 0;
+        // 14:22 log: 3.31SS on eggs with 1.58SS left to the zone; 05:45: 2.32SS against an 8.81SS gap.
+        n += eq("3.31SS batch vs 1.58SS gap: refused", CompanionLore.batchWithinZoneGap(3.31e24, 1.58e24, 25), false);
+        n += eq("2.32SS batch vs 8.81SS gap (26%): refused", CompanionLore.batchWithinZoneGap(2.32e24, 8.81e24, 25), false);
+        n += eq("0.3SS batch vs 1.58SS gap (19%): fine", CompanionLore.batchWithinZoneGap(0.3e24, 1.58e24, 25), true);
+        n += eq("unknown gap does not block", CompanionLore.batchWithinZoneGap(3.31e24, null, 25), true);
+        n += eq("covered zone (gap 0) blocks", CompanionLore.batchWithinZoneGap(1.0, 0.0, 25), false);
+        n += eq("visits this rebirth", Economy.visitsThisRebirth(2, 9, 9), 2);
+        n += eq("visits reset once the counter moved", Economy.visitsThisRebirth(2, 9, 10), 0);
+        n += eq("visits kept while the counter is unknown", Economy.visitsThisRebirth(2, 9, null), 2);
+        n += eq("no visits recorded", Economy.visitsThisRebirth(null, null, 9), 0);
+        n += eq("fresh companionMaxZoneGapPct", CFG.companionMaxZoneGapPct, 25.0, 1e-9);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-state", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            StateStore s = new StateStore(tmp);
+            StateStore.Entry e = new StateStore.Entry();
+            e.companionLastBoughtStage = 12;
+            e.companionVisitsThisRebirth = 1;
+            e.companionVisitsAtRebirths = 9;
+            e.companionEndFallbackDone = true;
+            e.companionEggPriceByStage = new java.util.LinkedHashMap<>(Map.of("12", 330e21, "13", 331.23e21));
+            s.put("Ihazekids69420", e);
+            StateStore.Entry alt = new StateStore.Entry();
+            alt.swordTarget = 41.4e9;
+            s.put("AltAccount", alt);
+            StateStore r = new StateStore(tmp);
+            StateStore.Entry m = r.get("ihazekids69420");
+            n += eq("companion stage persisted", m.companionLastBoughtStage, 12);
+            n += eq("companion visits persisted", m.companionVisitsThisRebirth, 1);
+            n += eq("companion visits rebirth persisted", m.companionVisitsAtRebirths, 9);
+            n += eq("companion end visit persisted", m.companionEndFallbackDone, true);
+            n += eq("companion egg price persisted", m.companionEggPriceByStage.get("13"), 331.23e21, 1e18);
+            n += eq("alt has no companion facts", r.get("altaccount").companionLastBoughtStage == null, true);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL companion state: " + ex);
+            n++;
         }
         return n;
     }

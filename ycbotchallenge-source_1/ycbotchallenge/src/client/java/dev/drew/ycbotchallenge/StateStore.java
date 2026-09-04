@@ -35,6 +35,12 @@ public final class StateStore {
         public Double zoneGrowth;
         public Boolean swordTargetPredicted;
         public Boolean zoneTargetPredicted;
+        /** 0.9.33 companions: the stage last bought at, visits this rebirth (and which rebirth), the once-per-rebirth end visit, per-stage egg prices seen. */
+        public Integer companionLastBoughtStage;
+        public Integer companionVisitsThisRebirth;
+        public Integer companionVisitsAtRebirths;
+        public Boolean companionEndFallbackDone;
+        public Map<String, Double> companionEggPriceByStage;
         public long savedAt;
     }
 
