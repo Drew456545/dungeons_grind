@@ -21,6 +21,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "captcha-fixtures")
 URL = os.environ.get("YCBOT_VLM_URL", "http://127.0.0.1:8000/v1/chat/completions")
 MODEL = os.environ.get("YCBOT_VLM_MODEL", "Qwen/Qwen3-VL-4B-Instruct-FP8")
+# Cloud endpoints (0.9.32): the same env the mod reads; never written to a file.
+KEY = os.environ.get("YCBOT_VLM_KEY")
+if not KEY:
+    # ~/.ycbot_vlm_key: one line, the key. Kept out of the repo and out of the shell history.
+    _kf = os.path.join(os.path.expanduser("~"), ".ycbot_vlm_key")
+    if os.path.exists(_kf):
+        KEY = open(_kf, encoding="utf-8").read().strip() or None
 
 PROMPTS = {
     # captchaMapPrompt as shipped in 0.9.13
@@ -80,10 +87,17 @@ def render(img, name):
 def ask(prompt, png, temperature, n, timeout=120):
     b64 = base64.b64encode(png).decode()
     body = {"model": MODEL, "temperature": temperature, "max_tokens": 64, "n": n,
+            # DashScope/QwenCloud thinking models: no reasoning tokens for a four-letter read.
+            "enable_thinking": False,
+            # DashScope/QwenCloud thinking models: no reasoning tokens for a four-letter read.
+            "enable_thinking": False,
             "messages": [{"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
                 {"type": "text", "text": prompt}]}]}
-    req = urllib.request.Request(URL, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if KEY:
+        headers["Authorization"] = "Bearer " + KEY
+    req = urllib.request.Request(URL, data=json.dumps(body).encode(), headers=headers)
     t = time.time()
     r = json.load(urllib.request.urlopen(req, timeout=timeout))
     return [c["message"]["content"].strip() for c in r["choices"]], time.time() - t
@@ -95,9 +109,15 @@ def main():
     ap.add_argument("--prompt", action="append", help="restrict to these prompt names")
     ap.add_argument("--render", action="append", help="restrict to these render names")
     ap.add_argument("--kind", default="map", help="fixture kind to run: map (default) or screen")
+    ap.add_argument("--real", action="store_true", help="only the bot's own certified captures (no synthetic fixture)")
+    ap.add_argument("--single", action="store_true",
+                    help="one greedy read of the x4bil render per fixture (the 'is one guess enough' test), repeated --samples times")
     ap.add_argument("--vote", action="store_true",
                     help="replay the mod's ballot (VOTE_RENDERS at t0 then t0.6) per fixture and print the leader")
     args = ap.parse_args()
+    if args.single:
+        sys.exit(single(args))
+
     if args.vote:
         return vote(args)
 
@@ -147,6 +167,32 @@ def main():
             best.sort(reverse=True)
             for ok, a, b in best[:4]:
                 print(f"  {pn:12s} {a}+{b}: {ok}/{len(fixtures)}")
+
+
+def single(args):
+    """One guess, no ballot: read one render (default x1, the native map — the 0.9.32 mod default) greedily once per fixture (--samples repeats). With --real only
+    the bot's own certified captures are used (no synthetic fixture). Exit 0 iff every read is right."""
+    from PIL import Image
+    fixtures = [f for f in json.load(open(os.path.join(FIX, "fixtures.json"))) if f["kind"] == "map"]
+    if args.real:
+        fixtures = [f for f in fixtures if f.get("source", "").startswith("bot capture")]
+    prompt = PROMPTS["shipped"]
+    print("model %s at %s; single greedy read of %s, %dx per fixture, %d fixtures" % (MODEL, URL, (args.render or ["x1"])[0], args.samples, len(fixtures)))
+    total = right = 0
+    for fx in fixtures:
+        img = Image.open(os.path.join(FIX, fx["file"])).convert("RGB")
+        reads, secs = [], []
+        for _ in range(args.samples):
+            outs, dt = ask(prompt, render(img, (args.render or ["x1"])[0]), 0.0, 1)
+            reads.append(parse_answer(outs[0]))
+            secs.append(dt)
+        ok = sum(r == fx["answer"] for r in reads)
+        total += len(reads)
+        right += ok
+        flag = "OK " if ok == len(reads) else "BAD"
+        print("%s %-5s %d/%d right  reads=%s  %.1fs avg" % (flag, fx["answer"], ok, len(reads), reads, sum(secs) / len(secs)))
+    print("%d/%d single reads right" % (right, total))
+    return 0 if right == total else 1
 
 
 def vote(args):

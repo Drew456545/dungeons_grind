@@ -219,8 +219,20 @@ public class YCBotChallengeConfig {
      * On repeated failure it falls back to the old pause-for-human behavior.
      */
     public boolean captchaAutoSolve = true;
-    public String captchaVlmEndpoint = "http://127.0.0.1:8000/v1/chat/completions";
-    public String captchaVlmModel = "Qwen/Qwen3-VL-4B-Instruct-FP8";
+    /**
+     * 0.9.32: the reader is QwenCloud's qwen3.6-flash (OpenAI-compatible token-plan endpoint,
+     * key from env YCBOT_VLM_KEY or the one-line file ~/.ycbot_vlm_key), sent the NATIVE 128 px
+     * map, one greedy read, no ballot. Bench 2026-09-04 on the four certified captures: the
+     * native map reads 4/4 (164 input tokens, 3-5 s); every upscaled render lost udWn (read as
+     * uaWn/ualWn) on every model, local 4B/8B or cloud. For the local vLLM reader set the
+     * endpoint back to http://127.0.0.1:8000/v1/chat/completions, the model to
+     * Qwen/Qwen3-VL-4B-Instruct-FP8, captchaMapScale 4, captchaVoteRenders to the x4bil… list
+     * and captchaVoteTemperature 0.6 (the 0.9.26 ballot).
+     */
+    public String captchaVlmEndpoint = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
+    public String captchaVlmModel = "qwen3.6-flash";
+    /** Thinking models (qwen3.8-*) spend reasoning tokens on a four-letter read unless told not to; false sends enable_thinking=false. */
+    public boolean captchaVlmThinking = false;
     public String captchaPrompt =
         "This is a Sonar anti-bot map captcha from Minecraft: 3 or 4 lowercase "
         + "letters (a-z) drawn as thick, colored, distorted glyphs on a dark noisy "
@@ -293,7 +305,7 @@ public class YCBotChallengeConfig {
      * greedily (23/24 sampled); x2 nearest (the 0.9.13 default) reads p8b as pBb every
      * time; x4 nearest and x6 are garbage. Re-run the bench before changing this.
      */
-    public int captchaMapScale = 4;
+    public int captchaMapScale = 1;
     /** How far to look for an item-frame map holding the captcha. */
     public double captchaMapSearchRadius = 10.0;
     /** Chat lines meaning the captcha was accepted / rejected (plain substrings or /regex/). */
@@ -327,8 +339,8 @@ public class YCBotChallengeConfig {
      * Certified captures: x4/x3/x2 vote right on KrA, p8b and pnGe (x6 was a coin flip on
      * KrA and misread p8b; x4 nearest is garbage — keep those out of the schedule).
      */
-    public List<String> captchaVoteRenders = List.of("x4bil", "x3bil", "x2near", "x5bil", "x3near");
-    public double captchaVoteTemperature = 0.6;
+    public List<String> captchaVoteRenders = List.of("x1");
+    public double captchaVoteTemperature = 0;
     public int captchaVoteMaxReads = 12;
     public int captchaVoteMinReads = 3;
     public int captchaVoteMaxWaitMs = 3000;
@@ -381,7 +393,7 @@ public class YCBotChallengeConfig {
     /** Unclassified server lines are raw-logged (chat_raw) so new wording is captured; at most this many per minute, 0 = off. */
     public int chatRawPerMinute = 30;
     /** VLM health: GET this on enable and every interval. A captcha while offline pauses at once instead of 3x20s retries. */
-    public String captchaVlmHealthUrl = "http://127.0.0.1:8000/v1/models";
+    public String captchaVlmHealthUrl = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models";
     public int captchaVlmHealthIntervalMs = 300_000;
     public int captchaVlmHealthTimeoutMs = 3000;
     /** When the server serves exactly one model under a different id, use that id. */
@@ -1128,7 +1140,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 35;
+    public static final int CURRENT_CONFIG_VERSION = 36;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1404,6 +1416,20 @@ public class YCBotChallengeConfig {
             // v35: egg hologram pairing window, per-location egg store, identity aim; price
             // ladders (sword x3.5, zone x55) predict the next target; HUD sword/zone rows,
             // balances row off. Every new knob takes its default.
+            changed = true;
+        }
+        if (configVersion < 36) {
+            // v36: the captcha reader is QwenCloud qwen3.6-flash on the native 128 px map, one
+            // read (bench 2026-09-04: 4/4 native; every upscale lost udWn). A config still on
+            // the local defaults moves over; a hand-set endpoint is left alone.
+            if ("http://127.0.0.1:8000/v1/chat/completions".equals(captchaVlmEndpoint)) {
+                captchaVlmEndpoint = fresh.captchaVlmEndpoint;
+                captchaVlmModel = fresh.captchaVlmModel;
+                captchaVlmHealthUrl = fresh.captchaVlmHealthUrl;
+                captchaMapScale = fresh.captchaMapScale;
+                captchaVoteRenders = fresh.captchaVoteRenders;
+                captchaVoteTemperature = fresh.captchaVoteTemperature;
+            }
             changed = true;
         }
         configVersion = CURRENT_CONFIG_VERSION;

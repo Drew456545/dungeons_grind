@@ -255,7 +255,7 @@ public class CaptchaSolver {
         phase = Phase.SETTLING;
         settleStart = System.currentTimeMillis();
         phaseDeadline = settleStart + cfg.captchaSettleMs;
-        say(client, "§e[YCBotChallenge] captcha detected — solving with local Qwen...");
+        say(client, "§e[YCBotChallenge] captcha detected — reading it with " + cfg.captchaVlmModel + "...");
     }
 
     public void cancel() {
@@ -349,9 +349,21 @@ public class CaptchaSolver {
         }
     }
 
+    /**
+     * The endpoint key: env YCBOT_VLM_KEY, else the one-line file ~/.ycbot_vlm_key (0.9.32 —
+     * a launcher-started game rarely sees a user env var set after the fact). Never logged.
+     */
     private String apiKey() {
         String env = System.getenv("YCBOT_VLM_KEY");
         if (env != null && !env.isBlank()) return env.trim();
+        try {
+            Path f = Path.of(System.getProperty("user.home"), ".ycbot_vlm_key");
+            if (Files.exists(f)) {
+                String k = Files.readString(f).trim();
+                if (!k.isEmpty()) return k;
+            }
+        } catch (Exception ignored) {
+        }
         return null;
     }
 
@@ -883,6 +895,7 @@ public class CaptchaSolver {
         body.addProperty("model", cfg.captchaVlmModel);
         body.addProperty("temperature", temperature);
         body.addProperty("max_tokens", maxTokens);
+        if (!cfg.captchaVlmThinking) body.addProperty("enable_thinking", false);
         body.add("messages", messages);
         HttpRequest.Builder b = HttpRequest.newBuilder()
             .uri(URI.create(cfg.captchaVlmEndpoint))
