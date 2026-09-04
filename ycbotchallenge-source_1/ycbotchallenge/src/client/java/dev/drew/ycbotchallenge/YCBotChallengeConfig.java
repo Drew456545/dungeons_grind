@@ -476,6 +476,13 @@ public class YCBotChallengeConfig {
     public int rebirthHorizonGainWindowMs = 180_000;
     /** Minimum gap between any two typed commands (server: "again in less than 1 second"). */
     public int commandCooldownMs = 1100;
+    /**
+     * 0.9.29: no typed /swordmax or /zone max before this many kills (rolled) since the
+     * enable AND since the last rebirth — a person kills something first (00:19 log:
+     * upgrade_plan 5 s after each enable with zero kills).
+     */
+    public int upgradeFirstKillsMin = 1;
+    public int upgradeFirstKillsMax = 3;
 
     // ---- 0.9.17: server auto-rebirth, giveaways, rebirth upgrades
     /**
@@ -596,8 +603,18 @@ public class YCBotChallengeConfig {
     public int companionKeepZones = 2;
     public int companionMaxBulkDeletes = 5;
     public String companionBulkDeleteCommand = "/companion bulkdelete {zone} {stage}";
+    /**
+     * 0.9.29: the egg is a real dragon-egg block on a pedestal (Drew's screenshot), so the
+     * primary locator scans the blocks around the player for minecraft:dragon_egg (±scan
+     * radius horizontally, ±vertical), once per 30 s while idle and once per visit; the
+     * hologram within companionEggHologramReach of an egg tells the Money egg from the
+     * Credit egg. companionEggSearchRadius bounds the hologram scan (secondary source).
+     */
+    public int companionEggScanRadius = 64;
+    public int companionEggScanVertical = 12;
+    public double companionEggHologramReach = 2.5;
     /** Where to look for the egg's hologram, how close to walk, how far under the lowest line the egg block sits, and how far a crosshair hit may be from that point. */
-    public double companionEggSearchRadius = 60.0;
+    public double companionEggSearchRadius = 80.0;
     public double companionEggReach = 2.5;
     public double companionEggAimDrop = 1.2;
     public double companionEggHitRadius = 1.8;
@@ -1063,7 +1080,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 32;
+    public static final int CURRENT_CONFIG_VERSION = 33;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1322,6 +1339,12 @@ public class YCBotChallengeConfig {
             // Transcend ability presser; every new knob takes its default.
             changed = true;
         }
+        if (configVersion < 33) {
+            // v33: first kills before any typed upgrade; the egg is located as a dragon-egg
+            // block (scan knobs), hologram radius 80, Ctrl+Shift+toggle spotlights an egg.
+            if (companionEggSearchRadius == 60.0) companionEggSearchRadius = fresh.companionEggSearchRadius;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1460,7 +1483,14 @@ public class YCBotChallengeConfig {
         if (companionBulkDeleteCommand == null || !companionBulkDeleteCommand.contains("{zone}")) companionBulkDeleteCommand = fresh.companionBulkDeleteCommand;
         if (companionKeepZones < 1) companionKeepZones = 1;
         if (companionMaxBulkDeletes < 0) companionMaxBulkDeletes = 0;
-        if (companionEggSearchRadius < 5) companionEggSearchRadius = 60.0;
+        if (companionEggSearchRadius < 5) companionEggSearchRadius = 80.0;
+        if (companionEggScanRadius < 4) companionEggScanRadius = 4;
+        if (companionEggScanRadius > 128) companionEggScanRadius = 128;
+        if (companionEggScanVertical < 1) companionEggScanVertical = 1;
+        if (companionEggScanVertical > 64) companionEggScanVertical = 64;
+        if (companionEggHologramReach < 0.5) companionEggHologramReach = 2.5;
+        if (upgradeFirstKillsMin < 0) upgradeFirstKillsMin = 0;
+        if (upgradeFirstKillsMax < upgradeFirstKillsMin) upgradeFirstKillsMax = upgradeFirstKillsMin;
         if (companionEggReach < 1) companionEggReach = 2.5;
         if (companionEggAimDrop < 0) companionEggAimDrop = 1.2;
         if (companionEggHitRadius < 0.5) companionEggHitRadius = 1.8;

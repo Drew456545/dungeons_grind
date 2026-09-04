@@ -66,6 +66,7 @@ public final class EconomyChecks {
         n += zoneLevel();
         n += companions();
         n += transcend();
+        n += firstKills();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1291,6 +1292,41 @@ public final class EconomyChecks {
         n += eq("our press counts too", TranscendController.ready(0, t0, 180_000, 0, t0 + 100_000), false);
         n += eq("hazard zero at ready", Economy.visitHazard(0, 0, 90_000, 0.3, 1.0, 1.0), 0.0, 1e-9);
         n += eq("hazard full after ramp", Economy.visitHazard(90_000, 0, 90_000, 0.3, 1.0, 1.0), 0.3, 1e-9);
+        return n;
+    }
+
+    /** 0.9.29: no typed upgrade before the first kills (00:19 log: sends 5 s after enable with zero kills); egg store. */
+    private static int firstKills() {
+        int n = 0;
+        n += eq("fresh enable, no kills", Economy.firstKillsReached(0, 0, 1), false);
+        n += eq("kills before but none since the rebirth", Economy.firstKillsReached(5, 0, 1), false);
+        n += eq("one kill both ways", Economy.firstKillsReached(1, 1, 1), true);
+        n += eq("needs three, has two", Economy.firstKillsReached(2, 2, 3), false);
+        n += eq("needs three, has three", Economy.firstKillsReached(3, 7, 3), true);
+        n += eq("needed 0 is off", Economy.firstKillsReached(0, 0, 0), true);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-eggs", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            EggStore s = new EggStore(tmp);
+            n += eq("empty egg store", s.size(), 0);
+            EggStore.Egg e = new EggStore.Egg();
+            e.x = 12.5; e.y = 64.5; e.z = -30.5; e.label = "minecraft:dragon_egg"; e.at = 1_788_480_000_000L;
+            s.put("lvl12", e);
+            EggStore r = new EggStore(tmp);
+            n += eq("egg persisted", r.get("LVL12") != null, true);
+            n += eq("egg x", r.get("lvl12") != null ? Double.valueOf(r.get("lvl12").x) : null, 12.5, 1e-9);
+            n += eq("egg label", r.get("lvl12") != null ? r.get("lvl12").label : null, "minecraft:dragon_egg");
+            n += eq("other stage missing", r.get("lvl11") == null, true);
+            EggStore.Egg e2 = new EggStore.Egg();
+            e2.x = 1; e2.y = 2; e2.z = 3;
+            r.put("lvl12", e2);
+            n += eq("overwrite", Double.valueOf(new EggStore(tmp).get("lvl12").x), 1.0, 1e-9);
+            n += eq("null stage keys as unknown", EggStore.key(null), "unknown");
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL eggStore: " + ex);
+            n++;
+        }
         return n;
     }
 

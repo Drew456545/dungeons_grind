@@ -5,12 +5,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.decoration.DisplayEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.util.hit.BlockHitResult;
@@ -39,7 +41,7 @@ public class CompanionController {
         COMP_LOOK, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, DELETE, DELETE_TYPE, DONE }
 
     private record Entry(int slot, String name, List<String> lore) {}
-    private record EggHit(Vec3d aim, List<String> lines, Double price, double dist) {}
+    private record EggHit(Vec3d aim, List<String> lines, Double price, double dist, String via) {}
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
@@ -69,6 +71,10 @@ public class CompanionController {
     private long lastSkipLogAt = 0;
     private EggHit lastEgg = null;
     private long lastEggAt = 0;
+    private long lastBlockScanAt = 0;
+    private EggStore eggStore;
+    /** A spotlighted egg (Ctrl+Shift+toggle on a block) waiting for the next visit. */
+    private Vec3d pickedAim = null;
 
     // walk / aim
     private Vec3d eggAim = null;
@@ -123,8 +129,42 @@ public class CompanionController {
         return t != null && (lore.isEggsTitle(t) || lore.isCompanionsTitle(t) || lore.isFuseTitle(t));
     }
 
-    /** Ctrl+Shift+toggle: run the visit now (testing, or a hand-timed purchase). */
+    /** Ctrl+Shift+toggle with the bot on: run the visit now (testing, or a hand-timed purchase). */
     public void runNow() { manualRequested = true; }
+
+    public void setEggStore(EggStore store) { this.eggStore = store; }
+
+    /**
+     * Ctrl+Shift+toggle, bot on or off (0.9.29): the block (or entity) under the crosshair
+     * within 6 blocks is the egg. Saved for the current stage label so automatic visits
+     * find it when the block scan does not; the next visit (bot on) walks to it.
+     * Returns the chat notice, or null when nothing is being looked at.
+     */
+    public String spotlight(MinecraftClient client, String stage) {
+        if (client == null || client.player == null) return null;
+        HitResult hit = client.crosshairTarget;
+        Vec3d aim = null;
+        String what = null;
+        if (hit != null && hit.getType() == HitResult.Type.BLOCK && hit instanceof BlockHitResult bh) {
+            aim = Vec3d.ofCenter(bh.getBlockPos());
+            what = client.world != null ? Registries.BLOCK.getId(client.world.getBlockState(bh.getBlockPos()).getBlock()).toString() : "block";
+        } else if (hit != null && hit.getType() == HitResult.Type.ENTITY && hit instanceof EntityHitResult eh) {
+            aim = eh.getEntity().getEntityPos();
+            what = "entity:" + eh.getEntity().getType().getName().getString();
+        }
+        if (aim == null || client.player.getEyePos().distanceTo(aim) > 6.5) return null;
+        pickedAim = aim;
+        String key = EggStore.key(stage);
+        if (eggStore != null) {
+            EggStore.Egg e = new EggStore.Egg();
+            e.x = aim.x; e.y = aim.y; e.z = aim.z;
+            e.label = what;
+            e.at = System.currentTimeMillis();
+            eggStore.put(key, e);
+        }
+        log("companion_egg_spotlight", "stage", key, "what", what, "x", Math.round(aim.x), "y", Math.round(aim.y), "z", Math.round(aim.z));
+        return "egg for " + key + " saved at " + Math.round(aim.x) + ", " + Math.round(aim.y) + ", " + Math.round(aim.z) + " (" + what + ").";
+    }
 
     public String hudLine() {
         if (!cfg.companionsEnabled) return null;
@@ -510,7 +550,7 @@ public class CompanionController {
         // Price evidence for free: the egg's hologram shows the single-egg price in every zone.
         if (now - lastEggScanAt > 10_000) {
             lastEggScanAt = now;
-            EggHit hit = findEgg(client, combat);
+            EggHit hit = findEggByHologram(client, combat);
             if (hit != null) {
                 lastEgg = hit;
                 lastEggAt = now;
@@ -546,9 +586,11 @@ public class CompanionController {
         if (plannedAt == 0 || now < plannedAt) return false;
         // Between fights, like a person: never mid-cook, never over another screen, never on a break.
         if (combat.isCooking() || client.currentScreen != null || combat.isOnBreak()) return false;
-        EggHit hit = lastEgg != null && now - lastEggAt < 30_000 ? lastEgg : findEgg(client, combat);
+        EggHit hit = resolveEgg(client, combat, now);
         if (hit == null) {
-            log("companion_skip", "reason", "no-egg", "via", planVia, "radius", cfg.companionEggSearchRadius);
+            log("companion_skip", "reason", "no-egg", "via", planVia, "scanRadius", cfg.companionEggScanRadius,
+                "hologramRadius", cfg.companionEggSearchRadius, "stage", stats.zone);
+            dumpPlates(client, combat);
             plannedAt = 0;
             if ("manual".equals(planVia)) return false;
             visitsThisRebirth++; // do not retry every 15s; the next rebirth gets another look
@@ -574,6 +616,7 @@ public class CompanionController {
         currentZone = null;
         log("companion_visit", "via", visitVia, "stage", visitStage, "eggsTarget", eggsTarget,
             "dist", Math.round(hit.dist() * 10.0) / 10.0, "price", hit.price() != null ? Amounts.format(hit.price()) : null,
+            "eggVia", hit.via(), "x", Math.round(hit.aim().x), "y", Math.round(hit.aim().y), "z", Math.round(hit.aim().z),
             "lines", hit.lines());
         combat.releaseKeys(client);
         MouseDriver.INSTANCE.cancel();
@@ -633,20 +676,108 @@ public class CompanionController {
      * several displays) name a Companion Egg with a money price and no credits. The aim
      * point is the pedestal under the lowest line.
      */
-    private EggHit findEgg(MinecraftClient client, CombatController combat) {
+    /**
+     * Where the egg is, in order of trust (0.9.29): the block Drew just spotlighted; the
+     * dragon-egg block scan paired with its hologram (the Credit egg's says credits); the
+     * point saved for this stage; the hologram alone. Null = nothing found.
+     */
+    private EggHit resolveEgg(MinecraftClient client, CombatController combat, long now) {
+        if (pickedAim != null) {
+            Vec3d aim = pickedAim;
+            pickedAim = null;
+            List<String> lines = hologramNear(client, combat, aim);
+            return new EggHit(aim, lines, lore.eggPrice(lines), client.player.getEntityPos().distanceTo(aim), "crosshair");
+        }
+        EggHit block = findEggByBlock(client, combat);
+        if (block != null) return block;
+        if (eggStore != null) {
+            EggStore.Egg saved = eggStore.get(stats.zone);
+            if (saved != null) {
+                Vec3d aim = new Vec3d(saved.x, saved.y, saved.z);
+                List<String> lines = hologramNear(client, combat, aim);
+                return new EggHit(aim, lines, lore.eggPrice(lines), client.player.getEntityPos().distanceTo(aim), "saved");
+            }
+        }
+        EggHit holo = lastEgg != null && now - lastEggAt < 30_000 ? lastEgg : findEggByHologram(client, combat);
+        return holo;
+    }
+
+    /** Plate lines hovering within companionEggHologramReach of a point (0–4 blocks above it). */
+    private List<String> hologramNear(MinecraftClient client, CombatController combat, Vec3d at) {
+        List<String> lines = new ArrayList<>();
+        for (Entity p : combat.nearbyPlates(client, cfg.companionEggSearchRadius)) {
+            Vec3d pp = p.getEntityPos();
+            double dx = pp.x - at.x, dz = pp.z - at.z, dy = pp.y - at.y;
+            if (Math.sqrt(dx * dx + dz * dz) > cfg.companionEggHologramReach || dy < -0.5 || dy > 4.5) continue;
+            lines.addAll(CombatController.plateTextLines(p));
+        }
+        return lines;
+    }
+
+    /**
+     * Every minecraft:dragon_egg within the scan box, paired with its hologram. Ours is the
+     * one whose hologram names a Companion Egg with a money price (or, with no readable
+     * hologram anywhere, the only egg). Runs at most once per 30 s.
+     */
+    private EggHit findEggByBlock(MinecraftClient client, CombatController combat) {
+        long now = System.currentTimeMillis();
+        if (now - lastBlockScanAt < 30_000 && lastEgg != null && "block".equals(lastEgg.via())) return lastEgg;
+        lastBlockScanAt = now;
+        BlockPos me = client.player.getBlockPos();
+        int r = Math.max(4, cfg.companionEggScanRadius);
+        int v = Math.max(1, cfg.companionEggScanVertical);
+        List<BlockPos> eggs = new ArrayList<>();
+        BlockPos.Mutable cursor = new BlockPos.Mutable();
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dz = -r; dz <= r; dz++) {
+                for (int dy = -v; dy <= v; dy++) {
+                    cursor.set(me.getX() + dx, me.getY() + dy, me.getZ() + dz);
+                    if (client.world.getBlockState(cursor).isOf(Blocks.DRAGON_EGG)) eggs.add(cursor.toImmutable());
+                }
+            }
+        }
+        if (eggs.isEmpty()) {
+            log("companion_egg_scan", "eggs", 0, "radius", r, "vertical", v);
+            return null;
+        }
+        EggHit best = null;
+        List<String> seen = new ArrayList<>();
+        int unreadable = 0;
+        for (BlockPos bp : eggs) {
+            Vec3d aim = Vec3d.ofCenter(bp);
+            List<String> lines = hologramNear(client, combat, aim);
+            boolean money = lore.isEggHologram(lines);
+            boolean credit = !lines.isEmpty() && !money;
+            if (lines.isEmpty()) unreadable++;
+            seen.add(bp.getX() + "," + bp.getY() + "," + bp.getZ() + (money ? " money" : credit ? " other" : " no-hologram"));
+            if (!money) continue;
+            double dist = client.player.getEntityPos().distanceTo(aim);
+            if (best == null || dist < best.dist()) best = new EggHit(aim, lines, lore.eggPrice(lines), dist, "block");
+        }
+        if (best == null && eggs.size() == 1 && unreadable == 1) {
+            Vec3d aim = Vec3d.ofCenter(eggs.get(0));
+            best = new EggHit(aim, List.of(), null, client.player.getEntityPos().distanceTo(aim), "block-only");
+        }
+        log("companion_egg_scan", "eggs", eggs.size(), "radius", r, "vertical", v, "found", seen,
+            "chosen", best != null ? best.via() : null);
+        if (best != null) { lastEgg = best; lastEggAt = now; }
+        return best;
+    }
+
+    /** The egg by its hologram alone (secondary; also the price evidence as the bot passes). */
+    private EggHit findEggByHologram(MinecraftClient client, CombatController combat) {
         List<Entity> plates = combat.nearbyPlates(client, cfg.companionEggSearchRadius);
         EggHit best = null;
         Set<Integer> used = new HashSet<>();
         for (Entity p : plates) {
-            if (!(p instanceof DisplayEntity.TextDisplayEntity) || used.contains(p.getId())) continue;
+            if (used.contains(p.getId())) continue;
             Vec3d pp = p.getEntityPos();
             List<String> lines = new ArrayList<>();
             double lowestY = pp.y;
             List<Integer> group = new ArrayList<>();
             for (Entity q : plates) {
-                if (!(q instanceof DisplayEntity.TextDisplayEntity)) continue;
                 Vec3d qp = q.getEntityPos();
-                if (Math.abs(qp.x - pp.x) > 1.0 || Math.abs(qp.z - pp.z) > 1.0 || Math.abs(qp.y - pp.y) > 3.0) continue;
+                if (Math.abs(qp.x - pp.x) > 1.5 || Math.abs(qp.z - pp.z) > 1.5 || Math.abs(qp.y - pp.y) > 4.0) continue;
                 lines.addAll(CombatController.plateTextLines(q));
                 lowestY = Math.min(lowestY, qp.y);
                 group.add(q.getId());
@@ -655,9 +786,23 @@ public class CompanionController {
             used.addAll(group);
             Vec3d aim = new Vec3d(pp.x, lowestY - cfg.companionEggAimDrop, pp.z);
             double dist = client.player.getEntityPos().distanceTo(aim);
-            if (best == null || dist < best.dist()) best = new EggHit(aim, lines, lore.eggPrice(lines), dist);
+            if (best == null || dist < best.dist()) best = new EggHit(aim, lines, lore.eggPrice(lines), dist, "hologram");
         }
         return best;
+    }
+
+    /** Evidence when nothing was found: the nearest plates, their kinds and lines. */
+    private void dumpPlates(MinecraftClient client, CombatController combat) {
+        List<Entity> plates = combat.nearbyPlates(client, cfg.companionEggSearchRadius);
+        Vec3d me = client.player.getEntityPos();
+        plates.sort((a, b) -> Double.compare(a.getEntityPos().distanceTo(me), b.getEntityPos().distanceTo(me)));
+        List<String> out = new ArrayList<>();
+        for (Entity p : plates) {
+            if (out.size() >= 25) break;
+            List<String> lines = CombatController.plateTextLines(p);
+            out.add(p.getType().getName().getString() + "@" + Math.round(p.getEntityPos().distanceTo(me)) + ": " + String.join(" | ", lines));
+        }
+        log("companion_plates", "count", plates.size(), "nearest", out);
     }
 
     private static float[] anglesTo(MinecraftClient client, Vec3d aim) {

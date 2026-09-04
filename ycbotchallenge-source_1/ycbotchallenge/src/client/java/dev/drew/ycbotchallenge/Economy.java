@@ -403,6 +403,17 @@ public final class Economy {
         try { return Integer.parseInt(m.group(1)); } catch (NumberFormatException e) { return null; }
     }
 
+    /**
+     * No typed /swordmax or /zone max before the first kills (0.9.29): a person who just
+     * rebirthed, or just sat down, kills something first. Both counts must reach
+     * {@code needed} (rolled 1–3 per enable and per rebirth). 00:19 log: upgrade_plan
+     * 5 s after each enable with zero kills; 17:57 log: via=timer at 32 s before any kill.
+     */
+    public static boolean firstKillsReached(int killsSinceEnable, int killsSinceRebirth, int needed) {
+        int n = Math.max(0, needed);
+        return killsSinceEnable >= n && killsSinceRebirth >= n;
+    }
+
     public static boolean sidebarSettled(long nowMs, long lastSpendAt, int settleMs) {
         if (lastSpendAt <= 0) return true;
         return nowMs - lastSpendAt >= Math.max(0, settleMs);

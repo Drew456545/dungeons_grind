@@ -74,6 +74,9 @@ public class UpgradeController {
     private int reprobeKillsNeeded = -1;
     private long reprobeDelayMs = 0;
     private boolean reprobeSent = false;
+    /** Kills needed since enable and since the last rebirth before any typed upgrade (rolled). */
+    private int firstKillsNeeded = 1;
+    private long lastFirstKillsLogAt = 0;
     /** /rebirth probe re-types this session after an abort that never reached the GUI (capped). */
     private int rebirthProbeRetries = 0;
     // Buy hesitation on long saves.
@@ -193,6 +196,10 @@ public class UpgradeController {
                 startupProbed = true;
                 enabledAt = now;
                 killsAtEnable = combat.kills;
+                // The kill counter carries over a toggle: without this the first eval after an
+                // enable read as "a kill happened" and typed /swordmax 5 s in (00:19 log).
+                lastKillCount = combat.kills;
+                firstKillsNeeded = HumanTiming.ticks(cfg.upgradeFirstKillsMin, Math.max(cfg.upgradeFirstKillsMin, cfg.upgradeFirstKillsMax));
                 seedKillsNeeded = HumanTiming.ticks(cfg.rebirthSeedMinKillsMin, Math.max(cfg.rebirthSeedMinKillsMin, cfg.rebirthSeedMinKillsMax));
                 seedDelayMs = HumanTiming.logNormalMs(cfg.rebirthSeedDelayMinMs, Math.max(cfg.rebirthSeedDelayMinMs + 1, cfg.rebirthSeedDelayMaxMs));
             }
@@ -292,6 +299,16 @@ public class UpgradeController {
             stats.lastEffectiveTtkMs = evalTtkMs;
             updateAffordableMarks(combat.kills);
             String kind = decideKind(combat.kills);
+            if (kind != null && !Economy.firstKillsReached(combat.kills - killsAtEnable, combat.kills - killsAtRebirth, firstKillsNeeded)) {
+                evalAt = Long.MAX_VALUE;
+                if (logger != null && now - lastFirstKillsLogAt > 20_000) {
+                    lastFirstKillsLogAt = now;
+                    logger.log("upgrade_skip", "reason", "first-kills", "kind", kind, "via", evalReason,
+                        "killsSinceEnable", combat.kills - killsAtEnable, "killsSinceRebirth", combat.kills - killsAtRebirth,
+                        "needed", firstKillsNeeded);
+                }
+                return false;
+            }
             if (kind == null) {
                 if (horizonBlocked != null) {
                     skipEval("rebirth-horizon", horizonBlocked);
@@ -551,6 +568,7 @@ public class UpgradeController {
         if (rb != seenRebirthAt) {
             seenRebirthAt = rb;
             killsAtRebirth = combat.kills;
+            firstKillsNeeded = HumanTiming.ticks(cfg.upgradeFirstKillsMin, Math.max(cfg.upgradeFirstKillsMin, cfg.upgradeFirstKillsMax));
             reprobeKillsNeeded = HumanTiming.ticks(cfg.rebirthReprobeMinKillsMin, Math.max(cfg.rebirthReprobeMinKillsMin, cfg.rebirthReprobeMinKillsMax));
             reprobeDelayMs = HumanTiming.logNormalMs(cfg.rebirthReprobeDelayMinMs, Math.max(cfg.rebirthReprobeDelayMinMs + 1, cfg.rebirthReprobeDelayMaxMs));
             reprobeSent = false;

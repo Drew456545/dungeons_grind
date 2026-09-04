@@ -57,6 +57,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         enchants = new EnchantController(config, stats);
         rebirthUpgrades = new RebirthUpgradeController(config, stats);
         companions = new CompanionController(config, stats, upgrades);
+        companions.setEggStore(new EggStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-eggs.json")));
         transcend = new TranscendController(config, enchants.lore());
         MouseDriver.INSTANCE.configure(config, null);
         captchaSolver = new CaptchaSolver(config, new CaptchaSolver.Callbacks() {
@@ -245,13 +246,23 @@ public class YCBotChallengeClient implements ClientModInitializer {
         return InputUtil.isKeyPressed(w, GLFW.GLFW_KEY_LEFT_CONTROL) || InputUtil.isKeyPressed(w, GLFW.GLFW_KEY_RIGHT_CONTROL);
     }
 
+    /**
+     * Ctrl+Shift+toggle (0.9.29): looking at the egg saves it for this stage, bot on or off;
+     * with the bot on the visit is queued as well (it walks to the spotlighted block, else
+     * to whatever the scans find).
+     */
     private void runCompanions(MinecraftClient client) {
+        String saved = companions.spotlight(client, stats.zone);
+        if (client.player == null) return;
         if (!enabled) {
-            if (client.player != null) client.player.sendMessage(Text.literal("§e[YCBotChallenge] turn the bot on first, then Ctrl+Shift+toggle to buy companions."), false);
+            client.player.sendMessage(Text.literal(saved != null
+                ? "§e[YCBotChallenge] " + saved + " Turn the bot on and press Ctrl+Shift+toggle again to visit it."
+                : "§e[YCBotChallenge] look at the companion egg (within 6 blocks) and press Ctrl+Shift+toggle to save it; with the bot on that also starts the visit."), false);
             return;
         }
         companions.runNow();
-        if (client.player != null) client.player.sendMessage(Text.literal("§e[YCBotChallenge] companion visit queued — after this kill."), false);
+        client.player.sendMessage(Text.literal("§e[YCBotChallenge] " + (saved != null ? saved + " " : "")
+            + "companion visit queued — after this kill."), false);
     }
 
     private void markIgnored(MinecraftClient client) {
