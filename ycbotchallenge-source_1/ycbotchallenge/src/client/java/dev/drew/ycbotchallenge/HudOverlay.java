@@ -32,10 +32,12 @@ public class HudOverlay {
     private final RebirthUpgradeController rebirthUpgrades;
     private final CompanionController companions;
     private final TranscendController transcend;
+    private final BossEventController bossEvent;
 
     public HudOverlay(YCBotChallengeConfig cfg, StatsTracker stats, CombatController combat, CaptchaSolver captcha,
                       UpgradeController upgrades, EnchantController enchants, RebirthUpgradeController rebirthUpgrades,
-                      CompanionController companions, TranscendController transcend) {
+                      CompanionController companions, TranscendController transcend, BossEventController bossEvent) {
+        this.bossEvent = bossEvent;
         this.cfg = cfg;
         this.stats = stats;
         this.combat = combat;
@@ -146,6 +148,8 @@ public class HudOverlay {
 
     /** The one module with something going on (a visit, a countdown to one, a suspension), coloured by module. */
     private String activity() {
+        String bo = bossEvent != null ? bossEvent.hudLine() : null;
+        if (bo != null) return "§c" + bo + "§r";
         String en = enchants != null ? enchants.hudLine() : null;
         if (en != null) return "§d" + en + "§r";
         String ru = rebirthUpgrades != null ? rebirthUpgrades.hudLine() : null;
@@ -163,6 +167,7 @@ public class HudOverlay {
         chip(sb, "rbup", cfg.rebirthUpgradesEnabled, rebirthUpgrades != null && rebirthUpgrades.isBusy(),
             rebirthUpgrades != null && rebirthUpgrades.isSuspended());
         chip(sb, "comp", cfg.companionsEnabled, companions != null && companions.isBusy(), companions != null && companions.isSuspended());
+        chip(sb, "boss", cfg.bossEventEnabled, bossEvent != null && bossEvent.isBusy(), bossEvent != null && bossEvent.isSuspended());
         String tr = transcend != null ? transcend.hudState() : null;
         chip(sb, "transc" + (tr != null ? " " + tr : ""), cfg.transcendEnabled, false, false);
         chip(sb, "give", cfg.giveawaysEnabled, false, false);

@@ -902,6 +902,42 @@ public class YCBotChallengeConfig {
     public int companionMaxVisitMs = 180_000;
     public int companionMaxConsecutiveAborts = 3;
 
+    // ---- 0.9.38: the zone boss. "the boss in your zone has just spawned, you will have 5
+    // minutes to kill it before it despawns" about every 89 min; its bar ("Rotten Boss 300",
+    // no heart, one count per hit), the title overlay ("Hit the targets to kill the boss and
+    // recieve the rewards!" / "Targets Hit - N") and a small target marker on the body that
+    // moves every ~10 hits. In 36 h of logs the bot never hit it once (the bar sat at 300
+    // for 277 s of grinding beside it). A kill: Tier-2 Totem Box, skin boxes, sword perk
+    // rolls, weak 15-min boosters - no money. The marker's entity type is learned from the
+    // first boss_scan; a display is never attacked (the attack key would mine the block).
+    public boolean bossEventEnabled = true;
+    public String bossEventBarPattern = "/\\bboss\\b/";
+    public String bossEventCountPattern = "/(?<n>\\d+)\\s*$/";
+    public String bossEventStartPattern = "/hit the targets to kill the boss/";
+    public String bossEventProgressPattern = "/targets?\\s*hit\\s*[-\u2013:]\\s*(?<n>\\d+)/";
+    public String bossSpawnPattern = "/boss in your zone has just spawned/";
+    public String bossDespawnPattern = "/boss in your zone has just despawned/";
+    public String bossKilledPattern = "/(?<who>\\S+) has killed the (?<boss>.+?) in (?:his|her|their) zone/";
+    public String bossRewardPattern = "/^boss reward:/";
+    /** An armor stand whose plate matches this is the marker; one with no plate at all is a candidate too. */
+    public String bossTargetNamePattern = "/target/";
+    public double bossScanRadius = 12.0;
+    public double bossStandTolerance = 0.8;
+    public int bossWalkTimeoutMs = 30_000;
+    /** A cook in progress is finished first, unless the boss has been waiting this long. */
+    public int bossEventStartGraceMs = 8_000;
+    public int bossEventMaxMs = 300_000;
+    public int bossNoProgressMs = 4_000;
+    public int bossMaxRescans = 3;
+    public int bossMarkerMoveHits = 10;
+    public double bossMarkerMoveBlocks = 1.5;
+    /** Drew's own pace on the 2026-09-04 kill: 293 hits in 99 s. The server counts hits, not damage. */
+    public double bossClickCpsMin = 2.5;
+    public double bossClickCpsMax = 3.5;
+    public boolean bossRespectVanillaCooldown = false;
+    public int bossHitLogEvery = 10;
+    public int bossMaxConsecutiveAborts = 3;
+
     // ---- 0.9.28: the Transcend ability (Q with the sword held; "Your Transcend Ability has
     // been activated (180s Cooldown)" / "… has ended"). Periodic, never on the dot.
     public boolean transcendEnabled = true;
@@ -1377,7 +1413,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 41;
+    public static final int CURRENT_CONFIG_VERSION = 42;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1750,6 +1786,10 @@ public class YCBotChallengeConfig {
             replaceIfOld("companionFuseTitlePattern", "/^fuse companions\\b/");
             changed = true;
         }
+        if (configVersion < 42) {
+            // v42 (0.9.38): the zone boss module. Every knob is new and takes its default.
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1972,6 +2012,23 @@ public class YCBotChallengeConfig {
         if (approachClickMaxAimDeg < 0) approachClickMaxAimDeg = 0;
         if (noConnectTimeoutMs < 500) noConnectTimeoutMs = 500;
         if (noConnectIgnoreAfter < 1) noConnectIgnoreAfter = 1;
+        for (String f : new String[]{"bossEventBarPattern", "bossEventCountPattern", "bossEventStartPattern", "bossEventProgressPattern",
+            "bossSpawnPattern", "bossDespawnPattern", "bossKilledPattern", "bossRewardPattern", "bossTargetNamePattern"}) {
+            replaceIfOld(f, "");
+        }
+        if (bossScanRadius < 3) bossScanRadius = 3;
+        if (bossStandTolerance < 0.3) bossStandTolerance = 0.3;
+        if (bossWalkTimeoutMs < 5000) bossWalkTimeoutMs = 5000;
+        if (bossEventStartGraceMs < 0) bossEventStartGraceMs = 0;
+        if (bossEventMaxMs < 30_000) bossEventMaxMs = 30_000;
+        if (bossNoProgressMs < 1000) bossNoProgressMs = 1000;
+        if (bossMaxRescans < 1) bossMaxRescans = 1;
+        if (bossMarkerMoveHits < 1) bossMarkerMoveHits = 1;
+        if (bossMarkerMoveBlocks < 0.3) bossMarkerMoveBlocks = 0.3;
+        if (bossClickCpsMin < 0.5) bossClickCpsMin = 0.5;
+        if (bossClickCpsMax < bossClickCpsMin) bossClickCpsMax = bossClickCpsMin;
+        if (bossHitLogEvery < 1) bossHitLogEvery = 1;
+        if (bossMaxConsecutiveAborts < 1) bossMaxConsecutiveAborts = 1;
         if (companionDelayMinMs < 0) companionDelayMinMs = 0;
         if (companionDelayMaxMs < companionDelayMinMs) companionDelayMaxMs = companionDelayMinMs;
         if (companionSettleMinMs < 200) companionSettleMinMs = 200;

@@ -84,6 +84,7 @@ public final class EconomyChecks {
         n += climb0937();
         n += targeting0937();
         n += progress0937();
+        n += boss0938();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1774,7 +1775,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 41", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 41);
+        n += eq("config version 42", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 42);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2622,6 +2623,84 @@ public final class EconomyChecks {
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
             System.err.println("FAIL cycle history: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    /** 0.9.38: the zone boss - the bar, the titles, the chat lines, the marker ranking, the stand point. */
+    private static int boss0938() {
+        int n = 0;
+        Pattern bar = loose(CFG.bossEventBarPattern);
+        Pattern count = loose(CFG.bossEventCountPattern);
+        n += eq("event bar", bar.matcher("Rotten Boss").find(), true);
+        n += eq("a mob bar is not", bar.matcher("LVL7 Donkey").find(), false);
+        n += eq("an event bar is not", bar.matcher("2x Money Event").find(), false);
+        n += eq("count 300", ChatClassifier.bossBarCount("Rotten Boss 300", count), 300);
+        n += eq("count 5", ChatClassifier.bossBarCount("Rotten Boss 5", count), 5);
+        n += eq("no count", ChatClassifier.bossBarCount("Rotten Boss", count) == null, true);
+        n += eq("multiplier is not a count", ChatClassifier.bossBarCount("Momentum Multiplier: 1.24x", count) == null, true);
+        n += eq("null title", ChatClassifier.bossBarCount(null, count) == null, true);
+
+        Pattern start = loose(CFG.bossEventStartPattern);
+        Pattern prog = loose(CFG.bossEventProgressPattern);
+        n += eq("start title", start.matcher("Hit the targets to kill the boss and recieve the rewards!").find(), true);
+        n += eq("a player quoting it is a player line", ChatClassifier.isPlayerOrBroadcast("[\u2727R46\u2727] X \u00bb hit the targets to kill the boss"), true);
+        for (String s : new String[]{"Targets Hit - 10", "Targets Hit \u2013 10", "Targets Hit: 10", "targets hit -10"}) {
+            java.util.regex.Matcher m = prog.matcher(s);
+            n += eq("progress " + s, m.find() ? m.group("n") : null, "10");
+        }
+        n += eq("no progress on the start title", prog.matcher("Hit the targets to kill the boss").find(), false);
+
+        Pattern killed = loose(CFG.bossKilledPattern);
+        java.util.regex.Matcher k = killed.matcher("Ihazekids69420 has killed the Rotten Boss in his zone");
+        n += eq("our kill", k.find() ? k.group("who") + "/" + k.group("boss") : null, "Ihazekids69420/Rotten Boss");
+        k = killed.matcher("Gabriel119 has killed the Devil Boss in their zone");
+        n += eq("someone else's kill", k.find() ? k.group("who") : null, "Gabriel119");
+        n += eq("spawn line", loose(CFG.bossSpawnPattern).matcher("the boss in your zone has just spawned, you").find(), true);
+        n += eq("despawn line", loose(CFG.bossDespawnPattern).matcher("the boss in your zone has just despawned,").find(), true);
+        n += eq("reward line", loose(CFG.bossRewardPattern).matcher("Boss Reward:").find(), true);
+        n += eq("a kill broadcast is not a reward line", loose(CFG.bossRewardPattern).matcher("Ihazekids69420 has killed the Rotten Boss in his zone").find(), false);
+
+        // The marker: what vanilla's attack can land on, best first; a display is never attacked.
+        n += eq("interaction first", Economy.markerRank("minecraft:interaction", false, false, false), 0);
+        n += eq("bare armor stand", Economy.markerRank("minecraft:armor_stand", false, false, false), 1);
+        n += eq("armor stand named target", Economy.markerRank("minecraft:armor_stand", false, true, true), 1);
+        n += eq("armor stand with a mob plate", Economy.markerRank("minecraft:armor_stand", false, true, false), 9);
+        n += eq("item display", Economy.markerRank("minecraft:item_display", false, false, false), 2);
+        n += eq("block display", Economy.markerRank("minecraft:block_display", false, false, false), 3);
+        n += eq("text display", Economy.markerRank("minecraft:text_display", false, true, false), 3);
+        n += eq("a living mob never", Economy.markerRank("minecraft:zombie", true, false, false), 9);
+        n += eq("anything else never", Economy.markerRank("minecraft:item", false, false, false), 9);
+        n += eq("null type", Economy.markerRank(null, false, false, false), 9);
+
+        // Where to stand: outside the body, facing the marker, half a block inside reach.
+        double[] side = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{3, 65, 0}, 3.0, new double[]{10, 64, 10});
+        n += eq("side face x", side[0], 5.5, 1e-9);
+        n += eq("side face y", side[1], 65.0, 1e-9);
+        n += eq("side face z", side[2], 0.0, 1e-9);
+        n += eq("side face", side[3], 0.0, 1e-9);
+        double[] top = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{0, 70, 0}, 3.0, new double[]{0, 64, -6});
+        n += eq("top face: from the player's side", top[2], -2.5, 1e-9);
+        n += eq("top face", top[3], 1.0, 1e-9);
+        double[] deg = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{0, 64.5, 0}, 3.0, new double[]{4, 64, 0});
+        n += eq("degenerate: from the player's side", deg[0], 2.5, 1e-9);
+        n += eq("degenerate face", deg[3], 2.0, 1e-9);
+        double[] far = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{0, 64, -4}, 1.0, new double[]{0, 64, -9});
+        n += eq("reach floor 1.2", far[2], -5.2, 1e-9);
+
+        // Config and wiring.
+        n += eq("fresh boss on", CFG.bossEventEnabled, true);
+        n += eq("fresh boss cps", CFG.bossClickCpsMin + "-" + CFG.bossClickCpsMax, "2.5-3.5");
+        n += eq("fresh boss cooldown off", CFG.bossRespectVanillaCooldown, false);
+        n += eq("fresh boss window", CFG.bossEventMaxMs, 300_000);
+        try {
+            java.nio.file.Path mixins = java.nio.file.Path.of("src", "client", "resources", "ycbotchallenge.client.mixins.json");
+            if (java.nio.file.Files.exists(mixins)) {
+                n += eq("mixin registered", java.nio.file.Files.readString(mixins).contains("InGameHudMixin"), true);
+            }
+        } catch (Exception ex) {
+            System.err.println("FAIL mixin json: " + ex);
             n++;
         }
         return n;

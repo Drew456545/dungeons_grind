@@ -932,6 +932,48 @@ public final class Economy {
         return startMs > 0 && now - startMs > Math.max(0, durationMs) + Math.max(0, graceMs);
     }
 
+    // ---- 0.9.38: the zone boss
+
+    /**
+     * How much to trust an entity as the boss's target marker, by what vanilla's attack can
+     * land on: an interaction entity (0) is what a server builds a clickable hitbox from; an
+     * armor stand (1) with no plate, or a plate naming the target, is hittable too; a display
+     * (2-3) is a picture with no hitbox - the attack key would mine the block behind it, so
+     * it is never attacked, only used to find something hittable next to it. A living mob, a
+     * plate that names a mob, or anything else is not a candidate (9).
+     */
+    public static int markerRank(String typeId, boolean living, boolean hasPlate, boolean plateMatchesTarget) {
+        if (typeId == null || living) return 9;
+        String t = typeId.toLowerCase(java.util.Locale.ROOT);
+        if (t.endsWith("interaction")) return 0;
+        if (t.endsWith("armor_stand")) return !hasPlate || plateMatchesTarget ? 1 : 9;
+        if (t.endsWith("item_display")) return 2;
+        if (t.endsWith("block_display") || t.endsWith("text_display")) return 3;
+        return 9;
+    }
+
+    /**
+     * Where to stand for a marker on a big body: outside the body, facing the marker, inside
+     * vanilla's entity reach. {x, y, z, face} with face 0 = a side face (out along the
+     * horizontal body-to-marker vector), 1 = the top (the marker sits above the body, so we
+     * approach from the player's own side), 2 = degenerate (the marker is at the centre).
+     * Reach minus half a block is the same margin combat falls back to after a no-connect run.
+     */
+    public static double[] bossStandPoint(double[] body, double[] marker, double reach, double[] player) {
+        double ox = marker[0] - body[0], oz = marker[2] - body[2];
+        double h = Math.sqrt(ox * ox + oz * oz);
+        int face = 0;
+        if (h < 0.35) {
+            face = marker[1] - body[1] > 0.75 ? 1 : 2;
+            ox = player[0] - body[0];
+            oz = player[2] - body[2];
+            h = Math.sqrt(ox * ox + oz * oz);
+            if (h < 1e-6) { ox = 1; oz = 0; h = 1; }
+        }
+        double stand = Math.max(1.2, reach - 0.5);
+        return new double[]{marker[0] + ox / h * stand, marker[1], marker[2] + oz / h * stand, face};
+    }
+
     /**
      * The companion post-pass (0.9.35, rewritten 0.9.36). Runs only when {@link #decideUpgrades}
      * is holding, so an egg batch can never delay a stage or a sword the bot was about to buy.

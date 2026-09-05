@@ -25,6 +25,20 @@ public final class ChatClassifier {
         return stripped.indexOf('\u00BB') >= 0 || stripped.charAt(0) == '[';
     }
 
+    // ---- 0.9.38: the zone boss
+
+    /** "Rotten Boss 300" -> 300 with the configured count pattern (named group n); null when the title has no count. */
+    public static Integer bossBarCount(String title, Pattern countRe) {
+        if (title == null || countRe == null) return null;
+        Matcher m = countRe.matcher(title.trim());
+        if (!m.find()) return null;
+        try {
+            return Integer.parseInt(m.group("n"));
+        } catch (RuntimeException e) {
+            try { return Integer.parseInt(m.group(1)); } catch (RuntimeException e2) { return null; }
+        }
+    }
+
     // ---- 0.9.37: GG waves and perk pulls (the server congratulation rituals)
 
     private static final Pattern GG_WHO = Pattern.compile("(?i)thank you\\s+(\\S+)\\s+for");

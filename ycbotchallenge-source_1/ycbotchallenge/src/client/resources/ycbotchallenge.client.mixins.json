@@ -5,6 +5,7 @@
   "client": [
     "BossBarHudAccessor",
     "ChatScreenAccessor",
+    "InGameHudMixin",
     "KeyBindingAccessor",
     "MouseMixin"
   ],

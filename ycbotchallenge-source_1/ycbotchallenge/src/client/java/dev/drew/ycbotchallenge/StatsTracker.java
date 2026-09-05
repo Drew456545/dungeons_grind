@@ -487,6 +487,25 @@ public class StatsTracker {
     public volatile int giveawaysWon = 0;
     /** Bumped on each of our own wins; the controller types a reply on the seq. */
     public volatile int giveawayWonSeq = 0;
+    // 0.9.38: the zone boss. The bar ("Rotten Boss 300", no heart, one count per hit), the
+    // title overlay ("Hit the targets…" / "Targets Hit - N") and the spawn/kill chat lines.
+    private Pattern bossEventBarRe, bossEventCountRe, bossEventStartRe, bossEventProgressRe,
+        bossSpawnRe, bossDespawnRe, bossKilledRe, bossRewardRe;
+    public Pattern bossTargetNameRe;
+    public volatile int bossEventSeq = 0;
+    public volatile long bossEventSeenAt = 0;
+    public volatile boolean bossEventBarPresent = false;
+    public volatile String bossEventBarTitle = null;
+    public volatile Integer bossEventCount = null;
+    public volatile Integer bossTargetsHit = null;
+    public volatile long bossTitleStartAt = 0;
+    public volatile int bossKilledUsSeq = 0;
+    private long bossBarHoldSince = 0;
+    private long bossBarHoldLoggedAt = 0;
+    private String lastTitleSeen = null, lastSubtitleSeen = null;
+    private long bossKilledAt = 0;
+    /** Set by the client: true while the boss module is fighting (the event bar must not move the zone level). */
+    public java.util.function.BooleanSupplier bossEventBusy = () -> false;
     // 0.9.37: GG waves and perk pulls. The controller replies on the seq.
     private final List<Pattern> ggWaveRes = new ArrayList<>();
     private final List<Pattern> ggPerkRes = new ArrayList<>();
@@ -524,6 +543,15 @@ public class StatsTracker {
         }
         for (String p : cfg.ascensionChatPatterns) ascensionRes.add(compileLoose(p));
         if (cfg.ggWavePatterns != null) for (String p : cfg.ggWavePatterns) ggWaveRes.add(compileLoose(p));
+        bossEventBarRe = compileLoose(cfg.bossEventBarPattern);
+        bossEventCountRe = compileLoose(cfg.bossEventCountPattern);
+        bossEventStartRe = compileLoose(cfg.bossEventStartPattern);
+        bossEventProgressRe = compileLoose(cfg.bossEventProgressPattern);
+        bossSpawnRe = compileLoose(cfg.bossSpawnPattern);
+        bossDespawnRe = compileLoose(cfg.bossDespawnPattern);
+        bossKilledRe = compileLoose(cfg.bossKilledPattern);
+        bossRewardRe = compileLoose(cfg.bossRewardPattern);
+        bossTargetNameRe = compileLoose(cfg.bossTargetNamePattern);
         if (cfg.ggPerkPatterns != null) for (String p : cfg.ggPerkPatterns) ggPerkRes.add(compileLoose(p));
         for (String p : cfg.prestigeChatPatterns) prestigeRes.add(compileLoose(p));
         for (String p : cfg.captchaChatPatterns) captchaRes.add(compileLoose(p));
@@ -1453,12 +1481,19 @@ public class StatsTracker {
         }
         Set<String> current = new HashSet<>();
         Integer levelSeen = null;
+        String eventTitle = null;
         for (ClientBossBar bar : bars.values()) {
             String title = bar.getName().getString();
             // Identity only: no HP ("LVL4 Pig ❤8.48M") and no countdown ("Event: 12m 10s",
             // "(12m, 9s)"), else every tick starts and ends a "boost".
             String key = ChatClassifier.bossBarKey(title);
             if (!key.isEmpty()) current.add(key);
+            // 0.9.38: the zone boss's own bar has no heart ("Rotten Boss 300") - never a mob
+            // level, whatever it is called, and the count is the fight's progress.
+            if (indexOfHeart(title) < 0 && bossEventBarRe != null && bossEventBarRe.matcher(bossBarPrefix(title)).find()) {
+                if (eventTitle == null) eventTitle = title.trim();
+                continue;
+            }
             Matcher lm = BOSS_LEVEL.matcher(bossBarPrefix(title));
             if (lm.find()) {
                 try {
@@ -1467,7 +1502,8 @@ public class StatsTracker {
                 } catch (NumberFormatException ignored) {}
             }
         }
-        noteBossLevel(levelSeen);
+        if (!bossEventBusy.getAsBoolean()) noteBossLevel(levelSeen);
+        noteBossEventBar(eventTitle);
         for (String key : current) {
             if (activeBoosts.add(key)) {
                 boostSince.put(key, System.currentTimeMillis());
@@ -1483,6 +1519,95 @@ public class StatsTracker {
             }
             return false;
         });
+    }
+
+    /** 0.9.38: the event bar, once a poll: appearance bumps the seq, every count change is logged, a frozen count is logged every 10 s. */
+    private void noteBossEventBar(String title) {
+        long now = System.currentTimeMillis();
+        if (title == null) {
+            if (bossEventBarPresent) {
+                log("boss_bar", "title", bossEventBarTitle, "count", bossEventCount, "gone", true,
+                    "afterMs", bossEventSeenAt != 0 ? now - bossEventSeenAt : null);
+            }
+            bossEventBarPresent = false;
+            bossBarHoldSince = 0;
+            return;
+        }
+        Integer count = ChatClassifier.bossBarCount(title, bossEventCountRe);
+        if (!bossEventBarPresent) {
+            bossEventBarPresent = true;
+            bossEventSeenAt = now;
+            bossEventSeq++;
+            bossEventBarTitle = title;
+            bossEventCount = count;
+            bossBarHoldSince = now;
+            bossBarHoldLoggedAt = now;
+            log("boss_bar", "title", title, "count", count, "seq", bossEventSeq, "appeared", true);
+            return;
+        }
+        if (count != null && !count.equals(bossEventCount)) {
+            log("boss_bar", "title", title, "count", count,
+                "delta", bossEventCount != null ? bossEventCount - count : null,
+                "sinceMs", now - bossEventSeenAt);
+            bossEventCount = count;
+            bossEventBarTitle = title;
+            bossBarHoldSince = now;
+            bossBarHoldLoggedAt = now;
+        } else if (now - bossBarHoldLoggedAt > 10_000) {
+            bossBarHoldLoggedAt = now;
+            log("boss_bar_hold", "title", title, "count", count, "heldMs", now - bossBarHoldSince,
+                "busy", bossEventBusy.getAsBoolean());
+        }
+    }
+
+    /**
+     * 0.9.38: the title overlay, read every client tick from the InGameHud mixin's handoff.
+     * "Hit the targets to kill the boss and recieve the rewards!" starts an event even
+     * before the bar is read; "Targets Hit - N" is the server's own hit counter.
+     */
+    public void onTitle(String title, String subtitle) {
+        boolean changed = false;
+        if (title != null && !title.equals(lastTitleSeen)) { lastTitleSeen = title; changed = true; }
+        if (subtitle != null && !subtitle.equals(lastSubtitleSeen)) { lastSubtitleSeen = subtitle; changed = true; }
+        if (!changed) return;
+        long now = System.currentTimeMillis();
+        String t = title != null ? ChatClassifier.clean(title) : null;
+        String s = subtitle != null ? ChatClassifier.clean(subtitle) : null;
+        boolean start = (t != null && bossEventStartRe.matcher(t).find()) || (s != null && bossEventStartRe.matcher(s).find());
+        Integer hit = null;
+        for (String x : new String[]{s, t}) {
+            if (x == null) continue;
+            Matcher m = bossEventProgressRe.matcher(x);
+            if (m.find()) { try { hit = Integer.parseInt(m.group("n")); } catch (RuntimeException ignored) {} break; }
+        }
+        if (start && now - bossTitleStartAt > 15_000) {
+            bossTitleStartAt = now;
+            if (!bossEventBarPresent) bossEventSeq++;
+        }
+        if (hit != null) bossTargetsHit = hit;
+        if (start || hit != null) log("boss_title", "title", t, "subtitle", s, "targetsHit", hit, "start", start, "seq", bossEventSeq);
+    }
+
+    /** 0.9.38: the boss chat lines - spawn, despawn, our kill (and everyone else's), the reward lines after ours. */
+    private boolean onBossChat(String text, long now) {
+        if (bossSpawnRe != null && bossSpawnRe.matcher(text).find()) { log("boss_spawn", "raw", text); return true; }
+        if (bossDespawnRe != null && bossDespawnRe.matcher(text).find()) { log("boss_despawn", "raw", text); return true; }
+        if (bossKilledRe != null) {
+            Matcher m = bossKilledRe.matcher(text);
+            if (m.find()) {
+                String who = null;
+                try { who = m.group("who"); } catch (RuntimeException ignored) {}
+                boolean us = who != null && stateUser != null && who.equalsIgnoreCase(stateUser);
+                if (us) { bossKilledUsSeq++; bossKilledAt = now; }
+                log("boss_killed", "who", who, "us", us, "raw", text);
+                return true;
+            }
+        }
+        if (bossRewardRe != null && bossRewardRe.matcher(text).find()) { log("boss_reward", "raw", text, "via", "reward-line"); return true; }
+        if (bossKilledAt != 0 && now - bossKilledAt < 20_000 && !ChatClassifier.isPlayerOrBroadcast(text)) {
+            log("boss_reward", "raw", text, "via", "after-kill", "sinceKillMs", now - bossKilledAt);
+        }
+        return false;
     }
 
     /**
@@ -1853,6 +1978,13 @@ public class StatsTracker {
         long now = System.currentTimeMillis();
         boolean ours = text.startsWith("[YCBotChallenge]");
         if (!overlay && !ours) onGgLine(text, now);
+        if (!ours) {
+            if (onBossChat(text, now)) return;
+            // A server build that sends the boss overlay as chat or action bar instead of a title.
+            if (bossEventStartRe != null && (bossEventStartRe.matcher(text).find() || bossEventProgressRe.matcher(text).find())) {
+                onTitle(overlay ? null : text, overlay ? text : null);
+            }
+        }
         // Action-bar text is never the captcha prompt (and repeats every tick).
         if (!overlay && !ours) {
             boolean eligible = ChatClassifier.captchaLineEligible(text, overlay);

@@ -1082,7 +1082,8 @@ public class CombatController {
      * Vanilla's own {@code handleInputEvents} -> {@code doAttack()} consumes it on
      * the next tick (ray-trace + swing + cooldown). We never hold the key.
      */
-    private void pressAttack(MinecraftClient client) {
+    /** One real attack-key edge; package-private since 0.9.38 (the boss module taps the same way). */
+    void pressAttack(MinecraftClient client) {
         var attack = client.options.attackKey;
         int cur = ((dev.drew.ycbotchallenge.mixin.KeyBindingAccessor) attack).ycbotchallenge$getTimesPressed();
         ((dev.drew.ycbotchallenge.mixin.KeyBindingAccessor) attack).ycbotchallenge$setTimesPressed(cur + 1);
@@ -1114,7 +1115,7 @@ public class CombatController {
     }
 
     /** True when the vanilla attack cooldown is ready (never faster than vanilla allows). */
-    private boolean vanillaAttackReady(MinecraftClient client) {
+    boolean vanillaAttackReady(MinecraftClient client) {
         if (!cfg.respectVanillaAttackCooldown) return true;
         try {
             return client.player.getAttackCooldownProgress(0.0f) >= 1.0f;

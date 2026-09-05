@@ -43,6 +43,14 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private RebirthUpgradeController rebirthUpgrades;
     private CompanionController companions;
     private TranscendController transcend;
+    private BossEventController bossEvent;
+    /** 0.9.38: the title overlay, handed over by InGameHudMixin and read on the client tick. */
+    private static volatile String titleText = null;
+    private static volatile String subtitleText = null;
+
+    public static void onTitle(String text) { titleText = text; }
+
+    public static void onSubtitle(String text) { subtitleText = text; }
     private CaptchaSolver captchaSolver;
     private CaptchaDetector captchaDetector;
     private EventLogger logger;
@@ -74,6 +82,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         enchants.attachUpgrades(upgrades);
         companions.setEggStore(new EggStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-eggs.json")));
         transcend = new TranscendController(config, enchants.lore());
+        bossEvent = new BossEventController(config, stats, upgrades);
+        stats.bossEventBusy = () -> bossEvent.isBusy();
         MouseDriver.INSTANCE.configure(config, null);
         captchaSolver = new CaptchaSolver(config, new CaptchaSolver.Callbacks() {
             @Override public void onSolved(MinecraftClient client) {
@@ -103,7 +113,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
         HudElementRegistry.addLast(
             Identifier.of("ycbotchallenge", "hud"),
-            (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver, upgrades, enchants, rebirthUpgrades, companions, transcend).render(context));
+            (context, tickCounter) -> new HudOverlay(config, stats, combat, captchaSolver, upgrades, enchants, rebirthUpgrades, companions, transcend, bossEvent).render(context));
 
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             stats.onGameMessage(message, overlay);
@@ -143,6 +153,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
 
         tickCounter++;
         if (tickCounter % 20 == 0) stats.poll(client);
+        stats.onTitle(titleText, subtitleText);
 
         if (!enabled) return;
 
@@ -174,6 +185,16 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
         captchaSolver.tickIdle(nowMs);
+        // 0.9.38: a live zone boss outranks every buy - it is gone in five minutes.
+        if (bossEvent.isBusy()) {
+            bossEvent.tick(client, combat);
+            if (combat.stopRequest != null) {
+                String reason = combat.stopRequest;
+                combat.stopRequest = null;
+                emergencyStop(client, reason);
+            }
+            return;
+        }
         if (upgrades.isBusy()) {
             upgrades.tick(client, combat);
             return;
@@ -241,6 +262,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
 
+        if (bossEvent.tick(client, combat)) {
+            return;
+        }
         if (upgrades.tick(client, combat)) {
             return;
         }
@@ -296,6 +320,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("companionsEnabled", "Companions", () -> config.companionsEnabled, v -> config.companionsEnabled = v,
             () -> moduleStatus(companions.hudLine(), companions.isBusy(), companions.isSuspended())));
         opts.add(new BotOptionsScreen.Option("companionBulkDeleteEnabled", "Companion bulk delete", () -> config.companionBulkDeleteEnabled, v -> config.companionBulkDeleteEnabled = v));
+        opts.add(new BotOptionsScreen.Option("bossEventEnabled", "Zone boss", () -> config.bossEventEnabled, v -> config.bossEventEnabled = v,
+            () -> moduleStatus(bossEvent.hudLine(), bossEvent.isBusy(), bossEvent.isSuspended())));
         opts.add(new BotOptionsScreen.Option("transcendEnabled", "Transcend (Q)", () -> config.transcendEnabled, v -> config.transcendEnabled = v,
             () -> { String t = transcend.hudState(); return t != null ? t : "idle"; }));
         opts.add(new BotOptionsScreen.Option("giveawaysEnabled", "Join giveaways", () -> config.giveawaysEnabled, v -> config.giveawaysEnabled = v,
@@ -396,6 +422,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         upgrades.reset(client);
         enchants.reset(client);
         rebirthUpgrades.reset(client);
+        companions.reset(client);
+        bossEvent.reset(client);
         MouseDriver.INSTANCE.cancel();
         if ("gui".equals(source)) {
             // if this screen (or a sibling) is still around after the solve, next
@@ -468,6 +496,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 enchants.setLogger(logger);
                 rebirthUpgrades.setLogger(logger);
                 companions.setLogger(logger);
+                bossEvent.setLogger(logger);
                 transcend.setLogger(logger);
                 captchaSolver.setLogger(logger);
                 captchaDetector.setLogger(logger);
@@ -484,6 +513,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             captchaSolver.checkHealth(System.currentTimeMillis());
             rebirthUpgrades.onEnable(System.currentTimeMillis(), combat.kills);
             companions.onEnable(System.currentTimeMillis(), combat.kills);
+            bossEvent.onEnable(System.currentTimeMillis(), combat.kills);
             transcend.onEnable(System.currentTimeMillis(), combat.kills);
         } else {
             if (logger != null) logger.log("bot_off", "onMs", lastOnAt > 0 ? System.currentTimeMillis() - lastOnAt : null);
@@ -495,6 +525,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 enchants.reset(client);
                 rebirthUpgrades.reset(client);
                 companions.reset(client);
+                bossEvent.reset(client);
             }
             MouseDriver.INSTANCE.cancel();
             captchaSolver.cancel();
@@ -516,6 +547,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             enchants.setLogger(null);
             rebirthUpgrades.setLogger(null);
             companions.setLogger(null);
+            bossEvent.setLogger(null);
             transcend.setLogger(null);
             captchaSolver.setLogger(null);
             captchaDetector.setLogger(null);
