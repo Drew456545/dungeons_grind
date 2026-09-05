@@ -87,6 +87,7 @@ public final class EconomyChecks {
         n += boss0938();
         n += zone0940();
         n += checks0941();
+        n += checks0942();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -2670,9 +2671,11 @@ public final class EconomyChecks {
 
         // The marker: what vanilla's attack can land on, best first; a display is never attacked.
         n += eq("interaction first", Economy.markerRank("minecraft:interaction", false, false, false), 0);
-        n += eq("bare armor stand", Economy.markerRank("minecraft:armor_stand", false, false, false), 1);
-        n += eq("armor stand named target", Economy.markerRank("minecraft:armor_stand", false, true, true), 1);
-        n += eq("armor stand with a mob plate", Economy.markerRank("minecraft:armor_stand", false, true, false), 9);
+        // 0.9.42: ArmorStandEntity extends LivingEntity - the rank must not be fooled by the flag.
+        n += eq("bare armor stand", Economy.markerRank("minecraft:armor_stand", true, false, false), 1);
+        n += eq("armor stand named target", Economy.markerRank("minecraft:armor_stand", true, true, true), 1);
+        n += eq("armor stand with a mob plate", Economy.markerRank("minecraft:armor_stand", true, true, false), 9);
+        n += eq("interaction, living flag or not", Economy.markerRank("minecraft:interaction", true, false, false), 0);
         n += eq("item display", Economy.markerRank("minecraft:item_display", false, false, false), 2);
         n += eq("block display", Economy.markerRank("minecraft:block_display", false, false, false), 3);
         n += eq("text display", Economy.markerRank("minecraft:text_display", false, true, false), 3);
@@ -2829,6 +2832,36 @@ public final class EconomyChecks {
         n += eq("welcome to the hub", hub1.matcher("Welcome to the Hub!").find(), true);
         n += eq("a player saying hub is not a send", hub0.matcher("StayRentless » hub").find(), false);
         n += eq("teleported to lvl19 is not the hub", hub0.matcher("You have been teleported to lvl19").find(), false);
+        return n;
+    }
+
+    /** 0.9.42: the boss marker rank with the living flag the game really sets, the two map guesses, the cycle split. */
+    private static int checks0942() {
+        int n = 0;
+        // The 07:58 scan: a Creeper is never the marker, a plated companion stand neither, a bare stand or an interaction is.
+        n += eq("creeper never", Economy.markerRank("minecraft:creeper", true, false, false), 9);
+        n += eq("companion plate stand never", Economy.markerRank("minecraft:armor_stand", true, true, false), 9);
+        n += eq("bare stand, living flag set", Economy.markerRank("minecraft:armor_stand", true, false, false), 1);
+        n += eq("stand plated 'Target'", Economy.markerRank("minecraft:armor_stand", true, true, true), 1);
+        n += eq("interaction first", Economy.markerRank("minecraft:interaction", true, false, false), 0);
+        n += eq("block display is the picture", Economy.markerRank("minecraft:block_display", false, false, false), 3);
+        // Two reads: disagree -> both; agree -> the variant; no variant -> one guess.
+        n += eq("two reads disagree", CaptchaSolver.mapGuesses("p8b", "p8h", "pBb"), java.util.List.of("p8b", "p8h"));
+        n += eq("two reads agree", CaptchaSolver.mapGuesses("ER7", "ER7", "eR7"), java.util.List.of("ER7", "eR7"));
+        n += eq("second read missing", CaptchaSolver.mapGuesses("ER7", null, "eR7"), java.util.List.of("ER7", "eR7"));
+        n += eq("no variant either", CaptchaSolver.mapGuesses("ER7", "ER7", null), java.util.List.of("ER7"));
+        n += eq("no first read", CaptchaSolver.mapGuesses(null, "x", "y").isEmpty(), true);
+        // rb23's cycle: the climb below lvl24, the farm on it.
+        int[] st = {1, 7, 11, 14, 17, 19, 20, 21, 22, 23, 24, 0};
+        double[] mins = {0.4, 1.0, 0.4, 0.9, 2.4, 0.8, 1.2, 0.8, 2.2, 6.8, 15.9, 0.1};
+        int[] kills = {4, 3, 1, 4, 7, 4, 6, 5, 6, 24, 34, 0};
+        double[] sp = Economy.cycleSplit(st, mins, kills, 24);
+        n += eq("climb minutes", sp[0], 16.9, 1e-9);
+        n += eq("farm minutes", sp[1], 15.9, 1e-9);
+        n += eq("farm kills", sp[2], 34.0, 1e-9);
+        double[] none = Economy.cycleSplit(st, mins, kills, null);
+        n += eq("no top: all climb", none[0], 32.9, 1e-9);
+        n += eq("no top: no farm", none[1], 0.0, 1e-9);
         return n;
     }
 }

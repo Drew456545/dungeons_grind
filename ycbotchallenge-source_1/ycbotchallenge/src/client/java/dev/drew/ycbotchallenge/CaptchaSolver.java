@@ -590,6 +590,7 @@ public class CaptchaSolver {
                     candidates.addAll(got); // ranked, de-duped, best first
                     log("captcha_candidates", "candidates", candidates, "raw", vlmRaw.getAndSet(null),
                         "second", vlmSecond.getAndSet(null), "secondScale", secondPng != null ? cfg.captchaSecondScale : null,
+                        "model", cfg.captchaVlmModel, "secondModel", secondPng != null ? secondModel() : null,
                         "prompt", mapPromptUsed ? "map" : "sonar",
                         "preserveCase", mapPromptUsed && cfg.captchaPreserveCase, "attempt", attempt);
                     if ("map".equals(captureMode) && captureMapId >= 0) {
@@ -682,8 +683,10 @@ public class CaptchaSolver {
                     candidates.remove(lastSentAnswer);
                     boolean altLeft = candidates.stream().anyMatch(c -> !wrongAnswers.contains(c));
                     if (answersSent >= cfg.captchaMaxAnswers) {
-                        // Hard cap: STOP. Never spam answers; hand over to the human.
-                        fail(client, "answers-exhausted", answersSent + " guess(es) rejected — stopping, no spam");
+                        // Hard cap: nothing more is typed. 0.9.42: but the bot runs on - a wrong
+                        // answer is a kick to the hub within 60 s whatever we do, and a paused
+                        // bot misses the NEXT captcha (08:38 pause, 08:52 kick).
+                        unverified(client, "answers-exhausted", answersSent + " guess(es) unconfirmed - nothing more typed");
                     } else if (mapPromptUsed && altLeft) {
                         // The map read is unchanged; the case-flipped second guess goes next.
                         submitNextCandidate(client, now);
@@ -696,7 +699,7 @@ public class CaptchaSolver {
                     } else if (altLeft) {
                         submitNextCandidate(client, now);
                     } else {
-                        fail(client, "server", "rejected with nothing left to try");
+                        unverified(client, "server", "rejected with nothing left to try");
                     }
                 } else if ("solved".equals(fb) || now >= phaseDeadline) {
                     stopVoting();
@@ -726,7 +729,7 @@ public class CaptchaSolver {
     /** Send the top remaining candidate, respecting the hard answer cap. */
     private void submitNextCandidate(MinecraftClient client, long now) {
         if (answersSent >= cfg.captchaMaxAnswers) {
-            fail(client, "answers-exhausted", "answer cap (" + cfg.captchaMaxAnswers + ") reached — stopping, no spam");
+            unverified(client, "answers-exhausted", "answer cap (" + cfg.captchaMaxAnswers + ") reached - nothing more typed");
             return;
         }
         String next = null;
@@ -737,7 +740,7 @@ public class CaptchaSolver {
             // Model gave nothing new. If we haven't sent anything yet, a fresh
             // solve cycle is safe (nothing hit chat); otherwise stop.
             if (answersSent == 0) retryOrFail(client, "vlm", "no usable candidate");
-            else fail(client, "server", "no candidates left after rejection — stopping, no spam");
+            else unverified(client, "server", "no candidates left after rejection - nothing more typed");
             return;
         }
         // A person needs a moment to read the map before typing.
@@ -763,6 +766,25 @@ public class CaptchaSolver {
         phase = Phase.SETTLING;
         settleStart = System.currentTimeMillis();
         phaseDeadline = settleStart + cfg.captchaSettleMs;
+    }
+
+    /**
+     * 0.9.42: the answers are spent and the map is still in hand. Not a pause: the server
+     * says nothing on a right answer and the map can linger past the held window (the
+     * 08:37 ER7 map), while a wrong answer is a kick to the hub within 60 s whether the bot
+     * runs or not - and a paused bot then misses the next captcha for the whole night.
+     * Logged as captcha_unverified (never captcha_solved: the fixture importer must not
+     * certify it), and the bot resumes; the hub stop takes the kick if it comes.
+     */
+    private void unverified(MinecraftClient client, String stage, String why) {
+        typer.cancel(client);
+        restoreHud(client);
+        stopVoting();
+        phase = Phase.IDLE;
+        log("captcha_unverified", "stage", stage, "why", why, "attempts", attempt, "answersSent", answersSent,
+            "answer", lastSentAnswer, "wrong", wrongAnswers, "source", source, "mode", captureMode);
+        say(client, "§e[YCBotChallenge] captcha: answers spent, map still held - resuming (a wrong answer is a kick within 60 s).");
+        callbacks.onSolved(client);
     }
 
     private void fail(MinecraftClient client, String stage, String why) {
@@ -1003,17 +1025,19 @@ public class CaptchaSolver {
         // Read A greedy; later reads take captchaVoteTemperature, so raising it turns the
         // hedges into genuinely independent samples rather than repeat confirmations.
         final double temp = idx == 0 ? 0.0 : cfg.captchaVoteTemperature;
+        // 0.9.42: read B is the second model's opinion, not the same model again.
+        final String model = idx == 1 ? secondModel() : cfg.captchaVlmModel;
         final long t0 = now;
         hedgesLaunched++;
         nextHedgeAt = now + Math.max(500, cfg.captchaHedgeMs);
         phaseDeadline = Math.max(phaseDeadline, now + cfg.captchaTimeoutMs + 2000);
-        log("captcha_hedge", "n", idx + 1, "render", r.name(), "temp", temp,
+        log("captcha_hedge", "n", idx + 1, "render", r.name(), "temp", temp, "model", model,
             "atMs", elapsedMs(now), "budgetLeftMs", budgetDeadline - now);
         // Keep the SEND future, not the whenComplete-derived one: cancelling a derived
         // stage does not propagate upstream, so cancelling that would leave the request
         // running and still cost the tokens it was cancelled to save.
         java.util.concurrent.CompletableFuture<HttpResponse<String>> f =
-            http.sendAsync(buildRequest(r.png(), cfg.captchaMapPrompt, temp, 64),
+            http.sendAsync(buildRequest(r.png(), cfg.captchaMapPrompt, temp, 64, model),
                     HttpResponse.BodyHandlers.ofString());
         f.whenComplete((resp, err) -> {
             try {
@@ -1137,6 +1161,30 @@ public class CaptchaSolver {
     }
 
     private HttpRequest buildRequest(byte[] png, String prompt, double temperature, int maxTokens) {
+        return buildRequest(png, prompt, temperature, maxTokens, cfg.captchaVlmModel);
+    }
+
+    /** 0.9.42: the model the second read goes to (captchaVlmModelSecond, blank = the reader itself). */
+    private String secondModel() {
+        String m = cfg.captchaVlmModelSecond;
+        return m == null || m.isBlank() ? cfg.captchaVlmModel : m;
+    }
+
+    /**
+     * 0.9.42: the two guesses a map captcha gets. Two reads that disagree are the two
+     * guesses; two that agree keep the look-alike / case variant as the fallback (the
+     * variant may be null). Pure, for the checks.
+     */
+    public static List<String> mapGuesses(String first, String second, String variant) {
+        List<String> out = new ArrayList<>();
+        if (first == null) return out;
+        out.add(first);
+        if (second != null && !second.equals(first)) out.add(second);
+        else if (variant != null && !variant.equals(first)) out.add(variant);
+        return out;
+    }
+
+    private HttpRequest buildRequest(byte[] png, String prompt, double temperature, int maxTokens, String model) {
         JsonObject imagePart = new JsonObject();
         imagePart.addProperty("type", "image_url");
         JsonObject imageUrl = new JsonObject();
@@ -1154,7 +1202,7 @@ public class CaptchaSolver {
         JsonArray messages = new JsonArray();
         messages.add(msg);
         JsonObject body = new JsonObject();
-        body.addProperty("model", cfg.captchaVlmModel);
+        body.addProperty("model", model);
         body.addProperty("temperature", temperature);
         body.addProperty("max_tokens", maxTokens);
         if (!cfg.captchaVlmThinking) body.addProperty("enable_thinking", false);
@@ -1208,24 +1256,22 @@ public class CaptchaSolver {
                 if (mapPrompt) {
                     String answer = ChatClassifier.parseAnswerArray(content2, cfg.captchaPreserveCase);
                     if (answer != null) {
-                        ranked.add(answer);
-                        // Second opinion from the other render (bench 2026-09-03: x4 bilinear
-                        // read p8b where x2 read pBb); a disagreement is the second guess.
+                        // Second opinion: the other render read by the second model (0.9.42 -
+                        // bench 2026-09-03: x4 bilinear read p8b where x2 read pBb; the 08:37
+                        // "eR7" retry was a case flip of one misread). A disagreement is the
+                        // second guess; agreement keeps the look-alike variant.
+                        String other = null;
                         if (second != null) {
-                            String other = null;
                             try {
-                                HttpResponse<String> r2 = http.send(buildRequest(second, promptText, 0.0, 64), HttpResponse.BodyHandlers.ofString());
+                                HttpResponse<String> r2 = http.send(buildRequest(second, promptText, 0.0, 64, secondModel()), HttpResponse.BodyHandlers.ofString());
                                 if (r2.statusCode() == 200) other = ChatClassifier.parseAnswerArray(contentOf(r2.body()), cfg.captchaPreserveCase);
                             } catch (Exception e) {
                                 other = null;
                             }
                             vlmSecond.set(other);
-                            if (other != null && !other.equals(answer)) ranked.add(other);
                         }
-                        if (ranked.size() < 2) {
-                            String alt = ChatClassifier.lookalikeAlt(answer, cfg.captchaLookalikes, cfg.captchaCaseAmbiguous);
-                            if (alt != null && !alt.equals(answer)) ranked.add(alt);
-                        }
+                        String alt = ChatClassifier.lookalikeAlt(answer, cfg.captchaLookalikes, cfg.captchaCaseAmbiguous);
+                        ranked.addAll(mapGuesses(answer, other, alt));
                     }
                 } else {
                     // Sonar path: ranked ANSWER/ALT lines, lowercase, de-duped.

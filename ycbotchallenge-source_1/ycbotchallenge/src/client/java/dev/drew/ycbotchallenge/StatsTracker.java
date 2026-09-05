@@ -137,6 +137,9 @@ public class StatsTracker {
     private StageRecord previousStage = null;
     private int stagesThisCycle = 0;
     private Integer topStageThisCycle = null;
+    /** 0.9.42: the rebirth cost and the top zone's price as the reset wiped them - cycle_end reads them. */
+    private Double cycleRebirthCost = null;
+    private Double cycleTopZonePrice = null;
 
     public StageRecord currentStageRecord() { return currentStage; }
     public StageRecord previousStageRecord() { return previousStage; }
@@ -1466,14 +1469,23 @@ public class StatsTracker {
         if (measured) lastCycleOnMin = Math.round(onMin * 10.0) / 10.0;
         int[] stages = new int[cycleStages.size()];
         double[] mins = new double[cycleStages.size()];
+        int[] kills = new int[cycleStages.size()];
         List<String> stageLines = new ArrayList<>();
         for (int i = 0; i < cycleStages.size(); i++) {
             StateStore.StageEntry s = cycleStages.get(i);
             stages[i] = s.stage != null ? s.stage : 0;
             mins[i] = s.onMin;
+            kills[i] = s.kills;
             stageLines.add("lvl" + s.stage + " " + s.onMin + "m " + s.kills + "k " + s.swordBuys + "sw");
         }
         Double to14 = Economy.minutesToStage(stages, mins, 14);
+        // 0.9.42: the climb against the farm, and what the farm was for.
+        double[] split = Economy.cycleSplit(stages, mins, kills, topStageThisCycle);
+        Double cost = rebirthTarget != null ? rebirthTarget : cycleRebirthCost;
+        Double topZone = zoneTarget != null ? zoneTarget : cycleTopZonePrice;
+        Double ratio = cost != null && topZone != null && topZone > 0 ? Math.round(cost / topZone * 100.0) / 100.0 : null;
+        cycleRebirthCost = null;
+        cycleTopZonePrice = null;
         StateStore.CycleEntry c = new StateStore.CycleEntry();
         c.rebirths = rebirthsNow - 1;
         c.endedAt = System.currentTimeMillis();
@@ -1482,9 +1494,17 @@ public class StatsTracker {
         c.toLvl14OnMin = to14 != null ? Math.round(to14 * 10.0) / 10.0 : null;
         c.topStage = topStageThisCycle;
         c.stages = new ArrayList<>(cycleStages);
+        c.climbMin = Math.round(split[0] * 10.0) / 10.0;
+        c.farmMin = Math.round(split[1] * 10.0) / 10.0;
+        c.farmKills = (int) split[2];
+        c.rebirthCost = cost;
+        c.topZonePrice = topZone;
+        c.ratio = ratio;
         log("cycle_end", "rebirths", rebirthsNow, "onMin", c.onMin, "wallMin", c.wallMin,
             "measured", measured, "stages", stagesThisCycle, "topStage", topStageThisCycle,
-            "toLvl14OnMin", c.toLvl14OnMin, "stageList", stageLines, "lastCycleOnMin", lastCycleOnMin);
+            "toLvl14OnMin", c.toLvl14OnMin, "climbMin", c.climbMin, "farmMin", c.farmMin, "farmKills", c.farmKills,
+            "rebirthCost", cost != null ? Amounts.format(cost) : null, "topZonePrice", topZone != null ? Amounts.format(topZone) : null,
+            "ratio", ratio, "stageList", stageLines, "lastCycleOnMin", lastCycleOnMin);
         if (measured || !cycleStages.isEmpty()) {
             cycleHistory.add(c);
             while (cycleHistory.size() > 30) cycleHistory.remove(0);
@@ -1519,6 +1539,9 @@ public class StatsTracker {
         // floor for the next one — kept so the controller retries the GUI at a sane point
         // instead of re-probing /rebirth seconds after rebirthing.
         Double rebirthFloor = rebirthTarget != null ? rebirthTarget : rebirthLastPrice;
+        // 0.9.42: kept for the cycle_end that follows the sidebar counter a few seconds later.
+        cycleRebirthCost = rebirthFloor;
+        cycleTopZonePrice = zoneTarget != null ? zoneTarget : zoneLastPrice;
         swordTarget = null;
         zoneTarget = null;
         rebirthTarget = null;

@@ -292,7 +292,20 @@ public class YCBotChallengeConfig {
      * and captchaVoteTemperature 0.6 (the 0.9.26 ballot).
      */
     public String captchaVlmEndpoint = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
+    /**
+     * 0.9.42 bench on the five certified fixtures plus the 2026-09-05 08:37 capture, one
+     * greedy read each, identical bill per read (164 prompt tokens, 66 of them the image,
+     * 11-13 completion): qwen3.6-flash 5/5, qwen3.8-flash 4/5 (udWn -> uaWn), qwen3.8-max
+     * 4/5 (p8b -> p8h); all three read the 08:37 map as ER7. The reader stays 3.6-flash.
+     */
     public String captchaVlmModel = "qwen3.6-flash";
+    /**
+     * 0.9.42: the second read of a map captcha comes from this model (blank = the same
+     * model) - a different model fails on different maps, so a disagreement is a real
+     * second guess. Before this the second answer was a case / look-alike variant of the
+     * first read (the 08:37 retry "eR7"), so one misread cost both answers.
+     */
+    public String captchaVlmModelSecond = "qwen3.8-flash";
     /** Thinking models (qwen3.8-*) spend reasoning tokens on a four-letter read unless told not to; false sends enable_thinking=false. */
     public boolean captchaVlmThinking = false;
     public String captchaPrompt =
@@ -389,7 +402,7 @@ public class YCBotChallengeConfig {
      * After answering: resume if no rejection message arrives within this window.
      * Sonar sends NOTHING on success (it silently transfers you), so silence = solved.
      */
-    public int captchaVerifyWaitMs = 12_000;
+    public int captchaVerifyWaitMs = 26_000; // 0.9.42: past captchaMapHeldRejectMs, so a lingering map is judged before silence counts as solved
     /**
      * Upscale factor for the 128x128 map image sent to the model, bilinear-smoothed
      * above x2 (captchaMapSmooth). tools/captcha_bench.py on the two certified
@@ -442,8 +455,15 @@ public class YCBotChallengeConfig {
      * one the map leaves the hand. A map still held this long after the answer is the
      * rejection and the next candidate goes out (the captchaMaxAnswers cap still holds).
      * 0 = off (silence = solved, the 0.9.22 rule).
+     *
+     * <p>0.9.42: 20 s, was 7. The 2026-09-05 08:37 map was still in hand 7 s after "ER7"
+     * (every model reads that map as ER7), the mod called it a rejection, spent the second
+     * answer on a case flip and paused - and the kick came at 08:52 for a LATER captcha,
+     * i.e. the 08:37 one had been accepted with the map lingering past 7 s. The accepted
+     * 3PS and SyQQ maps left within 7 s, so the linger varies; 20 s still leaves the second
+     * answer inside the server's 60 s.
      */
-    public int captchaMapHeldRejectMs = 7000;
+    public int captchaMapHeldRejectMs = 20_000;
     /**
      * Look-alike pairs for the second guess when both renders agree: the alphabet mixes
      * letters and digits (17:38: read "pBb", answer "p8b"). First matching character is
@@ -992,14 +1012,29 @@ public class YCBotChallengeConfig {
     public String bossRewardPattern = "/^boss reward:/";
     /** An armor stand whose plate matches this is the marker; one with no plate at all is a candidate too. */
     public String bossTargetNamePattern = "/target/";
-    public double bossScanRadius = 12.0;
+    /**
+     * 0.9.42: the boss stands in the middle of the mob zone (Drew's screenshots: a big
+     * block-display body with a green target icon on one face that moves to another side
+     * every ~10 hits). The first scan ever logged (2026-09-05 07:58, 12 blocks) saw only our
+     * own companion stands, damage numbers and two Creepers - the boss was out of range - and
+     * the module never looked again for the rest of the five minutes. Now: a wide scan, the
+     * body found as the biggest block-display cluster, a walk to it when no hittable marker
+     * is within bossMarkerBodyRadius of it, a rescan at close range, and a retry every
+     * bossRescanMs while the bar is up. A window with no hit at all counts one abort.
+     */
+    public double bossScanRadius = 48.0;
+    public double bossMarkerBodyRadius = 3.0;
+    public int bossRescanMs = 5000;
+    /** Retries inside one bar window (each one a fresh scan dump), then the window is given up. */
+    public int bossMaxWindowRetries = 12;
     public double bossStandTolerance = 0.8;
     public int bossWalkTimeoutMs = 30_000;
     /** A cook in progress is finished first, unless the boss has been waiting this long. */
     public int bossEventStartGraceMs = 8_000;
     public int bossEventMaxMs = 300_000;
     public int bossNoProgressMs = 4_000;
-    public int bossMaxRescans = 3;
+    /** 0.9.42: one rescan per target move (~10 hits each, 300 hits a boss), so 40. */
+    public int bossMaxRescans = 40;
     public int bossMarkerMoveHits = 10;
     public double bossMarkerMoveBlocks = 1.5;
     /** Drew's own pace on the 2026-09-04 kill: 293 hits in 99 s. The server counts hits, not damage. */
@@ -1495,7 +1530,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 43;
+    public static final int CURRENT_CONFIG_VERSION = 44;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1877,6 +1912,17 @@ public class YCBotChallengeConfig {
             // dismissal, the perf row. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 44) {
+            // v44 (0.9.42): the reader moves from qwen3.6-flash to qwen3.8-flash (a config
+            // still on the 3.6 default follows; a hand-set model is left alone), the second
+            // read's model, the boss scan knobs, the hatch/hub/auto-disconnect keys of 0.9.41.
+            if (captchaVlmModelSecond == null) captchaVlmModelSecond = fresh.captchaVlmModelSecond;
+            if (captchaMapHeldRejectMs == 7000) captchaMapHeldRejectMs = fresh.captchaMapHeldRejectMs;
+            if (captchaVerifyWaitMs == 12_000) captchaVerifyWaitMs = fresh.captchaVerifyWaitMs;
+            if (bossScanRadius <= 12.0) bossScanRadius = fresh.bossScanRadius;
+            if (bossMaxRescans <= 3) bossMaxRescans = fresh.bossMaxRescans;
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1909,6 +1955,7 @@ public class YCBotChallengeConfig {
         if (captchaMapRetryPrompt == null) captchaMapRetryPrompt = fresh.captchaMapRetryPrompt;
         if (captchaVlmEndpoint == null || captchaVlmEndpoint.isBlank()) captchaVlmEndpoint = fresh.captchaVlmEndpoint;
         if (captchaVlmModel == null || captchaVlmModel.isBlank()) captchaVlmModel = fresh.captchaVlmModel;
+        if (captchaVlmModelSecond == null) captchaVlmModelSecond = fresh.captchaVlmModelSecond;
         if (captchaVlmHealthUrl == null) captchaVlmHealthUrl = fresh.captchaVlmHealthUrl;
         if (captchaCaptureMode == null || captchaCaptureMode.isBlank()) captchaCaptureMode = fresh.captchaCaptureMode;
         if (captchaAnswerTemplate == null || !captchaAnswerTemplate.contains("{answer}")) {
@@ -2117,6 +2164,9 @@ public class YCBotChallengeConfig {
             replaceIfOld(f, "");
         }
         if (bossScanRadius < 3) bossScanRadius = 3;
+        if (bossMarkerBodyRadius < 0.5) bossMarkerBodyRadius = 3.0;
+        if (bossRescanMs < 1000) bossRescanMs = 1000;
+        if (bossMaxWindowRetries < 0) bossMaxWindowRetries = 0;
         if (bossStandTolerance < 0.3) bossStandTolerance = 0.3;
         if (bossWalkTimeoutMs < 5000) bossWalkTimeoutMs = 5000;
         if (bossEventStartGraceMs < 0) bossEventStartGraceMs = 0;

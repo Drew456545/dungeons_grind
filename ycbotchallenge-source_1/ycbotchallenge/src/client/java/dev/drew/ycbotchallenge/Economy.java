@@ -982,13 +982,32 @@ public final class Economy {
      * plate that names a mob, or anything else is not a candidate (9).
      */
     public static int markerRank(String typeId, boolean living, boolean hasPlate, boolean plateMatchesTarget) {
-        if (typeId == null || living) return 9;
+        if (typeId == null) return 9;
         String t = typeId.toLowerCase(java.util.Locale.ROOT);
+        // 0.9.42: the type decides first. ArmorStandEntity extends LivingEntity, so the
+        // old "living = never" short-circuit made the armor-stand line unreachable and the
+        // 2026-09-05 07:58 scan scored every stand 9 (boss_abort marker-not-hittable).
         if (t.endsWith("interaction")) return 0;
         if (t.endsWith("armor_stand")) return !hasPlate || plateMatchesTarget ? 1 : 9;
         if (t.endsWith("item_display")) return 2;
         if (t.endsWith("block_display") || t.endsWith("text_display")) return 3;
-        return 9;
+        return 9; // a living mob, an item, anything else
+    }
+
+    /**
+     * 0.9.42: the cycle split for cycle_end - bot-on minutes on the top stage (the farm for
+     * the rebirth) against the minutes on every stage below it (the climb), and the kills on
+     * the top stage. {@code stages[i]} / {@code mins[i]} / {@code kills[i]} are the cycle's
+     * stage list in order; a stage of 0 (unknown) counts as climb.
+     */
+    public static double[] cycleSplit(int[] stages, double[] mins, int[] kills, Integer top) {
+        double climb = 0, farm = 0; int farmKills = 0;
+        for (int i = 0; i < stages.length; i++) {
+            boolean isTop = top != null && stages[i] == top;
+            if (isTop) { farm += mins[i]; farmKills += kills != null && i < kills.length ? kills[i] : 0; }
+            else climb += mins[i];
+        }
+        return new double[] { climb, farm, farmKills };
     }
 
     /**

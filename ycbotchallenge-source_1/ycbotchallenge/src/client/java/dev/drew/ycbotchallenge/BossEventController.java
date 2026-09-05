@@ -9,6 +9,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
+import net.minecraft.entity.decoration.DisplayEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.hit.EntityHitResult;
@@ -96,6 +98,14 @@ public class BossEventController {
 
     private int consecutiveAborts;
     private boolean suspended;
+    // 0.9.42: retries inside one bar window, the walk to the body when no marker is in reach.
+    private boolean retryPending = false;
+    private long retryAt = 0;
+    private long windowStartedAt = 0;
+    private int windowHits = 0;
+    private int windowRetries = 0;
+    private boolean approaching = false;
+    private boolean approachTried = false;
 
     public BossEventController(YCBotChallengeConfig cfg, StatsTracker stats, UpgradeController upgrades) {
         this.cfg = cfg;
@@ -124,6 +134,7 @@ public class BossEventController {
     public void onEnable(long now, int kills) {
         suspended = false;
         consecutiveAborts = 0;
+        retryPending = false;
         seqSeen = stats.bossEventSeq;
         killedSeqSeen = stats.bossKilledUsSeq;
         startPendingSince = 0;
@@ -175,18 +186,28 @@ public class BossEventController {
             case SCAN -> {
                 if (now - lastScanAt < 500) return true;
                 if (!scan(client, combat, now)) return false;
-                beginWalk(now);
+                if (!approaching) beginWalk(now);
             }
             case WALK -> {
-                if (marker == null || marker.isRemoved()) { phase = Phase.SCAN; return true; }
-                Vec3d stand = standPoint(client);
+                if (approaching) {
+                    if (body == null || body.isRemoved()) { approaching = false; phase = Phase.SCAN; return true; }
+                } else if (marker == null || marker.isRemoved()) { phase = Phase.SCAN; return true; }
+                Vec3d stand = approaching ? approachPoint(client) : standPoint(client);
                 Vec3d p = client.player.getEntityPos();
                 double dx = stand.x - p.x, dz = stand.z - p.z;
                 double dist = Math.sqrt(dx * dx + dz * dz);
                 if (dist <= cfg.bossStandTolerance) {
                     releaseWalkKeys(client);
                     log("boss_walk", "blocks", Math.round((bestDist - dist) * 10.0) / 10.0, "ms", now - walkStartAt,
-                        "left", Math.round(dist * 10.0) / 10.0, "target", targets);
+                        "left", Math.round(dist * 10.0) / 10.0, "target", targets, "approach", approaching);
+                    if (approaching) {
+                        // 0.9.42: at the body now - the marker only shows at close range.
+                        approaching = false;
+                        approachTried = true;
+                        phase = Phase.SCAN;
+                        lastScanAt = 0;
+                        return true;
+                    }
                     beginAim(now);
                     return true;
                 }
@@ -247,7 +268,17 @@ public class BossEventController {
                     return true;
                 }
                 log("boss_aim_miss", "try", aimTry, "hit", crosshairDesc(client),
-                    "pitchOff", AIM_OFFSETS[aimTry][0], "yawOff", AIM_OFFSETS[aimTry][1]);
+                    "pitchOff", AIM_OFFSETS[aimTry][0], "yawOff", AIM_OFFSETS[aimTry][1], "aimHeight", aimHeightFrac);
+                // 0.9.42: a companion plate stand or a display in the ray (the 0.9.40 combat
+                // rule, never ported here): aim a step lower on the marker's box and look again.
+                Entity inRay = client.crosshairTarget instanceof EntityHitResult ehr ? ehr.getEntity() : null;
+                if (inRay != null && inRay != marker && (inRay instanceof ArmorStandEntity || inRay instanceof DisplayEntity)
+                    && aimHeightFrac > 0.2f) {
+                    float from = aimHeightFrac;
+                    aimHeightFrac = Math.max(0.2f, aimHeightFrac - 0.15f);
+                    log("boss_aim_lowered", "from", Math.round(from * 100.0) / 100.0, "to", Math.round(aimHeightFrac * 100.0) / 100.0,
+                        "hit", crosshairDesc(client));
+                }
                 aimTry++;
                 aimIssuedAt = 0;
                 return true;
@@ -293,6 +324,7 @@ public class BossEventController {
                     combat.pressAttack(client);
                     lastClickAt = now;
                     hits++;
+                    windowHits++;
                     if (hits == 1 || hits % Math.max(1, cfg.bossHitLogEvery) == 0) {
                         log("boss_hit", "n", hits, "count", count, "targetsHit", th, "target", targets,
                             "sinceTargetMs", now - targetAt, "dist", Math.round(client.player.distanceTo(marker) * 100.0) / 100.0);
@@ -313,10 +345,14 @@ public class BossEventController {
         int seq = stats.bossEventSeq;
         boolean fresh = seq != seqSeen;
         boolean live = stats.bossEventBarPresent || (stats.bossTitleStartAt != 0 && now - stats.bossTitleStartAt < 15_000);
-        if (!fresh || !live) {
-            if (!live) seqSeen = seq;
+        if (!live) {
+            // 0.9.42: the bar went away with a retry pending - that window is over.
+            if (retryPending) endWindow("bar-gone");
+            seqSeen = seq;
             return false;
         }
+        boolean retry = retryPending && now >= retryAt;
+        if (!fresh && !retry) return false;
         if (startPendingSince == 0) startPendingSince = now;
         String blocked = null;
         if (combat.isOnBreak()) blocked = "break";
@@ -333,7 +369,17 @@ public class BossEventController {
         seqSeen = seq;
         startPendingSince = 0;
         startVia = stats.bossEventBarPresent ? "bar" : "title";
-        eventStartedAt = now;
+        if (retry) {
+            retryPending = false;
+            eventStartedAt = windowStartedAt; // the five minutes bound the whole window
+        } else {
+            windowStartedAt = now;
+            windowHits = 0;
+            windowRetries = 0;
+            eventStartedAt = now;
+        }
+        approaching = false;
+        approachTried = false;
         hits = 0; targets = 0; rescans = 0; rescansWithoutProgress = 0; walkTimeouts = 0; aimSweeps = 0;
         lastCountSeen = stats.bossEventCount;
         countAtTarget = lastCountSeen;
@@ -345,7 +391,8 @@ public class BossEventController {
         screenOpenSince = 0;
         log("boss_seen", "via", startVia, "barTitle", stats.bossEventBarTitle, "count", stats.bossEventCount,
             "targetsHit", stats.bossTargetsHit, "cooking", combat.isCooking(), "kills", combat.kills,
-            "sinceBarMs", stats.bossEventSeenAt != 0 ? now - stats.bossEventSeenAt : null);
+            "sinceBarMs", stats.bossEventSeenAt != 0 ? now - stats.bossEventSeenAt : null,
+            "retry", retry ? windowRetries : null, "windowMs", retry ? now - windowStartedAt : null);
         combat.releaseKeys(client);
         MouseDriver.INSTANCE.cancel();
         phase = Phase.SCAN;
@@ -367,28 +414,43 @@ public class BossEventController {
         near.sort((a, b) -> Double.compare(a.getEntityPos().distanceTo(me), b.getEntityPos().distanceTo(me)));
 
         // The body: the visible cube is a display when the server built it that way, else the
-        // largest box around; the marker sits on its surface.
+        // largest box around; the marker sits on its surface. 0.9.42: the cube is a cluster of
+        // block displays (Drew's screenshots), so the block display with the most block
+        // displays within 6 blocks of it is the body, nearest first on a tie; then any
+        // display; then the largest non-living box.
         Entity bestBody = null;
         double bestVol = -1;
         Entity nearestDisplay = null;
+        Entity clusterBody = null;
+        int clusterBest = -1;
+        List<Entity> blockDisplays = new ArrayList<>();
+        for (Entity e : near) if (typeId(e).endsWith("block_display")) blockDisplays.add(e);
+        for (Entity e : blockDisplays) {
+            int n = 0;
+            for (Entity o : blockDisplays) if (o != e && centre(o).distanceTo(centre(e)) <= 6.0) n++;
+            if (n > clusterBest) { clusterBest = n; clusterBody = e; }
+        }
         for (Entity e : near) {
             String type = typeId(e);
             if (nearestDisplay == null && (type.endsWith("block_display") || type.endsWith("item_display"))) nearestDisplay = e;
             double vol = volume(e);
             if (!(e instanceof LivingEntity) && vol > bestVol) { bestVol = vol; bestBody = e; }
         }
-        body = nearestDisplay != null ? nearestDisplay : bestBody;
+        body = clusterBody != null ? clusterBody : nearestDisplay != null ? nearestDisplay : bestBody;
         bodyPos = body != null ? centre(body) : (bodyPos != null ? bodyPos : me);
+        boolean bodyKnown = body != null;
 
         List<Candidate> cands = new ArrayList<>();
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Entity e : near) {
             String type = typeId(e);
             String plate = String.join(" | ", CombatController.plateTextLines(e));
-            int rank = Economy.markerRank(type, e instanceof LivingEntity, !plate.isBlank(),
+            // 0.9.42: an armor stand is a LivingEntity to vanilla; the rank must not see it as a mob.
+            boolean livingMob = e instanceof LivingEntity && !(e instanceof ArmorStandEntity);
+            int rank = Economy.markerRank(type, livingMob, !plate.isBlank(),
                 !plate.isBlank() && stats.bossTargetNameRe != null && stats.bossTargetNameRe.matcher(plate).find());
             double dBody = e == body ? 0 : centre(e).distanceTo(bodyPos);
-            if (rows.size() < 40) {
+            if (rows.size() < 60) {
                 Map<String, Object> r = new LinkedHashMap<>();
                 r.put("type", type);
                 r.put("id", e.getId());
@@ -405,7 +467,11 @@ public class BossEventController {
                 r.put("rank", rank);
                 rows.add(r);
             }
-            if (e != body && rank < 9) cands.add(new Candidate(e, type, rank, dBody, volume(e), plate));
+            // 0.9.42: the marker sits on the body - a stand across the zone (our companions,
+            // a damage number) is not it.
+            if (e != body && rank < 9 && (!bodyKnown || dBody <= cfg.bossMarkerBodyRadius)) {
+                cands.add(new Candidate(e, type, rank, dBody, volume(e), plate));
+            }
         }
         // Best rank first; inside a rank the smallest box (the marker is small, a body-sized
         // interaction box is not), then the one closest to the body.
@@ -420,20 +486,31 @@ public class BossEventController {
             // A display is the picture, not the hitbox: something hittable must sit on it.
             Candidate hittable = null;
             for (Candidate c : cands) {
-                if (c.rank() <= 1 && centre(c.e()).distanceTo(centre(chosen.e())) <= 1.5) { hittable = c; break; }
+                if (c.rank() <= 1 && centre(c.e()).distanceTo(centre(chosen.e())) <= cfg.bossMarkerBodyRadius) { hittable = c; break; }
             }
             if (hittable != null) { chosen = hittable; via = "near-display"; }
-            else {
-                log("boss_scan", "count", near.size(), "radius", cfg.bossScanRadius, "entities", rows,
-                    "bodyPos", fmt(bodyPos), "bodyType", body != null ? typeId(body) : null, "chosen", chosen.type(), "chosenVia", "display-only");
-                abort(client, combat, "marker-not-hittable");
-                return false;
-            }
+            else chosen = null;
+        }
+        // 0.9.42: nothing hittable seen from here but the body is - the target's own entity
+        // only shows once we stand at the body (a 48-block scan lists what the client has
+        // loaded, not what it can hit). Walk there once, then look again.
+        double bodyDist = bodyKnown ? bodyPos.distanceTo(me) : -1;
+        if (chosen == null && bodyKnown && !approachTried && bodyDist > cfg.reach + 1.5) {
+            log("boss_scan", "count", near.size(), "radius", cfg.bossScanRadius, "entities", rows,
+                "bodyPos", fmt(bodyPos), "bodyType", typeId(body), "bodyDist", Math.round(bodyDist * 10.0) / 10.0,
+                "chosen", null, "chosenVia", "approach", "candidates", cands.size());
+            marker = null;
+            approaching = true;
+            beginWalk(now);
+            return true;
         }
         log("boss_scan", "count", near.size(), "radius", cfg.bossScanRadius, "entities", rows,
             "bodyPos", fmt(bodyPos), "bodyType", body != null ? typeId(body) : null,
-            "chosen", chosen != null ? chosen.type() : null, "chosenVia", via, "candidates", cands.size());
-        if (chosen == null) { abort(client, combat, "no-marker"); return false; }
+            "bodyDist", bodyKnown ? Math.round(bodyDist * 10.0) / 10.0 : null,
+            "chosen", chosen != null ? chosen.type() : null, "chosenVia", approachTried ? via + "/near-body" : via,
+            "candidates", cands.size());
+        if (chosen == null) { abort(client, combat, bodyKnown ? "marker-not-hittable" : "no-marker"); return false; }
+        approachTried = false;
         boolean same = marker != null && marker.getId() == chosen.e().getId();
         marker = chosen.e();
         markerType = chosen.type();
@@ -479,8 +556,22 @@ public class BossEventController {
         return new Vec3d(out[0], out[1], out[2]);
     }
 
+    /** The aim point on the marker: its box at aimHeightFrac (0.9.42: lowered when a stand sits in the ray). */
     private Vec3d markerAim() {
-        return marker != null ? centre(marker) : bodyPos;
+        if (marker == null) return bodyPos;
+        Box b = marker.getBoundingBox();
+        if (b == null || volume(marker) <= 1e-6) return centre(marker);
+        return new Vec3d(b.getCenter().x, b.minY + (b.maxY - b.minY) * aimHeightFrac, b.getCenter().z);
+    }
+
+    /** 0.9.42: where to stand to look at the body when no marker is known yet: reach + 1 block from it, on our side. */
+    private Vec3d approachPoint(MinecraftClient client) {
+        Vec3d p = client.player.getEntityPos();
+        double dx = p.x - bodyPos.x, dz = p.z - bodyPos.z;
+        double d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 1e-3) { dx = 1; dz = 0; d = 1; }
+        double r = Math.max(1.5, cfg.reach + 1.0);
+        return new Vec3d(bodyPos.x + dx / d * r, p.y, bodyPos.z + dz / d * r);
     }
 
     private boolean rayOnMarker(MinecraftClient client) {
@@ -553,19 +644,43 @@ public class BossEventController {
             "targets", targets, "rescans", rescans, "eventMs", now - eventStartedAt, "complete", complete,
             "markerType", markerType);
         consecutiveAborts = 0;
+        retryPending = false;
         finish(client, combat);
     }
 
     private void abort(MinecraftClient client, CombatController combat, String why) {
         long now = System.currentTimeMillis();
+        // 0.9.42: the bar is still up and the window has time left - look again in a moment
+        // instead of giving the boss up (the 07:58 window: one scan, then 290 s of nothing).
+        long windowMs = now - windowStartedAt;
+        boolean canRetry = stats.bossEventBarPresent && !"event-timeout".equals(why)
+            && windowMs + cfg.bossRescanMs + 10_000 < cfg.bossEventMaxMs
+            && windowRetries < cfg.bossMaxWindowRetries;
         log("boss_abort", "reason", why, "phase", phase.name().toLowerCase(Locale.ROOT), "hits", hits,
             "count", stats.bossEventCount, "targetsHit", stats.bossTargetsHit, "targets", targets, "rescans", rescans,
-            "eventMs", now - eventStartedAt, "markerType", markerType, "crosshair", client != null ? crosshairDesc(client) : null);
-        if (++consecutiveAborts >= Math.max(1, cfg.bossMaxConsecutiveAborts)) {
+            "eventMs", now - eventStartedAt, "windowMs", windowMs, "markerType", markerType,
+            "crosshair", client != null ? crosshairDesc(client) : null,
+            "retryInMs", canRetry ? cfg.bossRescanMs : null, "windowHits", windowHits);
+        if (canRetry) {
+            retryPending = true;
+            retryAt = now + cfg.bossRescanMs;
+            windowRetries++;
+        } else {
+            endWindow(why);
+        }
+        finish(client, combat);
+    }
+
+    /** 0.9.42: a bar window is over without a kill: one abort when nothing in it landed a hit. */
+    private void endWindow(String why) {
+        retryPending = false;
+        boolean counted = windowHits == 0;
+        if (counted && ++consecutiveAborts >= Math.max(1, cfg.bossMaxConsecutiveAborts)) {
             suspended = true;
             log("boss_suspended", "aborts", consecutiveAborts);
         }
-        finish(client, combat);
+        log("boss_window_end", "reason", why, "hits", windowHits, "retries", windowRetries,
+            "windowMs", System.currentTimeMillis() - windowStartedAt, "counted", counted, "aborts", consecutiveAborts);
     }
 
     private void finish(MinecraftClient client, CombatController combat) {

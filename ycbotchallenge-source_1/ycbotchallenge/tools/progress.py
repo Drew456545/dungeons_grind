@@ -253,7 +253,12 @@ def main():
               f" ended {ended}{closed}")
         if c.recorded:
             r = c.recorded
-            print(f"    bot recorded: onMin {r.get('onMin')} wallMin {r.get('wallMin')} toLvl14 {r.get('toLvl14OnMin')} top lvl{r.get('topStage')}")
+            extra = ""
+            if r.get("climbMin") is not None:
+                extra = (f"  climb {r.get('climbMin')}m farm {r.get('farmMin')}m ({r.get('farmKills')} kills)"
+                         f"  rebirth {r.get('rebirthCost') or '-'} vs top zone {r.get('topZonePrice') or '-'}"
+                         + (f" (x{r.get('ratio')})" if r.get('ratio') is not None else ""))
+            print(f"    bot recorded: onMin {r.get('onMin')} wallMin {r.get('wallMin')} toLvl14 {r.get('toLvl14OnMin')} top lvl{r.get('topStage')}{extra}")
         if a.stages:
             print(f"    {'stage':>6} {'on min':>7} {'wall':>7} {'kills':>5} {'swords':>6} {'peak/min':>9}")
             for s in c.stages:

@@ -90,6 +90,13 @@ public final class StateStore {
         public Double toLvl14OnMin;
         public Integer topStage;
         public List<StageEntry> stages;
+        /** 0.9.42: the climb/farm split and what the farm paid for. */
+        public Double climbMin;
+        public Double farmMin;
+        public Integer farmKills;
+        public Double rebirthCost;
+        public Double topZonePrice;
+        public Double ratio;
     }
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
