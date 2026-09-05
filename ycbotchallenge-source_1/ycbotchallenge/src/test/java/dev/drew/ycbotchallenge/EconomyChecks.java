@@ -1781,7 +1781,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 43", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 43);
+        n += eq("config version 44", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 44);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2856,7 +2856,7 @@ public final class EconomyChecks {
         double[] mins = {0.4, 1.0, 0.4, 0.9, 2.4, 0.8, 1.2, 0.8, 2.2, 6.8, 15.9, 0.1};
         int[] kills = {4, 3, 1, 4, 7, 4, 6, 5, 6, 24, 34, 0};
         double[] sp = Economy.cycleSplit(st, mins, kills, 24);
-        n += eq("climb minutes", sp[0], 16.9, 1e-9);
+        n += eq("climb minutes", sp[0], 17.0, 1e-9);
         n += eq("farm minutes", sp[1], 15.9, 1e-9);
         n += eq("farm kills", sp[2], 34.0, 1e-9);
         double[] none = Economy.cycleSplit(st, mins, kills, null);
