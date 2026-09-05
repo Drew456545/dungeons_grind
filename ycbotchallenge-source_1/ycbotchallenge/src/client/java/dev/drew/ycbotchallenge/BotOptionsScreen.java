@@ -79,7 +79,7 @@ public class BotOptionsScreen extends Screen {
             if (o.choices() != null) {
                 String cur = o.getChoice().get();
                 if (cur == null || !o.choices().contains(cur)) cur = o.choices().get(0);
-                addDrawableChild(CyclingButtonWidget.<String>builder(v -> Text.literal(v)).values(o.choices()).initially(cur)
+                addDrawableChild(CyclingButtonWidget.<String>builder(v -> Text.literal(v), cur).values(o.choices())
                     .build(x, y, BUTTON_W, BUTTON_H, Text.literal(o.label()), (button, value) -> {
                         o.setChoice().accept(value);
                         if (onChange != null) onChange.accept(o.key(), value);
