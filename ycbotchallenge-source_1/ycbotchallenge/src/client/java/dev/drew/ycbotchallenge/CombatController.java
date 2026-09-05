@@ -14,6 +14,8 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.decoration.DisplayEntity;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.text.Text;
@@ -69,6 +71,11 @@ public class CombatController {
     /** First click on the current target (0 = none yet): money landing after it credits a kill the bar never showed. */
     private long firstClickAt = 0;
     private long targetPickedAt = 0;
+    /** 0.9.37: no-connect runs on one entity (the 12.000 s re-pick loop), and the no_ray evidence counter. */
+    private int noConnectStreak = 0;
+    private int noConnectEntityId = Integer.MIN_VALUE;
+    private long lastNoRayLogAt = 0;
+    private int noRayCount = 0;
     /** While the current mob cooks: the mob we'll go for next (pre-aimed so the handoff is instant). */
     private LivingEntity nextTarget = null;
     private long nextPickedAt = 0;
@@ -659,11 +666,28 @@ public class CombatController {
             lookIssued = false;
         }
 
-        // stale target we never managed to connect on
-        if (target != null && !connected && now - targetPickedAt > 12_000) {
+        // stale target we never managed to connect on (0.9.37: a knob, logged, and never the
+        // same mob again after noConnectIgnoreAfter runs - the 05:55 log re-picked one Horse
+        // six times at exactly 12.000 s each, 72 s of clicks, until Drew toggled the bot).
+        if (target != null && !connected && now - targetPickedAt > Math.max(500, cfg.noConnectTimeoutMs)) {
+            int id = target.getId();
+            noConnectStreak = id == noConnectEntityId ? noConnectStreak + 1 : 1;
+            noConnectEntityId = id;
+            boolean ignore = noConnectStreak >= Math.max(1, cfg.noConnectIgnoreAfter);
+            if (ignore) ignoredIds.add(id);
+            if (logger != null) {
+                logger.log("target_abandoned", "reason", "no-connect", "mob", targetMob, "rarity", targetRarity,
+                    "level", targetLevel, "afterMs", now - targetPickedAt, "clicks", clicksThisTarget,
+                    "streak", noConnectStreak, "ignored", ignore, "reach", Math.round(effectiveReach() * 100.0) / 100.0,
+                    "dist", client.player != null ? Math.round(client.player.distanceTo(target) * 100.0) / 100.0 : null,
+                    "aimBusy", MouseDriver.INSTANCE.isBusy());
+            }
+            // Stand closer next time: reach is vanilla's exact range with no margin.
+            targetReach = Math.max(1.6, effectiveReach() - 0.5);
             target = null;
             clicksThisTarget = 0;
             lookIssued = false;
+            MouseDriver.INSTANCE.cancel();
         }
 
         // stage changed under us: current (unconnected) target is no longer the dominant mob type
@@ -761,7 +785,11 @@ public class CombatController {
 
         // Anticipatory swing spam on the way in: 2-3 cps with a wandering vigor.
         // Mostly whiffs at air — that's exactly what a player closing in looks like.
+        // 0.9.37: on the way in only, and only while roughly facing the mob - standing inside
+        // reach with the camera 65 degrees off it was 72 s of visible spam.
         if (cfg.approachClickCpsMax > 0 && dist <= cfg.approachClickMaxDist
+            && Economy.approachClickAllowed(dist, effectiveReach(),
+                MouseDriver.aimErrorDeg(client, target, aimHeightFrac), cfg.approachClickMaxAimDeg)
             && now - lastClickAt >= approachIntervalMs()) {
             pressAttack(client);
             lastClickAt = now;
@@ -798,7 +826,26 @@ public class CombatController {
             tapTol *= 2.5; // sloppy click — mostly still misses, which is the point
             if (logger != null) logger.log("misclick", "aimErr", Math.round(aimErr * 10.0) / 10.0);
         }
+        // 0.9.37: the tap is vanilla's own raycast, so the crosshair must actually be on the
+        // mob - the aim-point error can read 0.4 degrees while the ray hits a text display,
+        // the ground or air (a Goat: 20 clicks in 31 s with zero misclick rows). When the
+        // aim is in tolerance and the ray disagrees, no_ray says what it hit instead.
+        boolean rayOk = client.crosshairTarget instanceof EntityHitResult ehr && ehr.getEntity() == target;
+        if (aimErr <= tapTol && !rayOk && !MouseDriver.INSTANCE.isBusy()) {
+            noRayCount++;
+            if (logger != null && now - lastNoRayLogAt > 5_000) {
+                lastNoRayLogAt = now;
+                HitResult hr = client.crosshairTarget;
+                String hit = hr == null ? "none"
+                    : hr.getType() == HitResult.Type.ENTITY ? "entity:" + typeName(((EntityHitResult) hr).getEntity())
+                    : hr.getType() == HitResult.Type.BLOCK ? "block" : "miss";
+                logger.log("no_ray", "mob", targetMob, "aimErr", Math.round(aimErr * 10.0) / 10.0, "hit", hit,
+                    "dist", Math.round(dist * 100.0) / 100.0, "reach", Math.round(effectiveReach() * 100.0) / 100.0,
+                    "count", noRayCount, "clicks", clicksThisTarget);
+            }
+        }
         if (aimErr <= tapTol
+            && rayOk
             && !MouseDriver.INSTANCE.isBusy()
             && now - lastClickAt >= clickIntervalMs()
             && vanillaAttackReady(client)) {
@@ -1394,7 +1441,10 @@ public class CombatController {
             Plate p = parsePlate(l);
             if (p != null && (p.level() != null || p.rarity() != null)) return l;
         }
-        return lines.isEmpty() ? null : lines.get(0);
+        // 0.9.37: the fallback refuses the server's floating damage numbers ("✧293.89QQ✧
+        // Critical", "+4.77T Money") that share the mob's box - a name no boss bar matches.
+        String first = lines.isEmpty() ? null : lines.get(0);
+        return Economy.hologramNameUsable(first) ? first : null;
     }
 
     /** Every plate line, joined, for logs and notices; null when the mob has none. */

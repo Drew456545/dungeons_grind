@@ -158,10 +158,27 @@ public final class Economy {
      * (early-rebirth snowball: a 60s hold costs a 10× balance swing).
      */
     public static int effectiveCooldownMs(int capMs, int floorMs, Double bal, Double lastPrice, double relaxMult) {
+        return effectiveCooldownMs(capMs, floorMs, bal, lastPrice, relaxMult, false);
+    }
+
+    /**
+     * 0.9.37: a price the server itself just quoted ("You need 22.39O Money") is not a
+     * guess to be rate-limited - a person told the exact number types again the moment it
+     * is banked. Four /zone max fails in the 2026-09-04 climbs each cost 71-131 s under the
+     * 60 s backstop. {@code serverQuotedRecently} collapses the cap to the floor.
+     */
+    public static int effectiveCooldownMs(int capMs, int floorMs, Double bal, Double lastPrice, double relaxMult,
+                                          boolean serverQuotedRecently) {
         int cap = Math.max(0, capMs);
         int floor = Math.max(0, Math.min(floorMs, cap));
+        if (serverQuotedRecently) return floor;
         if (relaxMult <= 0 || bal == null || lastPrice == null || lastPrice <= 0) return cap;
         return bal >= relaxMult * lastPrice ? floor : cap;
+    }
+
+    /** The early-rebirth snowball: the balance dwarfs the price, so nobody sits on the buy for 15 s. */
+    public static boolean snowball(Double bal, Double price, double relaxMult) {
+        return relaxMult > 0 && bal != null && price != null && price > 0 && bal >= relaxMult * price;
     }
 
     /**
@@ -564,17 +581,32 @@ public final class Economy {
      */
     public static GateResult zoneGate(Double medianMs, int stageKills, Double stageMaxTtkMs,
                                       double cookElapsedMs, int patienceMs, Double predictedMs) {
+        return zoneGate(medianMs, stageKills, stageMaxTtkMs, cookElapsedMs, patienceMs, predictedMs, null, 0);
+    }
+
+    /**
+     * 0.9.37: {@code freshPredictedMs} is the DPS prediction of the FIRST fight on a fresh
+     * stage (no kill yet, younger than predictedTtkMaxAgeMs). When it exceeds the patience
+     * by {@code freshMult} the stage is HARD "predicted-fresh" seconds after the tag instead
+     * of when the cook outruns the patience: in the five 2026-09-04 climbs the sword was one
+     * tier short on every fresh stage and the verdict arrived with the 30 s fallback eval
+     * (641 s of pure waiting). First kill only, fresh only, a large margin only - the 0.9.23
+     * stale-prediction bug (a two-minute-old chicken prediction pinning the gate) cannot
+     * return through this arm. Null / mult 0 = the 0.9.33 gate exactly.
+     */
+    public static GateResult zoneGate(Double medianMs, int stageKills, Double stageMaxTtkMs,
+                                      double cookElapsedMs, int patienceMs, Double predictedMs,
+                                      Double freshPredictedMs, double freshMult) {
         if (patienceMs <= 0) return new GateResult(Gate.OPEN, "none");
         if (cookElapsedMs > patienceMs) return new GateResult(Gate.HARD, "cook");
-        if (stageKills >= 3 && medianMs != null && medianMs > 0) {
+        if (stageKills >= 3 && medianMs != null && medianMs > 0)
             return new GateResult(medianMs > patienceMs ? Gate.HARD : Gate.OPEN, "median");
-        }
-        if (stageKills >= 1 && stageMaxTtkMs != null && stageMaxTtkMs > patienceMs) {
+        if (stageKills >= 1 && stageMaxTtkMs != null && stageMaxTtkMs > patienceMs)
             return new GateResult(Gate.HARD, "kill");
-        }
-        if (predictedMs != null && predictedMs > 0) {
+        if (stageKills == 0 && freshMult > 0 && freshPredictedMs != null && freshPredictedMs > patienceMs * freshMult)
+            return new GateResult(Gate.HARD, "predicted-fresh");
+        if (predictedMs != null && predictedMs > 0)
             return new GateResult(predictedMs > patienceMs ? Gate.HARD : Gate.OPEN, "predicted");
-        }
         return new GateResult(Gate.UNKNOWN, "none");
     }
 
@@ -664,6 +696,11 @@ public final class Economy {
         public Integer companionStage;
         /** 0.9.36: the stage eggs were last bought at (persisted); a lower stage is never bought again. */
         public Integer companionLastBoughtStage;
+        /** 0.9.37: the last bought visit on this stage changed nothing in the equipped set. */
+        public boolean companionStageSaturated;
+        /** 0.9.37: the first fight of a fresh stage, predicted (null after the first kill or when stale). */
+        public Double freshPredictedTtkMs;
+        public double freshPredictedMult = 3.0;
         public int companionVisitsThisStage;
         public int companionMaxVisitsPerStage = 2;
         /** 0.9.36: the income figure is this stage's own (enough kills, or enough time, on it). */
@@ -687,7 +724,8 @@ public final class Economy {
      * reason so the log, the HUD and the tests share one vocabulary.
      */
     public static Decision decide(Inputs in) {
-        GateResult g = zoneGate(in.medianTtkMs, in.stageKills, in.stageMaxTtkMs, in.cookElapsedMs, in.patienceMs, in.predictedTtkMs);
+        GateResult g = zoneGate(in.medianTtkMs, in.stageKills, in.stageMaxTtkMs, in.cookElapsedMs, in.patienceMs, in.predictedTtkMs,
+            in.freshPredictedTtkMs, in.freshPredictedMult);
         Double ttk = in.medianTtkMs != null && in.medianTtkMs > 0 ? in.medianTtkMs : null;
         Double zoneGap = in.zoneMaxed ? null : zoneGapEstimate(in.zoneTarget, in.zoneFloor, in.zoneGrowth, in.bal);
         String gapVia = in.zoneMaxed ? null : zoneGapVia(in.zoneTarget, in.zoneFloor);
@@ -810,6 +848,91 @@ public final class Economy {
     }
 
     /**
+     * 0.9.37: which gap the eggs are measured against. The zone counts only while it is the
+     * nearer milestone (its gap under the rebirth's); once the rebirth comes first - or zone
+     * buys have stopped - the eggs can only be "sooner" to the rebirth. 2026-09-05 00:05:21:
+     * a 387N batch (92 % of the balance, rebirth 63 min away) passed on the stage-18 zone gap
+     * of ~5,800N, a milestone that was never going to come before the rebirth.
+     */
+    public static String companionMilestone(Double zoneGap, Double rebirthGap, boolean zoneStopped) {
+        boolean zoneKnown = !zoneStopped && zoneGap != null && zoneGap > 0;
+        boolean rebirthKnown = rebirthGap != null && rebirthGap > 0;
+        if (zoneKnown && (!rebirthKnown || zoneGap < rebirthGap)) return "zone";
+        if (rebirthKnown) return "rebirth";
+        return zoneKnown ? "zone" : null;
+    }
+
+    /**
+     * 0.9.37: a hand purchase at the egg. A sidebar drop that is 1, 3 or 10 eggs at this
+     * stage's price (within {@code tolPct}) while no visit of ours is running is Drew buying
+     * by hand - 2026-09-05 00:06:13, 422.58N -> 35.61N = exactly 3 x 128.99N, and the bot
+     * never knew. Returns the egg count, or null.
+     */
+    public static Integer companionObservedCount(Double drop, Double perEgg, double tolPct) {
+        if (drop == null || drop <= 0 || perEgg == null || perEgg <= 0) return null;
+        double tol = Math.max(0, tolPct) / 100.0;
+        for (int k : new int[]{1, 3, 10}) {
+            double want = k * perEgg;
+            if (Math.abs(drop - want) <= want * tol) return k;
+        }
+        return null;
+    }
+
+    /**
+     * 0.9.37: does a zone signal open a new stage record? A mob respawn on the same stage
+     * ("All mobs have been respawned in your zone") is not a new stage - it split lvl16 and
+     * lvl18 into two records each in the 23:18 log, one of them with zero kills. A teleport,
+     * a sidebar zone row, a rebirth or a boss-bar level that differs from the record's do.
+     */
+    public static boolean stageRecordRolls(String via, Integer recordStage, Integer bossLevel) {
+        if (via == null) return true;
+        if ("respawn-broadcast".equals(via)) return recordStage != null && bossLevel != null && !recordStage.equals(bossLevel);
+        if ("bossbar-level".equals(via)) return recordStage == null || bossLevel == null || !recordStage.equals(bossLevel);
+        return true;
+    }
+
+    /** 0.9.37: bot-on minutes of the stages before the first one at or above {@code target}; null when never reached. */
+    public static Double minutesToStage(int[] stages, double[] onMin, int target) {
+        if (stages == null || onMin == null || stages.length != onMin.length) return null;
+        double sum = 0;
+        for (int i = 0; i < stages.length; i++) {
+            if (stages[i] >= target) return sum;
+            sum += onMin[i];
+        }
+        return null;
+    }
+
+    /**
+     * 0.9.37: a hologram line the mob can be named after. The server's floating damage
+     * numbers ("✧293.89QQ✧ Critical", "+4.77T Money") sit inside the nameplate box and
+     * became targetMob 100+ times in the 2026-09-04 logs - a name no boss bar ever matches,
+     * so the click loop ran to its timeout every time. A usable line starts with a letter
+     * or a bracket, never a digit or a damage glyph.
+     */
+    public static boolean hologramNameUsable(String line) {
+        if (line == null) return false;
+        String s = line.strip();
+        if (s.isEmpty()) return false;
+        char c = s.charAt(0);
+        if (Character.isDigit(c) || c == '+' || c == '-' || c == '\u2727' || c == '\u27E1' || c == '$') return false;
+        return Character.isLetter(c) || c == '[';
+    }
+
+    /**
+     * 0.9.37: the approach swing spam is for closing in only. Standing inside reach and
+     * facing 65 degrees away it produced 72 s of clicks on a Horse nothing could hit.
+     */
+    public static boolean approachClickAllowed(double dist, double reach, double aimErrDeg, double maxAimDeg) {
+        if (dist <= reach) return false;
+        return maxAimDeg <= 0 || aimErrDeg <= maxAimDeg;
+    }
+
+    /** 0.9.37: an aim path that never finished (a screen opened, the cursor unlocked) is dead after its duration plus a grace. */
+    public static boolean pathExpired(long startMs, long durationMs, long now, long graceMs) {
+        return startMs > 0 && now - startMs > Math.max(0, durationMs) + Math.max(0, graceMs);
+    }
+
+    /**
      * The companion post-pass (0.9.35, rewritten 0.9.36). Runs only when {@link #decideUpgrades}
      * is holding, so an egg batch can never delay a stage or a sword the bot was about to buy.
      *
@@ -852,6 +975,10 @@ public final class Economy {
         if (batch == null || batch <= 0) return base.withEggs("no-price");
         if (in.companionStage != null && in.companionLastBoughtStage != null
             && in.companionStage < in.companionLastBoughtStage) return base.withEggs("below-owned");
+        // 0.9.37: the last batch here changed nothing in the equipped set (visit 2 on lvl16,
+        // 2026-09-04: 3 eggs, same four equipped, measured 1.17x) - this stage's egg pool is
+        // spent until a higher stage's eggs or a fusion move the set.
+        if (in.companionStageSaturated) return base.withEggs("saturated");
         if (in.companionMaxVisitsPerStage > 0 && in.companionVisitsThisStage >= in.companionMaxVisitsPerStage) {
             return base.withEggs("repeat");
         }
@@ -859,8 +986,9 @@ public final class Economy {
 
         double gc = in.companionGain;
         String via = in.companionGainVia;
-        Double zoneMilestone = in.zoneMaxed || in.companionZoneStopped ? null : zoneGap;
         Double rebirthMilestone = in.rebirthTarget != null ? in.rebirthTarget - in.bal : null;
+        String milestone = companionMilestone(zoneGap, rebirthMilestone, in.zoneMaxed || in.companionZoneStopped);
+        Double zoneMilestone = "zone".equals(milestone) ? zoneGap : null;
         if (companionSoonerTo(batch, zoneMilestone, gc) || companionSoonerTo(batch, rebirthMilestone, gc)) {
             return base.with(Decision.BUY, Decision.KIND_COMPANION, "companion-sooner", gc, via, null);
         }

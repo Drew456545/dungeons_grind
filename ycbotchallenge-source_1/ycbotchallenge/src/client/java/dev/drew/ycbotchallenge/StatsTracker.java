@@ -158,7 +158,51 @@ public class StatsTracker {
             "zoneFloor", r.zoneFloorAtExit != null ? Amounts.format(r.zoneFloorAtExit) : null);
         // A stage with kills is worth comparing against; a teleport-through stage is not.
         if (r.kills > 0 || r.moneyEarned > 0) previousStage = r;
+        // 0.9.37: the cycle's stage list, persisted so a restart mid-cycle keeps it.
+        StateStore.StageEntry se = new StateStore.StageEntry();
+        se.stage = r.stage;
+        se.onMin = Math.round(r.onMs / 6000.0) / 10.0;
+        se.wallMin = Math.round((now - r.enteredAt) / 6000.0) / 10.0;
+        se.kills = r.kills;
+        se.swordBuys = r.swordBuys;
+        se.moneyEarned = r.moneyEarned > 0 ? r.moneyEarned : null;
+        se.peakPerMin = r.peakPerMin;
+        se.medianTtkMs = r.medianTtkAtExit;
+        if (r.onMs >= 1000 || r.kills > 0) cycleStages.add(se);
+        markStateDirty();
         currentStage = null;
+    }
+
+    /** 0.9.37: the rebirth in progress, stage by stage, and the finished cycles (last 30). */
+    private final List<StateStore.StageEntry> cycleStages = new ArrayList<>();
+    private final List<StateStore.CycleEntry> cycleHistory = new ArrayList<>();
+
+    public List<StateStore.CycleEntry> cycleHistory() { return cycleHistory; }
+
+    /** The live cycle clock for the HUD: "cycle 47.9m (last 60.3m, lvl17)". */
+    public String hudCycleLine() {
+        StringBuilder sb = new StringBuilder("cycle ").append(Math.round(cycleOnMs / 6000.0) / 10.0).append("m");
+        if (!cycleHistory.isEmpty()) {
+            StateStore.CycleEntry last = cycleHistory.get(cycleHistory.size() - 1);
+            sb.append(" (last ").append(last.onMin).append("m");
+            if (last.topStage != null) sb.append(", lvl").append(last.topStage);
+            sb.append(")");
+        }
+        return sb.toString();
+    }
+
+    /** The last three cycles for the options screen: "rb12 58.3m · rb13 60.3m · rb14 47.9m". */
+    public String cycleHistoryLine() {
+        if (cycleHistory.isEmpty()) return "no cycle measured yet";
+        StringBuilder sb = new StringBuilder();
+        int from = Math.max(0, cycleHistory.size() - 3);
+        for (int i = from; i < cycleHistory.size(); i++) {
+            StateStore.CycleEntry c = cycleHistory.get(i);
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append("rb").append(c.rebirths).append(" ").append(c.onMin).append("m");
+            if (c.toLvl14OnMin != null) sb.append(" (14 in ").append(c.toLvl14OnMin).append(")");
+        }
+        return sb.toString();
     }
 
     private void openStageRecord() {
@@ -186,13 +230,40 @@ public class StatsTracker {
 
     /** A visit ended (or was written off): count it, remember the stage when something was bought. */
     public void noteCompanionVisit(Integer stage, boolean bought) {
+        noteCompanionVisit(stage, bought, true);
+    }
+
+    /**
+     * 0.9.37: {@code equipChanged} says whether Equip Best moved anything after the buy. A
+     * bought visit that changed nothing saturates the stage - its egg pool cannot improve
+     * the equipped set - until a visit there changes the set again or a higher stage is
+     * bought (visit 2 on lvl16, 2026-09-04: 3 eggs, same four companions, 1.17x measured).
+     */
+    public void noteCompanionVisit(Integer stage, boolean bought, boolean equipChanged) {
         if (companionVisitsThisRebirth() == 0 && companionVisits != 0) companionVisits = 0;
         companionVisits++;
         companionVisitsAtRebirths = rebirths;
         noteCompanionStageVisit(stage);
-        if (bought && stage != null) companionLastBoughtStage = stage;
+        if (bought && stage != null) {
+            if (companionLastBoughtStage == null || stage > companionLastBoughtStage) {
+                companionLastBoughtStage = stage;
+                if (companionSaturatedStage != null && companionSaturatedStage < stage) companionSaturatedStage = null;
+            }
+            if (!equipChanged) companionSaturatedStage = stage;
+            else if (stage.equals(companionSaturatedStage)) companionSaturatedStage = null;
+        }
         markStateDirty();
     }
+
+    /** 0.9.37: the stage whose last bought visit changed nothing (persisted), or null. */
+    public Integer companionSaturatedStage = null;
+
+    public boolean companionStageSaturated(Integer stage) {
+        return stage != null && stage.equals(companionSaturatedStage);
+    }
+
+    /** 0.9.37: set by CompanionController every tick - a sidebar drop during a visit is ours, not a hand purchase. */
+    public volatile boolean companionVisitActive = false;
 
     /** The true per-egg price seen at a stage (sidebar delta of an open), kept for the next visit's first pick. */
     public void noteCompanionEggPrice(Integer stage, Double price) {
@@ -416,6 +487,15 @@ public class StatsTracker {
     public volatile int giveawaysWon = 0;
     /** Bumped on each of our own wins; the controller types a reply on the seq. */
     public volatile int giveawayWonSeq = 0;
+    // 0.9.37: GG waves and perk pulls. The controller replies on the seq.
+    private final List<Pattern> ggWaveRes = new ArrayList<>();
+    private final List<Pattern> ggPerkRes = new ArrayList<>();
+    public volatile int ggSeq = 0;
+    public volatile long ggSeenAt = 0;
+    public volatile String ggKind = null;
+    public volatile String ggWho = null;
+    public volatile String ggWhat = null;
+    private long ggBlockUntil = 0;
 
     /** Rolling per-kill durations (tag -> death), ms. */
     public final ArrayDeque<Long> killDurations = new ArrayDeque<>();
@@ -443,6 +523,8 @@ public class StatsTracker {
             balanceRes.add(Pattern.compile(spec.substring(i + 1), Pattern.CASE_INSENSITIVE));
         }
         for (String p : cfg.ascensionChatPatterns) ascensionRes.add(compileLoose(p));
+        if (cfg.ggWavePatterns != null) for (String p : cfg.ggWavePatterns) ggWaveRes.add(compileLoose(p));
+        if (cfg.ggPerkPatterns != null) for (String p : cfg.ggPerkPatterns) ggPerkRes.add(compileLoose(p));
         for (String p : cfg.prestigeChatPatterns) prestigeRes.add(compileLoose(p));
         for (String p : cfg.captchaChatPatterns) captchaRes.add(compileLoose(p));
         if (cfg.captchaChatHintPatterns != null) {
@@ -753,6 +835,10 @@ public class StatsTracker {
         if (swordGrowthLearned == null) swordGrowthLearned = e.swordGrowth;
         if (zoneGrowthLearned == null) zoneGrowthLearned = e.zoneGrowth;
         if (lastCycleOnMin == null) lastCycleOnMin = e.lastCycleOnMin;
+        if (companionSaturatedStage == null) companionSaturatedStage = e.companionSaturatedStage;
+        if (cycleHistory.isEmpty() && e.cycleHistory != null) cycleHistory.addAll(e.cycleHistory);
+        if (cycleStages.isEmpty() && e.cycleStages != null
+            && (rebirths == null || e.cycleAtRebirths == null || rebirths.equals(e.cycleAtRebirths))) cycleStages.addAll(e.cycleStages);
         if (cycleAtRebirths == null && e.cycleAtRebirths != null) {
             cycleAtRebirths = e.cycleAtRebirths;
             // The running clock continues only for the rebirth it was counting.
@@ -775,7 +861,8 @@ public class StatsTracker {
             "companionLastBoughtStage", companionLastBoughtStage, "companionVisits", companionVisits,
             "companionVisitsAtRebirths", companionVisitsAtRebirths, "companionEggPrices", companionEggPriceByStage.size(),
             "companionGain", companionGainLearned, "companionVisitsByStage", companionVisitsByStage.size(),
-            "lastCycleOnMin", lastCycleOnMin, "cycleOnMin", Math.round(cycleOnMs / 6000.0) / 10.0, "cycleAtRebirths", cycleAtRebirths);
+            "lastCycleOnMin", lastCycleOnMin, "cycleOnMin", Math.round(cycleOnMs / 6000.0) / 10.0, "cycleAtRebirths", cycleAtRebirths,
+            "companionSaturatedStage", companionSaturatedStage, "cycleStages", cycleStages.size(), "cycleHistory", cycleHistory.size());
     }
 
     private static String fmt(Double v) { return v != null ? Amounts.format(v) : null; }
@@ -812,6 +899,9 @@ public class StatsTracker {
         e.lastCycleOnMin = lastCycleOnMin;
         e.cycleOnMs = cycleOnMs;
         e.cycleAtRebirths = cycleAtRebirths != null ? cycleAtRebirths : rebirths;
+        e.companionSaturatedStage = companionSaturatedStage;
+        e.cycleStages = cycleStages.isEmpty() ? null : new ArrayList<>(cycleStages);
+        e.cycleHistory = cycleHistory.isEmpty() ? null : new ArrayList<>(cycleHistory);
         stateStore.put(stateUser, e);
         log("state_saved", "user", stateUser);
     }
@@ -1112,6 +1202,20 @@ public class StatsTracker {
                 lastMoneyUpAt = nowMs;
                 if (currentStage != null) currentStage.moneyEarned += value - prev;
             }
+            // 0.9.37: a hand purchase at the egg. Not ours (no visit running, no upgrade just
+            // sent), not a rebirth collapse, and exactly 1, 3 or 10 eggs at this stage's price.
+            if (prev != null && value < prev - 1e-6 && !companionVisitActive && bossLevel != null
+                && nowMs - lastSpendAt > Math.max(0, cfg.upgradeSpendSettleMs) && nowMs - lastRebirthAt > 15_000
+                && value > prev * 0.02) {
+                Double perEgg = companionEggPriceEstimate(bossLevel);
+                Integer k = Economy.companionObservedCount(prev - value, perEgg, cfg.companionObservedTolerancePct);
+                if (k != null) {
+                    log("companion_observed", "stage", bossLevel, "drop", Amounts.format(prev - value), "eggs", k,
+                        "perEgg", Amounts.format(perEgg), "bot", botActive.getAsBoolean() ? "on" : "off",
+                        "lastBoughtStage", companionLastBoughtStage);
+                    noteCompanionVisit(bossLevel, true, true);
+                }
+            }
             // Money collapsing to ~zero while we didn't just buy anything = a rebirth
             // wiped the balance (the sidebar rebirth counter is the primary signal;
             // this covers boards where that row isn't always rendered). A collapse
@@ -1245,10 +1349,32 @@ public class StatsTracker {
         double onMin = cycleOnMs / 60_000.0;
         boolean measured = onMin >= 5.0;
         if (measured) lastCycleOnMin = Math.round(onMin * 10.0) / 10.0;
-        log("cycle_end", "rebirths", rebirthsNow, "onMin", Math.round(onMin * 10.0) / 10.0,
-            "wallMin", wallMs != null ? Math.round(wallMs / 6000.0) / 10.0 : null,
+        int[] stages = new int[cycleStages.size()];
+        double[] mins = new double[cycleStages.size()];
+        List<String> stageLines = new ArrayList<>();
+        for (int i = 0; i < cycleStages.size(); i++) {
+            StateStore.StageEntry s = cycleStages.get(i);
+            stages[i] = s.stage != null ? s.stage : 0;
+            mins[i] = s.onMin;
+            stageLines.add("lvl" + s.stage + " " + s.onMin + "m " + s.kills + "k " + s.swordBuys + "sw");
+        }
+        Double to14 = Economy.minutesToStage(stages, mins, 14);
+        StateStore.CycleEntry c = new StateStore.CycleEntry();
+        c.rebirths = rebirthsNow - 1;
+        c.endedAt = System.currentTimeMillis();
+        c.onMin = Math.round(onMin * 10.0) / 10.0;
+        c.wallMin = wallMs != null ? Math.round(wallMs / 6000.0) / 10.0 : null;
+        c.toLvl14OnMin = to14 != null ? Math.round(to14 * 10.0) / 10.0 : null;
+        c.topStage = topStageThisCycle;
+        c.stages = new ArrayList<>(cycleStages);
+        log("cycle_end", "rebirths", rebirthsNow, "onMin", c.onMin, "wallMin", c.wallMin,
             "measured", measured, "stages", stagesThisCycle, "topStage", topStageThisCycle,
-            "lastCycleOnMin", lastCycleOnMin);
+            "toLvl14OnMin", c.toLvl14OnMin, "stageList", stageLines, "lastCycleOnMin", lastCycleOnMin);
+        if (measured || !cycleStages.isEmpty()) {
+            cycleHistory.add(c);
+            while (cycleHistory.size() > 30) cycleHistory.remove(0);
+        }
+        cycleStages.clear();
         cycleOnMs = 0;
         cycleAtRebirths = rebirthsNow;
         stagesThisCycle = 0;
@@ -1540,12 +1666,14 @@ public class StatsTracker {
             return;
         }
         lastZoneChangeAt = now;
-        closeStageRecord(via);
+        // 0.9.37: a mob respawn on the same stage keeps the stage record open.
+        boolean rolls = Economy.stageRecordRolls(via, currentStage != null ? currentStage.stage : null, bossLevel);
+        if (rolls) closeStageRecord(via);
         zoneChangeSeq++;
         swordBuysThisZone = 0;
         resetTtkWindow(via);
-        log("zone_change", "via", via, "zone", zone);
-        openStageRecord();
+        log("zone_change", "via", via, "zone", zone, "stageRecord", rolls ? "new" : "kept");
+        if (rolls) openStageRecord();
     }
 
     /** Live boss bars (never null). Safe to call every tick. */
@@ -1674,10 +1802,57 @@ public class StatsTracker {
         log("giveaway_seen", "seq", giveawaySeq, "prize", giveawayPrize, "raw", lines);
     }
 
+    /**
+     * 0.9.37: the server's congratulation rituals. A GG wave is a seven-line block with no
+     * player separator ("████████ GG WAVE ACTIVATED!" / "Thank you NAME for" / "They
+     * purchased ITEM."); a perk pull is one server line that DOES carry the » separator
+     * ("EnchantedMC » NAME has just pulled Universal Perk 5 on their Sword!"), printed twice
+     * in the same millisecond, so it is matched here before any player-line rejection and
+     * de-duplicated on time. Players' own replies ("NAME: !GG!", "... » gg") match neither.
+     */
+    private void onGgLine(String text, long now) {
+        if (!cfg.ggEnabled) return;
+        if (ggBlockUntil > now && "wave".equals(ggKind)) {
+            String who = ChatClassifier.ggWho(text);
+            String what = ChatClassifier.ggWhat(text);
+            if (who != null) ggWho = who;
+            if (what != null) ggWhat = what;
+            if (who != null || what != null) return;
+        }
+        if (!ChatClassifier.isPlayerOrBroadcast(text)) {
+            for (Pattern p : ggWaveRes) {
+                if (p.matcher(text).find()) {
+                    if (now - ggSeenAt < 5_000 && "wave".equals(ggKind)) return;
+                    ggSeq++;
+                    ggKind = "wave";
+                    ggSeenAt = now;
+                    ggWho = null;
+                    ggWhat = null;
+                    ggBlockUntil = now + Math.max(0, cfg.ggWaveBlockMs);
+                    log("gg_seen", "kind", "wave", "seq", ggSeq, "raw", text);
+                    return;
+                }
+            }
+        }
+        for (Pattern p : ggPerkRes) {
+            if (p.matcher(text).find()) {
+                if (now - ggSeenAt < 1_500 && "perk".equals(ggKind)) return; // the doubled line
+                ggSeq++;
+                ggKind = "perk";
+                ggSeenAt = now;
+                ggWho = ChatClassifier.perkWho(text);
+                ggWhat = ChatClassifier.perkWhat(text);
+                log("gg_seen", "kind", "perk", "seq", ggSeq, "who", ggWho, "what", ggWhat, "raw", text);
+                return;
+            }
+        }
+    }
+
     private void onChatLine(String text, boolean overlay) {
         if (text.isEmpty()) return;
         long now = System.currentTimeMillis();
         boolean ours = text.startsWith("[YCBotChallenge]");
+        if (!overlay && !ours) onGgLine(text, now);
         // Action-bar text is never the captcha prompt (and repeats every tick).
         if (!overlay && !ours) {
             boolean eligible = ChatClassifier.captchaLineEligible(text, overlay);

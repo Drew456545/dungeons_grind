@@ -71,6 +71,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         // 0.9.35: each needs the other — the economy prices the batch, the controller says
         // whether a visit can actually run.
         upgrades.attachCompanions(companions);
+        enchants.attachUpgrades(upgrades);
         companions.setEggStore(new EggStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-eggs.json")));
         transcend = new TranscendController(config, enchants.lore());
         MouseDriver.INSTANCE.configure(config, null);
@@ -209,10 +210,16 @@ public class YCBotChallengeClient implements ClientModInitializer {
         boolean ownGui = handled && (RebirthScreens.isRebirthGui(screenTitle) || enchants.isOurGui(client)
             || rebirthUpgrades.isOurGui(client) || companions.isOurGui(client));
         if (ownGui && config.strayGuiCloseMs > 0 && nowGui - guiSeenAt >= config.strayGuiCloseMs) {
-            if (logger != null) logger.log("stray_gui_close", "title", screenTitle, "ageMs", nowGui - guiSeenAt);
+            // 0.9.37: name the screen's items so the log says which menu was left open, and
+            // drop any aim path - one issued as the screen opened never completes and used to
+            // latch the camera for the rest of the target (72 s of clicks at a Horse).
+            java.util.List<String> names = new java.util.ArrayList<>();
+            for (GuiHuman.Item it : GuiHuman.items(client)) if (names.size() < 12 && it.name() != null && !it.name().isBlank()) names.add(it.name());
+            if (logger != null) logger.log("stray_gui_close", "title", screenTitle, "ageMs", nowGui - guiSeenAt, "items", names);
             EnchantScreens.closeGui(client);
             guiSeenAt = 0;
             combat.releaseKeys(client);
+            MouseDriver.INSTANCE.cancel();
             return;
         }
         if (ownGui || (handled && nowGui - guiSeenAt < config.guiRecognizeGraceMs)) {
@@ -277,7 +284,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         List<BotOptionsScreen.Option> opts = new ArrayList<>();
         // 0.9.33: each toggle shows what its module is doing right now (the HUD module row is off by default).
         opts.add(new BotOptionsScreen.Option("serverAutoRebirth", "Server auto-rebirth", () -> config.serverAutoRebirth, v -> config.serverAutoRebirth = v,
-            () -> { String r = upgrades.hudRebirthLine(); return r != null ? "rebirth " + r : "rebirth cost unknown"; }));
+            () -> { String r = upgrades.hudRebirthLine(); return (r != null ? "rebirth " + r : "rebirth cost unknown") + " · " + stats.cycleHistoryLine(); }));
         opts.add(new BotOptionsScreen.Option("upgradesEnabled", "Sword / zone buys", () -> config.upgradesEnabled, v -> config.upgradesEnabled = v,
             () -> upgrades.hudPlanLine()));
         opts.add(new BotOptionsScreen.Option("rebirthHorizonEnabled", "Rebirth horizon rule", () -> config.rebirthHorizonEnabled, v -> config.rebirthHorizonEnabled = v,
@@ -294,6 +301,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("giveawaysEnabled", "Join giveaways", () -> config.giveawaysEnabled, v -> config.giveawaysEnabled = v,
             () -> "joined " + stats.giveawaysJoined + " · won " + stats.giveawaysWon));
         opts.add(new BotOptionsScreen.Option("giveawayWinReplyEnabled", "Giveaway win reply", () -> config.giveawayWinReplyEnabled, v -> config.giveawayWinReplyEnabled = v));
+        opts.add(new BotOptionsScreen.Option("ggEnabled", "GG replies", () -> config.ggEnabled, v -> config.ggEnabled = v,
+            () -> stats.ggSeq == 0 ? "no wave seen yet" : "last " + stats.ggKind + (stats.ggWho != null ? " · " + stats.ggWho : "")));
         opts.add(new BotOptionsScreen.Option("breaksEnabled", "Breaks", () -> config.breaksEnabled, v -> config.breaksEnabled = v,
             () -> combat.isOnBreak() ? "on break · " + (combat.breakRemainingMs() + 999) / 1000 + "s left" : "focused"));
         opts.add(new BotOptionsScreen.Option("stopProtocolEnabled", "Stop protocol", () -> config.stopProtocolEnabled, v -> config.stopProtocolEnabled = v,

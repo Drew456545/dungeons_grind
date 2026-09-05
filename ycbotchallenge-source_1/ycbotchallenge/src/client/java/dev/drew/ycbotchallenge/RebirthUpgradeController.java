@@ -316,8 +316,14 @@ public class RebirthUpgradeController {
         }
         if (plannedAt == 0 && revisitAt != 0 && now >= revisitAt) {
             revisitAt = 0;
-            plannedAt = now;
-            planVia = "revisit";
+            // 0.9.37: the revisit after a purchase read "no-points" on every 2026-09-04 rebirth
+            // (the one point a rebirth grants was already spent); only revisit with points left.
+            if (stats.pointsCheckedThisRebirth()) {
+                log("rebirth_upgrade_skip", "reason", "revisit-no-points", "rebirths", stats.rebirths);
+            } else {
+                plannedAt = now;
+                planVia = "revisit";
+            }
         }
         if (plannedAt == 0 && !enableCheckDone
             && Economy.probeDue(combat.kills - killsAtEnable, enableKillsNeeded, now - enabledAt, enableDelayMs)) {

@@ -202,6 +202,18 @@ public final class MouseDriver {
      */
     public double[] pollCursorDelta(double timeDelta) {
         MinecraftClient client = MinecraftClient.getInstance();
+        // 0.9.37: a path that could not run (a screen opened the tick it was issued, the
+        // cursor unlocked) used to stay "busy" forever - every aim entry point returns on
+        // isBusy(), so the camera froze on the target for the rest of the fight (the 05:55
+        // Horse: one flick, then 72 s with aimErr pinned at 65 degrees). Dead after its
+        // duration plus half a second.
+        if (pathActive && Economy.pathExpired(pathStartMs, pathDurationMs, System.currentTimeMillis(), 500)) {
+            long age = System.currentTimeMillis() - pathStartMs;
+            pathActive = false;
+            lastSet = false;
+            if (logger != null) logger.log("aim_path_expired", "ageMs", age, "durationMs", pathDurationMs,
+                "why", client.currentScreen != null ? "screen" : client.mouse == null || !client.mouse.isCursorLocked() ? "unlocked" : "stalled");
+        }
         if (client.player == null || client.mouse == null || !client.mouse.isCursorLocked()) {
             return null;
         }

@@ -84,6 +84,13 @@ public class EnchantController {
 
     public void setLogger(EventLogger logger) { this.logger = logger; }
 
+    /** 0.9.37: the upgrade controller, so a visit never opens the enchanter over a buy that is decided or in flight. */
+    private UpgradeController upgrades;
+    public void attachUpgrades(UpgradeController u) { upgrades = u; }
+    /** 0.9.37: tabs every enchant of which is maxed (souls: 28/28 MAX, 163.87T idle, probed every visit). */
+    private final java.util.Set<String> maxedTabs = new java.util.HashSet<>();
+    private long lastBuyPendingSkipAt = 0;
+
     public boolean isBusy() { return phase != Phase.IDLE; }
 
     /** 0.9.30 HUD chip: suspended after repeated aborts (toggle to reset). */
@@ -207,6 +214,11 @@ public class EnchantController {
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
                 currentTab = lore.tabs().get(tabIndex);
+                if (maxedTabs.contains(currentTab)) {
+                    log("enchant_skip", "reason", "tab-maxed", "tab", currentTab);
+                    nextTab();
+                    return true;
+                }
                 // The server remembers the last tab, so first look at what is showing: a
                 // person does not click a tab that is already selected. SCAN detects the
                 // tab from the items' price currency and comes back here to click if needed.
@@ -288,7 +300,11 @@ public class EnchantController {
                 List<EnchantLore.Item> candidates = EnchantLore.enchantCandidates(items, balances, currentTab, attempted);
                 EnchantLore.Item choice = EnchantLore.chooseEnchant(items, balances, currentTab, attempted, roll, cfg.enchantLagBias);
                 if (choice == null) {
-                    log("enchant_skip", "reason", "none-affordable", "tab", currentTab,
+                    // 0.9.37: "nothing affordable" and "nothing left to buy" are different states.
+                    long enchants = items.stream().filter(EnchantLore.Item::isEnchant).count();
+                    boolean allMaxed = enchants > 0 && items.stream().filter(EnchantLore.Item::isEnchant).allMatch(EnchantLore.Item::maxed);
+                    if (allMaxed) maxedTabs.add(currentTab);
+                    log("enchant_skip", "reason", allMaxed ? "all-maxed" : "none-affordable", "tab", currentTab,
                         "balance", bal != null ? Amounts.format(bal) : null, "buysThisTab", buysThisTab);
                     nextTab();
                     return true;
@@ -499,6 +515,15 @@ public class EnchantController {
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
         if (suspended || combat.isOnBreak() || client.currentScreen != null) return false;
         if (lastVisitAt == 0) lastVisitAt = now; // session start counts as a visit for the ramp
+        // 0.9.37: a zone/sword buy is decided or typing - the enchanter would steal the chat
+        // (2026-09-04 19:24:38: upgrade_abort chat-closed kind=zone inside the lvl4 leg).
+        if (upgrades != null && (upgrades.isBusy() || upgrades.hasPendingDecision())) {
+            if (now - lastBuyPendingSkipAt > 30_000) {
+                lastBuyPendingSkipAt = now;
+                log("enchant_skip", "reason", "buy-pending");
+            }
+            return false;
+        }
         int zseq = stats.zoneChangeSeq();
         if (zseq != lastZoneSeqSeen) {
             lastZoneSeqSeen = zseq;

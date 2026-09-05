@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import java.io.IOException;
 import java.lang.reflect.Type;
+import java.util.List;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -58,7 +59,35 @@ public final class StateStore {
         public Double lastCycleOnMin;
         public Long cycleOnMs;
         public Integer cycleAtRebirths;
+        /** 0.9.37: the stage the last bought visit changed nothing on (its egg pool is spent). */
+        public Integer companionSaturatedStage;
+        /** 0.9.37: the stages of the rebirth in progress, and the last cycles, so the record survives a restart. */
+        public List<StageEntry> cycleStages;
+        public List<CycleEntry> cycleHistory;
         public long savedAt;
+    }
+
+    /** One stage of a rebirth (0.9.37): bot-on and wall minutes, kills, buys, what it earned. */
+    public static final class StageEntry {
+        public Integer stage;
+        public double onMin;
+        public double wallMin;
+        public int kills;
+        public int swordBuys;
+        public Double moneyEarned;
+        public Double peakPerMin;
+        public Double medianTtkMs;
+    }
+
+    /** One finished rebirth cycle (0.9.37). */
+    public static final class CycleEntry {
+        public Integer rebirths;
+        public long endedAt;
+        public double onMin;
+        public Double wallMin;
+        public Double toLvl14OnMin;
+        public Integer topStage;
+        public List<StageEntry> stages;
     }
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();

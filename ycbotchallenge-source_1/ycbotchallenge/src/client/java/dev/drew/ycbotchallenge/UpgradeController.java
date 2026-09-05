@@ -25,7 +25,7 @@ import net.minecraft.util.math.Vec3d;
  */
 public class UpgradeController {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
-    private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY, CHAT }
+    private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY, CHAT, GG }
 
     private record PendingCmd(String text, Kind kind, long notBefore, boolean followUp) {}
 
@@ -54,6 +54,14 @@ public class UpgradeController {
     /** Win reply: last win handled, and the deadline for the queued chat line. */
     private int lastWonSeq = 0;
     private long chatDeadline = 0;
+    /** 0.9.37: gg replies - last wave/perk handled, the queued line's deadline, when we last said it. */
+    private int lastGgSeq = 0;
+    private long ggDeadline = 0;
+    private long lastGgReplyAt = 0;
+    private String ggPendingKind = null;
+    /** 0.9.37: the cook a patience-timed eval was armed for, and a re-check due after a sword buy mid-cook. */
+    private long cookEvalArmedFor = 0;
+    private long recheckAt = 0;
     /** Income at the moment of the last send; the upgrade_gain evidence compares it with the rate later. */
     private Double incomeAtSend = null;
     private String gainKind = null;
@@ -210,6 +218,7 @@ public class UpgradeController {
         Double etaMin = Economy.rebirthEtaMin(bal, stats.rebirthTarget, rate);
         if (etaMin != null && etaMin > 0) sb.append("  §7eta ").append(formatEta(etaMin * 60_000.0)).append("§r");
         else if (etaMin != null) sb.append("  §acovered§r");
+        sb.append("  §7· ").append(stats.hudCycleLine()).append("§r");
         return sb.toString();
     }
 
@@ -275,6 +284,7 @@ public class UpgradeController {
             maybeQueueRebirthProbe(combat, now);
             maybeQueueGiveaway(now);
             maybeQueueWinReply(now);
+            maybeQueueGg(now);
             if (gainAt != 0) {
                 if (gainKillsAt < 0) gainKillsAt = combat.kills;
                 if (now >= gainAt) {
@@ -308,6 +318,12 @@ public class UpgradeController {
             if (head != null && head.kind() == Kind.CHAT && now > chatDeadline) {
                 queue.poll();
                 if (logger != null) logger.log("giveaway_reply_skip", "reason", "window", "text", head.text());
+                head = queue.peek();
+            }
+            if (head != null && head.kind() == Kind.GG && now > ggDeadline) {
+                queue.poll();
+                if (logger != null) logger.log("gg_skip", "reason", "window", "kind", ggPendingKind, "text", head.text(),
+                    "lateMs", now - ggDeadline);
                 head = queue.peek();
             }
             if (head != null) {
@@ -350,6 +366,27 @@ public class UpgradeController {
                 if (evalAt == Long.MAX_VALUE) {
                     evalAt = now + HumanTiming.logNormalMs(cfg.postKillEvalDelayMinMs, cfg.postKillEvalDelayMaxMs);
                     evalReason = killed ? "kill" : moneyUp ? "money" : "timer";
+                }
+            }
+            // 0.9.37: a fight that outruns the patience is HARD the moment it does, not at the
+            // 30 s fallback (the 2026-09-04 climbs: zone_gate_hard via=cook at 30.6 s against a
+            // 7.2 s patience, 22 times, 641 s of waiting). One eval per cook, at the patience.
+            long cookAt = combat.isCooking() ? combat.cookStartMs() : 0;
+            if (cookAt != 0 && cookAt != cookEvalArmedFor) {
+                cookEvalArmedFor = cookAt;
+                double scale = Economy.rarityScale(combat.targetRarity(), cfg.rarityHpScale);
+                long due = cookAt + Math.round(stats.zoneTtkToleranceMs() * scale) + 250;
+                if (due > now && (evalAt == Long.MAX_VALUE || due < evalAt)) {
+                    evalAt = due;
+                    evalReason = "cook-patience";
+                }
+            }
+            // ... and a sword bought mid-fight is re-judged on the same fight once the board settled.
+            if (recheckAt != 0 && now >= recheckAt) {
+                recheckAt = 0;
+                if (evalAt == Long.MAX_VALUE || evalAt > now) {
+                    evalAt = now;
+                    evalReason = "sword-recheck";
                 }
             }
             if (evalAt == Long.MAX_VALUE || now < evalAt) return false;
@@ -412,7 +449,10 @@ public class UpgradeController {
             }
             lastDecision = d;
             decision = kind;
-            decisionAt = now + HumanTiming.logNormalMs(cfg.buyNoticeDelayMinMs, cfg.buyNoticeDelayMaxMs);
+            boolean snowball = Economy.snowball(stats.money(), targetOf(kind), cfg.cooldownRelaxBalanceMult);
+            decisionAt = now + (snowball
+                ? HumanTiming.logNormalMs(cfg.buyNoticeSnowballMinMs, Math.max(cfg.buyNoticeSnowballMinMs + 1, cfg.buyNoticeSnowballMaxMs))
+                : HumanTiming.logNormalMs(cfg.buyNoticeDelayMinMs, cfg.buyNoticeDelayMaxMs));
             logPlan(d);
             return false;
         }
@@ -440,6 +480,14 @@ public class UpgradeController {
                     return false;
                 }
                 if (ts != ChatTyper.State.DONE) return true;
+                if (pendingKind == Kind.GG) {
+                    lastSendAt = now;
+                    lastGgReplyAt = now;
+                    if (logger != null) logger.log("gg_reply", "kind", ggPendingKind, "text", pending, "typos", typer.typos(),
+                        "sinceMs", now - stats.ggSeenAt, "who", stats.ggWho, "what", stats.ggWhat);
+                    finish();
+                    return false;
+                }
                 if (pendingKind == Kind.CHAT) {
                     lastSendAt = now;
                     if (logger != null) logger.log("giveaway_reply", "text", pending, "typos", typer.typos());
@@ -511,6 +559,11 @@ public class UpgradeController {
                 }
                 boolean maxed = pendingKind == Kind.ZONE ? stats.zoneMaxed : stats.swordMaxed;
                 if (!stats.lastSendSucceeded && !maxed) stats.onUpgradeSuccess(kind, now);
+                // 0.9.37: a sword bought while the mob is still being cooked: look at the same
+                // fight again once the board settled (every 2026-09-04 climb needed a second tier).
+                if (pendingKind == Kind.SWORD && stats.lastSendSucceeded && combat.isCooking()) {
+                    recheckAt = now + Math.max(cfg.upgradeSpendSettleMs, 1000) + 250;
+                }
                 // No follow-up re-send: the next tier's price is learned lazily when the
                 // balance passes the rolled retry floor (0.9.x re-sent the same command
                 // 3.5–4.9s after every success — the loop's clearest fingerprint).
@@ -719,6 +772,51 @@ public class UpgradeController {
         if (logger != null) logger.log("giveaway_reply_plan", "text", msg.trim(), "delayMs", delay, "won", stats.giveawaysWon);
     }
 
+    /**
+     * 0.9.37: gg like everyone else. A GG wave gets the plain word on most of them after a
+     * short roll (the typing pipeline adds its own second or two; gg_reply logs sinceMs); a
+     * perk pull gets a phrase on half of them after a longer read. Never twice within
+     * ggMinGapMs, dropped past the window, never during a captcha pause (the bot is off).
+     */
+    private void maybeQueueGg(long now) {
+        int seq = stats.ggSeq;
+        if (seq == lastGgSeq) return;
+        lastGgSeq = seq;
+        String kind = stats.ggKind;
+        if (!cfg.ggEnabled) {
+            if (logger != null) logger.log("gg_skip", "reason", "disabled", "kind", kind);
+            return;
+        }
+        if (lastGgReplyAt != 0 && now - lastGgReplyAt < Math.max(0, cfg.ggMinGapMs)) {
+            if (logger != null) logger.log("gg_skip", "reason", "gap", "kind", kind, "sinceLastMs", now - lastGgReplyAt);
+            return;
+        }
+        for (PendingCmd c : queue) if (c.kind() == Kind.GG) return;
+        boolean wave = !"perk".equals(kind);
+        double chance = wave ? cfg.ggWaveChance : cfg.ggPerkChance;
+        java.util.List<String> msgs = wave ? cfg.ggWaveMessages : cfg.ggPerkMessages;
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        if (msgs == null || msgs.isEmpty() || rng.nextDouble() >= chance) {
+            if (logger != null) logger.log("gg_skip", "reason", "chance", "kind", kind);
+            return;
+        }
+        String msg = msgs.get(rng.nextInt(msgs.size()));
+        if (msg == null || msg.isBlank()) return;
+        long delay = wave
+            ? HumanTiming.logNormalMs(cfg.ggWaveDelayMinMs, Math.max(cfg.ggWaveDelayMinMs + 1, cfg.ggWaveDelayMaxMs))
+            : HumanTiming.logNormalMs(cfg.ggPerkDelayMinMs, Math.max(cfg.ggPerkDelayMinMs + 1, cfg.ggPerkDelayMaxMs));
+        ggDeadline = stats.ggSeenAt + (wave ? cfg.ggWaveWindowMs : cfg.ggPerkWindowMs);
+        ggPendingKind = wave ? "wave" : "perk";
+        queue.add(new PendingCmd(msg.trim(), Kind.GG, now + delay, false));
+        if (logger != null) logger.log("gg_plan", "kind", ggPendingKind, "text", msg.trim(), "delayMs", delay,
+            "who", stats.ggWho, "what", stats.ggWhat, "seq", seq);
+    }
+
+    /** 0.9.37: a buy is decided or a command is in flight - other modules keep their hands off the chat. */
+    public boolean hasPendingDecision() {
+        return decision != null || phase != Phase.IDLE || !queue.isEmpty();
+    }
+
     /** Rebirth cost only grows: once the balance passes the old price (plus a rolled margin), try the GUI. */
     private boolean rebirthRetryDue() {
         if (stats.rebirthTarget != null) return false;
@@ -775,6 +873,8 @@ public class UpgradeController {
         double cycle = stats.companionCycleMin(cfg.companionCyclePriorMin);
         logger.log("companion_skip", evalFields(d,
             "eggsReason", d.eggs(),
+            "milestone", Economy.companionMilestone(zoneGap, rebirthGap, "zone".equals(horizonBlocked) || stats.zoneMaxed),
+            "saturatedStage", stats.companionSaturatedStage,
             "blocked", companions != null ? companions.blockedReason(now) : "no-controller",
             "stage", stage,
             "batch", batch != null ? Amounts.format(batch) : null,
@@ -913,6 +1013,9 @@ public class UpgradeController {
         in.stageKills = stats.stageKills();
         in.stageMaxTtkMs = stats.stageMaxTtkMs();
         in.predictedTtkMs = cfg.gateUsesPrediction ? predicted : null;
+        // 0.9.37: the first fight of a fresh stage, predicted - HARD at once when it is far over the patience.
+        in.freshPredictedTtkMs = stats.stageKills() == 0 && combat.isCooking() ? predicted : null;
+        in.freshPredictedMult = cfg.stageProbePredictedMult;
         in.cookElapsedMs = combat.isCooking()
             ? combat.cookElapsedMs() / Economy.rarityScale(combat.targetRarity(), cfg.rarityHpScale) : 0;
         in.patienceMs = stats.zoneTtkToleranceMs();
@@ -943,6 +1046,7 @@ public class UpgradeController {
         in.companionGain = stats.companionGain();
         in.companionGainVia = stats.companionGainVia();
         in.companionLastBoughtStage = stats.companionLastBoughtStage;
+        in.companionStageSaturated = stats.companionStageSaturated(in.companionStage);
         in.companionVisitsThisStage = stats.companionVisitsThisStage(in.companionStage);
         in.companionMaxVisitsPerStage = cfg.companionMaxVisitsPerStage;
         in.companionIncomeSettled = companions != null && companions.incomeSettled(now);
@@ -952,11 +1056,13 @@ public class UpgradeController {
         in.companionZoneStopped = "zone".equals(horizonBlocked) || stats.zoneMaxed;
         in.now = now;
         Decision d = Economy.decide(in);
-        if ("cook".equals(d.gateVia()) && logger != null && combat.cookStartMs() != lastCookHardLogged) {
+        if (("cook".equals(d.gateVia()) || "predicted-fresh".equals(d.gateVia())) && logger != null
+            && combat.cookStartMs() != lastCookHardLogged) {
             lastCookHardLogged = combat.cookStartMs();
-            logger.log("zone_gate_hard", "via", "cook", "elapsedMs", combat.cookElapsedMs(),
+            logger.log("zone_gate_hard", "via", d.gateVia(), "elapsedMs", combat.cookElapsedMs(),
                 "normalizedMs", Math.round(in.cookElapsedMs), "patienceMs", in.patienceMs,
-                "rarity", combat.targetRarity(), "stageKills", in.stageKills);
+                "predictedMs", predicted != null ? Math.round(predicted) : null,
+                "rarity", combat.targetRarity(), "stageKills", in.stageKills, "evalVia", evalReason);
         }
         return d;
     }
@@ -1026,8 +1132,13 @@ public class UpgradeController {
     private int capFor(String kind) {
         if ("rebirth".equals(kind)) return 0;
         Double ref = targetOf(kind) != null ? targetOf(kind) : stats.lastPrice(kind);
+        // 0.9.37: a server-quoted price this recent is typed the moment it is banked.
+        boolean predictedTarget = "zone".equals(kind) ? stats.zoneTargetPredicted : stats.swordTargetPredicted;
+        long seen = stats.priceSeenAt(kind);
+        boolean quoted = targetOf(kind) != null && !predictedTarget && seen > 0
+            && System.currentTimeMillis() - seen < Math.max(0, cfg.serverQuoteRelaxMs);
         return Economy.effectiveCooldownMs(cfg.upgradeMinIntervalMs, cfg.commandCooldownMs,
-            stats.money(), ref, cfg.cooldownRelaxBalanceMult);
+            stats.money(), ref, cfg.cooldownRelaxBalanceMult, quoted);
     }
 
     private boolean commandReady(long now) {

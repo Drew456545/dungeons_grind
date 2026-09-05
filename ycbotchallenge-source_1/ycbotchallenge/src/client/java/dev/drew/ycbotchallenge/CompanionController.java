@@ -38,7 +38,7 @@ import net.minecraft.util.math.Vec3d;
  */
 public class CompanionController {
     private enum Phase { IDLE, WALK, AIM, OPEN_WAIT, EGG_LOOK, BUY, BUY_CLICK, BUY_SETTLE, CLOSE_EGG, TYPE_COMPANION, COMP_WAIT,
-        COMP_LOOK, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, DELETE, DELETE_TYPE, DONE }
+        COMP_LOOK, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, FUSE_ALL_CLICK, FUSE_ALL_SETTLE, DELETE, DELETE_TYPE, DONE }
 
     private record Entry(int slot, String name, List<String> lore) {}
     private record EggHit(Vec3d aim, List<String> lines, Double price, double dist, String via) {}
@@ -122,6 +122,13 @@ public class CompanionController {
     private List<CompanionLore.Companion> storage = List.of();
     private int equipSlot = -1;
     private int fuseSlot = -1;
+    // 0.9.37: fuse first, then Equip Best.
+    private int fuseAllSlot = -1;
+    private boolean fusedThisVisit = false;
+    private boolean fuseDue = false;
+    private boolean equipChanged = false;
+    private List<CompanionLore.FuseGroup> fuseGroupsBefore = List.of();
+    private int storageBefore = -1;
     private List<CompanionLore.ZoneStage> deletes = List.of();
     private int deleteIdx;
     private Integer currentZone;
@@ -259,6 +266,7 @@ public class CompanionController {
         if (!cfg.companionsEnabled || client.player == null || client.world == null) return false;
         long now = System.currentTimeMillis();
         lastCombatKills = combat.kills;
+        stats.companionVisitActive = phase != Phase.IDLE;
         tickGain(now);
         if (phase == Phase.IDLE) return maybeStart(client, combat, now);
 
@@ -508,17 +516,43 @@ public class CompanionController {
                 if (now < phaseUntil) return true;
                 List<Entry> entries = containerItems(client);
                 log("companion_gui", "which", "companions", "title", title(client), "items", describe(entries));
-                readCompanions(entries, true);
+                // The second pass of a visit (after a fusion) must not overwrite the "before" set.
+                readCompanions(entries, !fusedThisVisit);
                 equipSlot = -1;
                 fuseSlot = -1;
                 for (Entry e : entries) {
                     if (equipSlot < 0 && lore.isEquipBest(e.name(), e.lore())) equipSlot = e.slot();
                     if (fuseSlot < 0 && lore.isFuse(e.name(), e.lore())) fuseSlot = e.slot();
                 }
+                // 0.9.37: fuse first. Five of the same companion in the storage page is a
+                // fusion at 100 % odds; four 0.9.36 visits opened the menu and walked past
+                // a 7-of-a-kind and a 6-of-a-kind. Groups are read from this page (the
+                // fusion menu lists the same companions), so no menu is opened for nothing.
+                if (!fusedThisVisit) {
+                    List<CompanionLore.Companion> all = new ArrayList<>(storage);
+                    all.addAll(equippedBefore);
+                    fuseGroupsBefore = CompanionLore.fuseGroups(all, cfg.companionFuseMinGroup);
+                    storageBefore = storage.size();
+                    List<String> gs = new ArrayList<>();
+                    for (CompanionLore.FuseGroup g : fuseGroupsBefore) gs.add(g.summary());
+                    log("companion_fuse_groups", "groups", gs, "storage", storage.size(), "equipped", equippedBefore.size(),
+                        "minGroup", cfg.companionFuseMinGroup, "enabled", cfg.companionFuseEnabled, "fuseSlot", fuseSlot);
+                    fuseDue = cfg.companionFuseEnabled && !fuseGroupsBefore.isEmpty() && fuseSlot >= 0;
+                    if (cfg.companionFuseEnabled && fuseGroupsBefore.isEmpty()) log("companion_skip", "reason", "no-fuse-group");
+                    if (cfg.companionFuseEnabled && !fuseGroupsBefore.isEmpty() && fuseSlot < 0) log("companion_skip", "reason", "no-fuse-item");
+                    if (fuseDue) {
+                        phase = Phase.FUSE_CLICK;
+                        phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                        return true;
+                    }
+                }
                 if (equipSlot < 0) {
                     log("companion_skip", "reason", "no-equip-best");
-                    phase = Phase.FUSE_CLICK;
-                    phaseUntil = now + GuiHuman.closeDelayMs(cfg);
+                    prepareDeletes();
+                    phase = Phase.DELETE;
+                    deleteIdx = 0;
+                    if (isOurGui(client)) EnchantScreens.closeGui(client);
+                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
                     return true;
                 }
                 phase = Phase.EQUIP;
@@ -544,19 +578,26 @@ public class CompanionController {
                 }
                 List<Entry> entries = containerItems(client);
                 readCompanions(entries, false);
+                equipChanged = !summaries(equippedBefore).equals(summaries(equippedAfter));
                 log("companion_equip", "guiOpen", true, "before", summaries(equippedBefore), "after", summaries(equippedAfter),
-                    "storage", storage.size());
-                phase = Phase.FUSE_CLICK;
-                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                    "changed", equipChanged, "multBefore", multSum(equippedBefore), "multAfter", multSum(equippedAfter),
+                    "storage", storage.size(), "fused", fusedThisVisit);
+                // 0.9.37: fusion already happened before Equip Best (or was not due); close and delete.
+                prepareDeletes();
+                phase = Phase.DELETE;
+                deleteIdx = 0;
+                if (isOurGui(client)) EnchantScreens.closeGui(client);
+                phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
             }
             case FUSE_CLICK -> {
                 if (now < phaseUntil) return true;
                 if (!companionsGuiOpen(client) || fuseSlot < 0) {
                     if (fuseSlot < 0) log("companion_skip", "reason", "no-fuse-item");
+                    if (isOurGui(client)) EnchantScreens.closeGui(client);
+                    if (fuseDue) { fusedThisVisit = true; phase = Phase.TYPE_COMPANION; phaseUntil = now + GuiHuman.betweenDelayMs(cfg); return true; }
                     prepareDeletes();
                     phase = Phase.DELETE;
                     deleteIdx = 0;
-                    if (isOurGui(client)) EnchantScreens.closeGui(client);
                     phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
                     return true;
                 }
@@ -571,21 +612,75 @@ public class CompanionController {
                     phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
                 } else if (now >= phaseUntil) {
                     log("companion_skip", "reason", "no-fuse-gui", "title", title(client));
+                    if (isOurGui(client)) EnchantScreens.closeGui(client);
+                    if (fuseDue) { fusedThisVisit = true; phase = Phase.TYPE_COMPANION; phaseUntil = now + GuiHuman.betweenDelayMs(cfg); return true; }
                     prepareDeletes();
                     phase = Phase.DELETE;
                     deleteIdx = 0;
-                    if (isOurGui(client)) EnchantScreens.closeGui(client);
                     phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
                 }
             }
             case FUSE_LOG -> {
                 if (now < phaseUntil) return true;
-                // Fusing is not automated yet (Drew): record the layout, close.
-                log("companion_gui", "which", "fuse", "title", title(client), "items", describe(containerItems(client)));
+                List<Entry> fuseEntries = containerItems(client);
+                log("companion_gui", "which", "fuse", "title", title(client), "items", describe(fuseEntries));
+                fuseAllSlot = -1;
+                for (Entry e : fuseEntries) if (lore.isFuseAll(e.name(), e.lore())) { fuseAllSlot = e.slot(); break; }
+                if (fuseDue && fuseAllSlot >= 0 && fuseGuiOpen(client)) {
+                    phase = Phase.FUSE_ALL_CLICK;
+                    phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                    return true;
+                }
+                if (fuseDue) log("companion_skip", "reason", "no-fuse-all-item");
                 if (isOurGui(client)) EnchantScreens.closeGui(client);
+                if (fuseDue) {
+                    // The companions menu was left for the fusion menu before Equip Best: reopen it.
+                    fusedThisVisit = true;
+                    phase = Phase.TYPE_COMPANION;
+                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+                    return true;
+                }
                 prepareDeletes();
                 phase = Phase.DELETE;
                 deleteIdx = 0;
+                phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+            }
+            case FUSE_ALL_CLICK -> {
+                if (now < phaseUntil) return true;
+                if (!fuseGuiOpen(client)) { abort(client, combat, "fuse-gui-closed"); return false; }
+                GuiHuman.click(client, fuseAllSlot, "companion", "fuse-all", logger);
+                log("companion_fuse_click", "slot", fuseAllSlot, "what", "fuse-all", "groups", fuseGroupsBefore.size());
+                phase = Phase.FUSE_ALL_SETTLE;
+                phaseUntil = now + HumanTiming.logNormalMs(cfg.companionSettleMinMs, Math.max(cfg.companionSettleMinMs + 1, cfg.companionSettleMaxMs));
+            }
+            case FUSE_ALL_SETTLE -> {
+                if (now < phaseUntil) return true;
+                // Whatever the server shows after Fuse All is recorded verbatim; a confirmation
+                // screen is never clicked blind (the 0.9.17 rule) - it is the fixture for the
+                // version that automates it.
+                List<Entry> after = client.currentScreen != null ? containerItems(client) : List.of();
+                log("companion_gui", "which", "fuse-after", "title", title(client), "items", describe(after),
+                    "fuseGui", fuseGuiOpen(client));
+                List<CompanionLore.FuseGroup> groupsAfter = List.of();
+                Integer storageAfter = null;
+                if (fuseGuiOpen(client)) {
+                    List<CompanionLore.Companion> cs = new ArrayList<>();
+                    for (Entry e : after) {
+                        CompanionLore.Companion c = lore.companion(e.slot(), e.name(), e.lore());
+                        if (c != null) cs.add(c);
+                    }
+                    storageAfter = cs.size();
+                    groupsAfter = CompanionLore.fuseGroups(cs, cfg.companionFuseMinGroup);
+                }
+                List<String> gb = new ArrayList<>();
+                for (CompanionLore.FuseGroup g : fuseGroupsBefore) gb.add(g.summary());
+                List<String> ga = new ArrayList<>();
+                for (CompanionLore.FuseGroup g : groupsAfter) ga.add(g.summary());
+                log("companion_fuse", "groupsBefore", gb, "groupsAfter", ga, "storageBefore", storageBefore,
+                    "storageAfter", storageAfter, "fuseGuiStillOpen", fuseGuiOpen(client));
+                fusedThisVisit = true;
+                if (client.currentScreen != null) EnchantScreens.closeGui(client);
+                phase = Phase.TYPE_COMPANION;
                 phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
             }
             case DELETE -> {
@@ -609,13 +704,15 @@ public class CompanionController {
             }
             case DONE -> {
                 if (isOurGui(client)) EnchantScreens.closeGui(client);
-                stats.noteCompanionVisit(visitStage, eggsOpened > 0);
+                stats.noteCompanionVisit(visitStage, eggsOpened > 0, equipChanged || fusedThisVisit);
                 log("companion_visit_done", "via", visitVia, "eggs", eggsOpened, "opens", opensClicked,
                     "spent", spent > 0 ? Amounts.format(spent) : null,
                     "perEgg", observedEggPrice != null ? Amounts.format(observedEggPrice) : null,
                     "stage", visitStage, "before", summaries(equippedBefore), "after", summaries(equippedAfter),
+                    "equipChanged", equipChanged, "fused", fusedThisVisit,
                     "deletes", deletes.size(), "visitMs", now - visitStartedAt,
-                    "visitsThisRebirth", stats.companionVisitsThisRebirth(), "persisted", true);
+                    "visitsThisRebirth", stats.companionVisitsThisRebirth(),
+                    "saturatedStage", stats.companionSaturatedStage, "persisted", true);
                 consecutiveAborts = 0;
                 if (eggsOpened > 0 && gainBefore != null) {
                     gainEggs = eggsOpened;
@@ -732,6 +829,12 @@ public class CompanionController {
         equippedBefore = List.of();
         equippedAfter = List.of();
         storage = List.of();
+        fusedThisVisit = false;
+        fuseDue = false;
+        equipChanged = false;
+        fuseAllSlot = -1;
+        fuseGroupsBefore = List.of();
+        storageBefore = -1;
         deletes = List.of();
         deleteIdx = 0;
         currentZone = null;

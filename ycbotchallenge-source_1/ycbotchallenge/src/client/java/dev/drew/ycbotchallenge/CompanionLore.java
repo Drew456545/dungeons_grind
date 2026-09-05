@@ -57,6 +57,7 @@ public final class CompanionLore {
     private final Pattern rarityRe;
     private final Pattern equipBestRe;
     private final Pattern fuseRe;
+    private final Pattern fuseAllRe;
     private final Pattern unequipRe;
     private final Pattern eggsTitleRe;
     private final Pattern companionsTitleRe;
@@ -72,6 +73,7 @@ public final class CompanionLore {
         rarityRe = RebirthLore.compileLoose(cfg.companionRarityPattern);
         equipBestRe = RebirthLore.compileLoose(cfg.companionEquipBestPattern);
         fuseRe = RebirthLore.compileLoose(cfg.companionFusePattern);
+        fuseAllRe = RebirthLore.compileLoose(cfg.companionFuseAllPattern);
         unequipRe = RebirthLore.compileLoose(cfg.companionUnequipPattern);
         eggsTitleRe = RebirthLore.compileLoose(cfg.companionEggsTitlePattern);
         companionsTitleRe = RebirthLore.compileLoose(cfg.companionsTitlePattern);
@@ -204,6 +206,46 @@ public final class CompanionLore {
 
     public boolean isFuse(String name, List<String> lore) {
         return (name != null && fuseRe.matcher(name).find()) || any(fuseRe, lore);
+    }
+
+    /** 0.9.37: the "Fuse All" item of the fusion menu (slot 53 in every 2026-09-04 dump). */
+    public boolean isFuseAll(String name, List<String> lore) {
+        return (name != null && fuseAllRe.matcher(name).find()) || any(fuseAllRe, lore);
+    }
+
+    /** 0.9.37: a fusable group - five of the same companion (name, zone, stage, rarity). */
+    public record FuseGroup(String name, Integer zone, Integer stage, String rarity, int count) {
+        public String summary() {
+            return name + " " + (rarity != null ? rarity : "?") + " z" + zone + "s" + stage + " x" + count;
+        }
+    }
+
+    /**
+     * 0.9.37: the groups in a companion list, largest first. Identity is the companion's
+     * name, zone, stage and rarity - the fusion item says "fuse ALL 5 of the same
+     * Companions", and the 23:46 dump held 7 Eagle Basic z2s3 and 6 Lizard Rare z2s3 at
+     * 100 % odds that four visits walked past.
+     */
+    public static List<FuseGroup> fuseGroups(Collection<Companion> companions, int minGroup) {
+        java.util.Map<String, int[]> counts = new java.util.LinkedHashMap<>();
+        java.util.Map<String, Companion> first = new java.util.LinkedHashMap<>();
+        if (companions != null) {
+            for (Companion c : companions) {
+                if (c == null || c.name() == null) continue;
+                String key = c.name().toLowerCase(Locale.ROOT) + "|" + c.zone() + "|" + c.stage() + "|"
+                    + (c.rarity() == null ? "" : c.rarity().toLowerCase(Locale.ROOT));
+                counts.computeIfAbsent(key, k -> new int[1])[0]++;
+                first.putIfAbsent(key, c);
+            }
+        }
+        List<FuseGroup> out = new ArrayList<>();
+        for (java.util.Map.Entry<String, int[]> e : counts.entrySet()) {
+            if (e.getValue()[0] < Math.max(1, minGroup)) continue;
+            Companion c = first.get(e.getKey());
+            out.add(new FuseGroup(c.name(), c.zone(), c.stage(), c.rarity(), e.getValue()[0]));
+        }
+        out.sort((a, b) -> Integer.compare(b.count(), a.count()));
+        return out;
     }
 
     public boolean isEggsTitle(String title) { return title != null && eggsTitleRe.matcher(title.trim()).find(); }

@@ -25,6 +25,41 @@ public final class ChatClassifier {
         return stripped.indexOf('\u00BB') >= 0 || stripped.charAt(0) == '[';
     }
 
+    // ---- 0.9.37: GG waves and perk pulls (the server congratulation rituals)
+
+    private static final Pattern GG_WHO = Pattern.compile("(?i)thank you\\s+(\\S+)\\s+for");
+    private static final Pattern GG_WHAT = Pattern.compile("(?i)they purchased\\s+(.+?)\\.?\\s*$");
+    private static final Pattern PERK_WHO = Pattern.compile("\u00BB\\s*(\\S+)\\s+has just pulled", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PERK_WHAT = Pattern.compile("(?i)has just pulled\\s+(.+?)\\s+on their");
+
+    /** "████████ Thank you BoostedWalrus for" -> "BoostedWalrus"; null on any other line. */
+    public static String ggWho(String line) {
+        if (line == null) return null;
+        Matcher m = GG_WHO.matcher(line);
+        return m.find() ? m.group(1) : null;
+    }
+
+    /** "████████ They purchased 5,500 Credits." -> "5,500 Credits"; null on any other line. */
+    public static String ggWhat(String line) {
+        if (line == null) return null;
+        Matcher m = GG_WHAT.matcher(line);
+        return m.find() ? m.group(1).trim() : null;
+    }
+
+    /** "EnchantedMC » thla_ has just pulled Universal Perk 5 on their Sword! (7235 total rolls)" -> "thla_". */
+    public static String perkWho(String line) {
+        if (line == null) return null;
+        Matcher m = PERK_WHO.matcher(line);
+        return m.find() ? m.group(1) : null;
+    }
+
+    /** ... -> "Universal Perk 5". */
+    public static String perkWhat(String line) {
+        if (line == null) return null;
+        Matcher m = PERK_WHAT.matcher(line);
+        return m.find() ? m.group(1).trim() : null;
+    }
+
     /**
      * A chat line may trigger the captcha path only when it is a server line: never
      * action-bar text, never our own [YCBotChallenge] messages, never player chat or

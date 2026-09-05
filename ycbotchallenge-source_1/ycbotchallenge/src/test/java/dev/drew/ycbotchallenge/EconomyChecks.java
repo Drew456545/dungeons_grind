@@ -79,6 +79,11 @@ public final class EconomyChecks {
         n += captchaHedge0934();
         n += companions0935();
         n += companions0936();
+        n += companions0937();
+        n += gg0937();
+        n += climb0937();
+        n += targeting0937();
+        n += progress0937();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1769,7 +1774,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 40", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 40);
+        n += eq("config version 41", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 41);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2359,6 +2364,259 @@ public final class EconomyChecks {
         n += eq("null price rejected", SwordSkinLore.acceptMenuPrice(null, 1e9, null, 3.5, 30), "rejected");
         n += eq("fresh swordMenuScoutEnabled", CFG.swordMenuScoutEnabled, true);
         n += eq("fresh swordMenuScoutChance", CFG.swordMenuScoutChance, 0.35, 1e-9);
+        return n;
+    }
+
+    /** 0.9.37: eggs against the nearer milestone, saturation, hand purchases, fusable groups, one record per stage, config v41. */
+    private static int companions0937() {
+        int n = 0;
+
+        // --- 2026-09-05 00:05:21 lvl18: a 387.18N batch, 92 % of the balance, passed 0.9.36's sooner rule on a
+        // stage-18 zone gap of ~5,800N that was never going to come before the 478.3N rebirth 63 min away.
+        Economy.Inputs s18 = new Economy.Inputs();
+        s18.bal = 422.58 * N;
+        s18.rebirthTarget = 478.3 * N;
+        s18.incomePerMin = 17.0 * N;
+        s18.zoneTarget = 5784.0 * N;
+        s18.zoneFloor = 105.17 * N;
+        s18.swordTarget = 232.73 * N;
+        s18.swordFloor = 66.5 * N;
+        s18.medianTtkMs = 85_495.0;
+        s18.stageMaxTtkMs = 348_431.0;
+        s18.stageKills = 5;
+        s18.patienceMs = 9_800;
+        s18.companionStage = 18;
+        s18.companionLastBoughtStage = 17;
+        s18.companionBatchPrice = 387.18 * N;
+        s18.companionGain = 1.89;
+        s18.companionCycleMin = 45;
+        s18.now = 1_000L;
+        Decision d18 = Economy.decide(s18);
+        n += eq("00:05:21 not sooner on an unreachable zone", "companion-sooner".equals(d18.reason()), false);
+        n += eq("00:05:21 the rebirth is the milestone",
+            Economy.companionMilestone(5784.0 * N - 422.58 * N, 478.3 * N - 422.58 * N, false), "rebirth");
+        Double delay18 = Economy.companionDelayMin(387.18 * N, 422.58 * N, 478.3 * N, 17.0 * N, 1.89);
+        n += eq("00:05:21 delay ~10.5 min", delay18, 10.5, 0.3);
+        n += eq("00:05:21 the payback rule takes it (Drew: keep the rule)", d18.reason(), "companion-persist");
+        s18.incomePerMin = 12.0 * N;
+        n += eq("00:05:21 at 12N/min it is past the budget", Economy.decide(s18).eggs(), "horizon");
+
+        // The zone is the milestone while its gap is the smaller one.
+        n += eq("zone nearer", Economy.companionMilestone(10.0, 50.0, false), "zone");
+        n += eq("zone stopped: rebirth", Economy.companionMilestone(10.0, 50.0, true), "rebirth");
+        n += eq("rebirth unknown: zone", Economy.companionMilestone(10.0, null, false), "zone");
+        n += eq("rebirth covered: zone", Economy.companionMilestone(10.0, 0.0, false), "zone");
+        n += eq("nothing known", Economy.companionMilestone(null, null, false) == null, true);
+        // 20:40 lvl17: the rebirth (1.66N away) is nearer than the zone (91N) - the batch is sooner to it? No:
+        // 7.41N > 1.66N x 0.5, so it is the persist rule that buys, and it still buys.
+        Decision d17 = Economy.decide(lvl17());
+        n += eq("20:40 still bought", d17.actsCompanion(), true);
+        n += eq("20:40 via the payback rule now", d17.reason(), "companion-persist");
+
+        // --- Saturation: the last bought visit changed nothing on this stage.
+        Economy.Inputs sat = lvl17();
+        sat.companionStageSaturated = true;
+        Decision ds = Economy.decide(sat);
+        n += eq("saturated stage: refused", ds.actsCompanion(), false);
+        n += eq("... and says so", ds.eggs(), "saturated");
+        n += eq("... on the economy's own hold", ds.reason(), "sword-hard-unaffordable");
+
+        // --- Hand purchases: 00:06:13, 422.58N -> 35.61N at 128.99N an egg.
+        n += eq("3 eggs by hand", Economy.companionObservedCount(386.97 * N, 128.99 * N, 3.0), 3);
+        n += eq("1 egg by hand", Economy.companionObservedCount(47.25 * O, 47.25 * O, 3.0), 1);
+        n += eq("10 eggs by hand", Economy.companionObservedCount(1289.9 * N, 128.99 * N, 3.0), 10);
+        n += eq("not an egg multiple", Economy.companionObservedCount(100.0 * O, 47.25 * O, 3.0) == null, true);
+        n += eq("2 eggs is not an option", Economy.companionObservedCount(94.5 * O, 47.25 * O, 3.0) == null, true);
+        n += eq("outside the tolerance", Economy.companionObservedCount(50.0 * O, 47.25 * O, 3.0) == null, true);
+        n += eq("no price: nothing", Economy.companionObservedCount(50.0 * O, null, 3.0) == null, true);
+
+        // --- Fusable groups from the 23:46:53 fusion dump: 7 Eagle Basic z2s3, 6 Lizard Rare z2s3, 4 + 4 others.
+        List<CompanionLore.Companion> dump = new java.util.ArrayList<>();
+        for (int i = 0; i < 7; i++) dump.add(new CompanionLore.Companion(38 + i, "Eagle Companion", 2, 3, 618.18, "Basic"));
+        for (int i = 0; i < 6; i++) dump.add(new CompanionLore.Companion(27 + i, "Lizard Companion", 2, 3, 927.27, "Rare"));
+        for (int i = 0; i < 4; i++) dump.add(new CompanionLore.Companion(12 + i, "Lizard Companion", 2, 5, 3040.0, "Rare"));
+        for (int i = 0; i < 4; i++) dump.add(new CompanionLore.Companion(16 + i, "Eagle Companion", 2, 5, 2030.0, "Basic"));
+        dump.add(new CompanionLore.Companion(24, "Donkey Companion", 2, 2, 1020.0, "Legendary"));
+        List<CompanionLore.FuseGroup> groups = CompanionLore.fuseGroups(dump, 5);
+        n += eq("two groups at 5+", groups.size(), 2);
+        n += eq("largest first", groups.get(0).name() + " " + groups.get(0).count(), "Eagle Companion 7");
+        n += eq("second", groups.get(1).name() + " " + groups.get(1).count(), "Lizard Companion 6");
+        n += eq("stage separates identity", CompanionLore.fuseGroups(dump, 4).size(), 4);
+        n += eq("rarity separates identity",
+            CompanionLore.fuseGroups(List.of(
+                new CompanionLore.Companion(1, "Snake Companion", 2, 3, 1240.0, "Epic"),
+                new CompanionLore.Companion(2, "Snake Companion", 2, 3, 1240.0, "Epic"),
+                new CompanionLore.Companion(3, "Snake Companion", 2, 3, 683.0, "Basic")), 2).size(), 1);
+        n += eq("empty list", CompanionLore.fuseGroups(List.of(), 5).isEmpty(), true);
+
+        // --- One stage record per stage.
+        n += eq("respawn on the same stage keeps the record", Economy.stageRecordRolls("respawn-broadcast", 16, 16), false);
+        n += eq("respawn with the stage unknown keeps it", Economy.stageRecordRolls("respawn-broadcast", null, 16), false);
+        n += eq("respawn on a new level rolls", Economy.stageRecordRolls("respawn-broadcast", 16, 17), true);
+        n += eq("teleport rolls", Economy.stageRecordRolls("teleport", 16, null), true);
+        n += eq("boss level moved rolls", Economy.stageRecordRolls("bossbar-level", 16, 17), true);
+        n += eq("boss level unchanged keeps it", Economy.stageRecordRolls("bossbar-level", 16, 16), false);
+        n += eq("sidebar row rolls", Economy.stageRecordRolls("sidebar-row", 16, 16), true);
+
+        // --- Config v41: the multiplier pattern reaches a live config at last; hand-set values survive.
+        n += eq("fresh fuse on", CFG.companionFuseEnabled, true);
+        n += eq("fresh fuse group", CFG.companionFuseMinGroup, 5);
+        n += eq("fresh multiplier pattern reads a suffixed multiplier",
+            loose(CFG.companionMultiplierPattern).matcher("Multiplier: 3.04Kx Money").find(), true);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":40,\"companionMultiplierPattern\":\"/multiplier:\\\\s*(?<x>[\\\\d,.]+)\\\\s*x/\","
+                + "\"companionFuseTitlePattern\":\"/^fuse companions\\\\b/\"}");
+            YCBotChallengeConfig c40 = YCBotChallengeConfig.load(tmp);
+            n += eq("v40 migrates to current", c40.configVersion, YCBotChallengeConfig.CURRENT_CONFIG_VERSION);
+            n += eq("v40 stale multiplier pattern replaced", c40.companionMultiplierPattern, CFG.companionMultiplierPattern);
+            n += eq("v40 stale fuse title replaced", c40.companionFuseTitlePattern, CFG.companionFuseTitlePattern);
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":40,\"companionMultiplierPattern\":\"/my mult/\"}");
+            n += eq("hand-set multiplier pattern survives", YCBotChallengeConfig.load(tmp).companionMultiplierPattern, "/my mult/");
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v41 migration: " + ex);
+            n++;
+        }
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-state", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            StateStore s = new StateStore(tmp);
+            StateStore.Entry e = new StateStore.Entry();
+            e.companionSaturatedStage = 16;
+            s.put("Ihazekids69420", e);
+            n += eq("saturated stage round-trips", new StateStore(tmp).get("ihazekids69420").companionSaturatedStage, 16);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL saturated state: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    /** 0.9.37: GG waves and perk pulls - the parse, and what must never match. */
+    private static int gg0937() {
+        int n = 0;
+        n += eq("wave who", ChatClassifier.ggWho("\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588 Thank you BoostedWalrus for"), "BoostedWalrus");
+        n += eq("wave what", ChatClassifier.ggWhat("\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588 They purchased 5,500 Credits."), "5,500 Credits");
+        n += eq("wave what bundle", ChatClassifier.ggWhat("\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588 They purchased Monthly Plus Sub."), "Monthly Plus Sub");
+        n += eq("no who on the header", ChatClassifier.ggWho("\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588 GG WAVE ACTIVATED!") == null, true);
+        n += eq("no what on a reply", ChatClassifier.ggWhat("CopingOpossum61: !GG!") == null, true);
+        String perk = "EnchantedMC \u00bb thla_ has just pulled Universal Perk 5 on their Sword! (7235 total rolls)";
+        n += eq("perk who", ChatClassifier.perkWho(perk), "thla_");
+        n += eq("perk what", ChatClassifier.perkWhat(perk), "Universal Perk 5");
+        Pattern wave = loose(CFG.ggWavePatterns.get(0));
+        Pattern perkRe = loose(CFG.ggPerkPatterns.get(0));
+        n += eq("wave header matches", wave.matcher("\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588 GG WAVE ACTIVATED!").find(), true);
+        n += eq("wave header is a server line", ChatClassifier.isPlayerOrBroadcast("\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588 GG WAVE ACTIVATED!"), false);
+        n += eq("perk line matches", perkRe.matcher(perk).find(), true);
+        n += eq("perk 3 does not", perkRe.matcher("EnchantedMC \u00bb thla_ has just pulled Universal Perk 3 on their Sword! (6825 total rolls)").find(), false);
+        n += eq("master perk does not", perkRe.matcher("EnchantedMC \u00bb JackkPowell has just pulled Master Perk 4 on their Sword! (5369 total rolls)").find(), false);
+        n += eq("a player's gg is neither", wave.matcher("LiterallyWorst: !GG!").find() || perkRe.matcher("LiterallyWorst: !GG!").find(), false);
+        n += eq("a player talking about it is neither",
+            perkRe.matcher("[\u2727R46\u2727] [\u2623danger\u2623] KeinLanMehr \u00bb bro got uni 5 and rolled it gg").find(), false);
+        n += eq("a player quoting the header is a player line",
+            ChatClassifier.isPlayerOrBroadcast("[\u2727R46\u2727] KeinLanMehr \u00bb gg wave activated"), true);
+        n += eq("fresh gg on", CFG.ggEnabled, true);
+        n += eq("fresh wave chance", CFG.ggWaveChance, 0.85, 1e-9);
+        n += eq("fresh perk chance", CFG.ggPerkChance, 0.5, 1e-9);
+        n += eq("fresh gap", CFG.ggMinGapMs, 60_000);
+        return n;
+    }
+
+    /** 0.9.37: the climb - the fresh-stage prediction, the server-quoted cap, the snowball notice. */
+    private static int climb0937() {
+        int n = 0;
+        // Climb 4, lvl11 leg (19:26:51): patience 7.2 s, the first Llama predicted at 74 s two seconds
+        // after the tag. 0.9.36 read the gate UNKNOWN until the 30 s fallback eval.
+        Economy.GateResult g = Economy.zoneGate(null, 0, null, 2_000, 7_210, null, 74_000.0, 3.0);
+        n += eq("fresh stage, fresh 74 s prediction: HARD", g.name() + " " + g.via(), "hard predicted-fresh");
+        n += eq("under the margin: unknown", Economy.zoneGate(null, 0, null, 2_000, 7_210, null, 15_000.0, 3.0).name(), "unknown");
+        n += eq("after a kill the prediction arm is off", Economy.zoneGate(null, 1, 5_000.0, 2_000, 7_210, null, 74_000.0, 3.0).name(), "unknown");
+        n += eq("mult 0 disables it", Economy.zoneGate(null, 0, null, 2_000, 7_210, null, 74_000.0, 0).name(), "unknown");
+        n += eq("the six-arg gate is unchanged", Economy.zoneGate(null, 0, null, 2_000, 7_210, null).name(), "unknown");
+        n += eq("cook past the patience still wins", Economy.zoneGate(null, 0, null, 8_000, 7_210, null, 74_000.0, 3.0).via(), "cook");
+        Economy.Inputs fresh = new Economy.Inputs();
+        fresh.bal = 5.0e12; fresh.swordTarget = 1.0e12; fresh.swordFloor = 0.3e12; fresh.zoneFloor = 0.1e12; fresh.zoneSeeded = true;
+        fresh.patienceMs = 7_210; fresh.stageKills = 0; fresh.cookElapsedMs = 2_000; fresh.freshPredictedTtkMs = 74_000.0;
+        fresh.rebirthTarget = 1.0e30; fresh.incomePerMin = 1.0e12; fresh.now = 1_000L;
+        Decision d = Economy.decide(fresh);
+        n += eq("... so the sword goes out two seconds in", d.action() + " " + d.kind() + " " + d.reason(), "buy sword sword-hard");
+
+        // A server-quoted price collapses the 60 s cap; a prediction does not.
+        n += eq("quoted: floor", Economy.effectiveCooldownMs(60_000, 1_100, 5.0, 10.0, 3.0, true), 1_100);
+        n += eq("not quoted, not rich: cap", Economy.effectiveCooldownMs(60_000, 1_100, 5.0, 10.0, 3.0, false), 60_000);
+        n += eq("rich: floor as before", Economy.effectiveCooldownMs(60_000, 1_100, 50.0, 10.0, 3.0, false), 1_100);
+        n += eq("snowball", Economy.snowball(50.0, 10.0, 3.0), true);
+        n += eq("not a snowball", Economy.snowball(20.0, 10.0, 3.0), false);
+        n += eq("unknown price: no snowball", Economy.snowball(20.0, null, 3.0), false);
+        n += eq("fresh snowball notice", CFG.buyNoticeSnowballMinMs + "-" + CFG.buyNoticeSnowballMaxMs, "500-3000");
+        n += eq("fresh quote relax", CFG.serverQuoteRelaxMs, 300_000);
+        n += eq("fresh fresh-stage mult", CFG.stageProbePredictedMult, 3.0, 1e-9);
+        return n;
+    }
+
+    /** 0.9.37: the no-hit click spam - hologram names, the approach gate, the aim-path expiry. */
+    private static int targeting0937() {
+        int n = 0;
+        n += eq("damage number is not a name", Economy.hologramNameUsable("\u2727293.89QQ\u2727 Critical"), false);
+        n += eq("money drop is not a name", Economy.hologramNameUsable("+4.77T Money"), false);
+        n += eq("afk marker is not a name", Economy.hologramNameUsable("\u27E1332.12B\u27E1"), false);
+        n += eq("a plate is a name", Economy.hologramNameUsable("LVL7 Donkey \u2764" + "69B"), true);
+        n += eq("a bracketed plate is a name", Economy.hologramNameUsable("[AFKMOB] LVL9 Mooshroom \u2764\u221e"), true);
+        n += eq("a companion label is a name", Economy.hologramNameUsable("Lizard Companion ()"), true);
+        n += eq("blank is not", Economy.hologramNameUsable("  "), false);
+        n += eq("null is not", Economy.hologramNameUsable(null), false);
+
+        n += eq("closing in, facing it: swing", Economy.approachClickAllowed(4.5, 2.8, 10.0, 25.0), true);
+        n += eq("inside reach: no swing", Economy.approachClickAllowed(2.5, 2.8, 10.0, 25.0), false);
+        n += eq("facing away: no swing", Economy.approachClickAllowed(4.5, 2.8, 65.0, 25.0), false);
+        n += eq("aim gate 0 = off", Economy.approachClickAllowed(4.5, 2.8, 65.0, 0), true);
+
+        n += eq("a path inside its duration is alive", Economy.pathExpired(1_000, 400, 1_300, 500), false);
+        n += eq("a path past duration + grace is dead", Economy.pathExpired(1_000, 400, 2_000, 500), true);
+        n += eq("no path", Economy.pathExpired(0, 400, 2_000, 500), false);
+        n += eq("fresh no-connect timeout", CFG.noConnectTimeoutMs, 4000);
+        n += eq("fresh ignore-after", CFG.noConnectIgnoreAfter, 2);
+        n += eq("fresh approach aim gate", CFG.approachClickMaxAimDeg, 25.0, 1e-9);
+        return n;
+    }
+
+    /** 0.9.37: the progress record - minutes to lvl14, the cycle history round-trip. */
+    private static int progress0937() {
+        int n = 0;
+        // Climb 4: lvl1 0.5, lvl4 2.0, lvl7 0.8, lvl9 1.0, lvl11 1.8, lvl12 1.5, lvl13 1.7, lvl14 5.1, lvl15 22.7 ...
+        int[] st = {1, 4, 7, 9, 11, 12, 13, 14, 15};
+        double[] mn = {0.5, 2.0, 0.8, 1.0, 1.8, 1.5, 1.7, 5.1, 22.7};
+        n += eq("minutes to lvl14", Economy.minutesToStage(st, mn, 14), 9.3, 1e-9);
+        n += eq("minutes to lvl15", Economy.minutesToStage(st, mn, 15), 14.4, 1e-9);
+        n += eq("never reached", Economy.minutesToStage(st, mn, 18) == null, true);
+        n += eq("mismatched arrays", Economy.minutesToStage(new int[]{1}, new double[]{1, 2}, 14) == null, true);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-state", ".json");
+            java.nio.file.Files.deleteIfExists(tmp);
+            StateStore s = new StateStore(tmp);
+            StateStore.Entry e = new StateStore.Entry();
+            StateStore.StageEntry se = new StateStore.StageEntry();
+            se.stage = 17; se.onMin = 23.1; se.wallMin = 23.1; se.kills = 56; se.swordBuys = 3; se.moneyEarned = 138.66 * N; se.peakPerMin = 17.01 * N;
+            StateStore.CycleEntry c = new StateStore.CycleEntry();
+            c.rebirths = 13; c.endedAt = 1_788_556_000_000L; c.onMin = 60.3; c.wallMin = 62.1; c.toLvl14OnMin = 9.5; c.topStage = 17;
+            c.stages = new java.util.ArrayList<>(List.of(se));
+            e.cycleHistory = new java.util.ArrayList<>(List.of(c));
+            e.cycleStages = new java.util.ArrayList<>(List.of(se));
+            s.put("Ihazekids69420", e);
+            StateStore.Entry r = new StateStore(tmp).get("ihazekids69420");
+            n += eq("history round-trips", r.cycleHistory.size(), 1);
+            n += eq("cycle minutes", r.cycleHistory.get(0).onMin, 60.3, 1e-9);
+            n += eq("cycle to lvl14", r.cycleHistory.get(0).toLvl14OnMin, 9.5, 1e-9);
+            n += eq("cycle stages", r.cycleHistory.get(0).stages.get(0).stage, 17);
+            n += eq("stage money", r.cycleHistory.get(0).stages.get(0).moneyEarned, 138.66 * N, 1e27);
+            n += eq("in-progress stages round-trip", r.cycleStages.get(0).kills, 56);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL cycle history: " + ex);
+            n++;
+        }
         return n;
     }
 

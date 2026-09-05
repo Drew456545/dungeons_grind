@@ -118,6 +118,13 @@ public class YCBotChallengeConfig {
     public int stageProbeCommonKills = 1;
     public double stageProbeRarityPenaltyBlocks = 30.0;
     /**
+     * 0.9.37: on a fresh stage (no kill yet) a fresh DPS prediction over patience x this
+     * reads the stage HARD at once (zone_gate_hard via=predicted-fresh) instead of when the
+     * cook outruns the patience; the sword is one tier short on every fresh stage of every
+     * 2026-09-04 climb and the verdict used to wait for the 30 s fallback eval. 0 = off.
+     */
+    public double stageProbePredictedMult = 3.0;
+    /**
      * While a tagged mob cooks we can't tag another. Movement toward the next
      * mob is still leash-limited; the camera is a one-shot look intent (see
      * track-style weights), not a lock on nextTarget.
@@ -155,6 +162,20 @@ public class YCBotChallengeConfig {
     public double approachClickCpsMax = 3;
     /** Only start approach spam within this many blocks of the target. */
     public double approachClickMaxDist = 6.0;
+    /**
+     * 0.9.37: the approach swings are for closing in only - never inside reach, never while
+     * the camera is more than this far off the mob. The 2026-09-04 05:55 log has 72 s of
+     * 2-3 cps clicks at a Horse from 2.5 blocks with the aim frozen 65 degrees away.
+     */
+    public double approachClickMaxAimDeg = 25.0;
+    /**
+     * 0.9.37: a target no click has connected on is dropped after this (was a hard-coded
+     * 12 s that re-picked the same mob: six 12.000 s runs in a row on one Horse), the next
+     * pick stands half a block closer, and after noConnectIgnoreAfter such runs on the same
+     * entity it is ignored for the session (target_abandoned reason=no-connect).
+     */
+    public int noConnectTimeoutMs = 4000;
+    public int noConnectIgnoreAfter = 2;
     /** Hard ceiling: skip a click if the vanilla attack cooldown isn't ready. */
     public boolean respectVanillaAttackCooldown = true;
 
@@ -606,6 +627,33 @@ public class YCBotChallengeConfig {
     public int giveawayWinReplyDelayMinMs = 1500;
     public int giveawayWinReplyDelayMaxMs = 6000;
     /**
+     * 0.9.37: gg like everyone else. A store purchase prints a seven-line "GG WAVE
+     * ACTIVATED!" block and a median 17 players answer "gg" 0.5-2.0 s later (p10/p50/p90
+     * over 26 waves: 0.50/1.30/2.00 s); a rare perk pull prints "EnchantedMC » NAME has
+     * just pulled Universal Perk 5 on their Sword!" and gets free-form congratulations. The
+     * bot had never typed a free-text line. Waves: most of them (ggWaveChance), the plain
+     * word, a short roll before the typing pipeline's own second or two (gg_reply logs
+     * sinceMs so the band can be tuned); perk pulls: half of them, a phrase from
+     * ggPerkMessages after a longer read. Never twice within ggMinGapMs, dropped past the
+     * window, never off a player's own line (the wave block has no » and the perk pattern
+     * carries the server's prefix).
+     */
+    public boolean ggEnabled = true;
+    public List<String> ggWavePatterns = List.of("gg wave activated");
+    public double ggWaveChance = 0.85;
+    public List<String> ggWaveMessages = List.of("gg");
+    public int ggWaveDelayMinMs = 300;
+    public int ggWaveDelayMaxMs = 1500;
+    public int ggWaveWindowMs = 6000;
+    public int ggWaveBlockMs = 2000;
+    public List<String> ggPerkPatterns = List.of("/^enchantedmc \u00bb .* has just pulled universal perk 5 on their sword/");
+    public double ggPerkChance = 0.5;
+    public List<String> ggPerkMessages = List.of("gg", "W", "lfg", "gg wp", "huge", "ggs");
+    public int ggPerkDelayMinMs = 2000;
+    public int ggPerkDelayMaxMs = 8000;
+    public int ggPerkWindowMs = 20_000;
+    public int ggMinGapMs = 60_000;
+    /**
      * Rebirth upgrades: each rebirth grants points spent in /rebirth → nether star
      * ("REBIRTH UPGRADES", lore "| Current Points: N") → "Upgrades" menu. Order is
      * Drew's: enchant proc (enchanted book), damage (red dye), essence (magma cream),
@@ -765,6 +813,19 @@ public class YCBotChallengeConfig {
     public double companionCyclePriorMin = 45.0;
     public double companionPaybackFraction = 0.5;
     public int companionMaxVisitsPerStage = 2;
+    /**
+     * 0.9.37: fuse first, then Equip Best (Drew). With a group of companionFuseMinGroup
+     * identical companions (name, zone, stage, rarity) in the storage the visit opens the
+     * fusion menu and clicks its Fuse All item, dumps whatever the server shows next
+     * (companion_gui which=fuse-after - a confirmation is never clicked blind), then
+     * re-opens /companion for Equip Best. Four 0.9.36 visits opened the menu and walked
+     * past a 7-of-a-kind and a 6-of-a-kind at 100 % odds.
+     */
+    public boolean companionFuseEnabled = true;
+    public int companionFuseMinGroup = 5;
+    public String companionFuseAllPattern = "/fuse all/";
+    /** 0.9.37: a sidebar drop of 1, 3 or 10 eggs at this stage's price with no visit running is a hand purchase (companion_observed). */
+    public double companionObservedTolerancePct = 3.0;
     /** The egg ladder, measured x52.2 a stage over seven consecutive steps (44.44Q@s9 -> 904.27SS@s15). */
     public double companionPriceGrowth = 52.2;
     /**
@@ -1044,6 +1105,11 @@ public class YCBotChallengeConfig {
     /** Humanized "notice" delay between becoming affordable and typing the buy. */
     public int buyNoticeDelayMinMs = 2000;
     public int buyNoticeDelayMaxMs = 15000;
+    /** 0.9.37: the notice roll while the balance dwarfs the price (cooldownRelaxBalanceMult) - the post-rebirth snowball. */
+    public int buyNoticeSnowballMinMs = 500;
+    public int buyNoticeSnowballMaxMs = 3000;
+    /** 0.9.37: a price the server quoted this recently collapses the per-kind send cap once affordable. */
+    public int serverQuoteRelaxMs = 300_000;
     /** Stop-protocol exemption window after our own /zone max (advancing teleports you). */
     public int expectedTeleportAfterZoneMs = 8000;
     /** Same exemption after a successful rebirth diamond click (GUI closes and teleports). */
@@ -1311,7 +1377,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 40;
+    public static final int CURRENT_CONFIG_VERSION = 41;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1674,8 +1740,32 @@ public class YCBotChallengeConfig {
             if ("/fuse companions/".equals(companionFusePattern)) companionFusePattern = fresh.companionFusePattern;
             changed = true;
         }
+        if (configVersion < 41) {
+            // v41 (0.9.37): the 0.9.35 multiplier-pattern fix never reached a live config
+            // either (v39 only filled a blank), so every companion read as multiplier-less
+            // through 0.9.36; same for the fusion menu title. New knobs (fusion, observed
+            // buys, gg replies, the fresh-stage prediction, the snowball notice, the
+            // no-connect timeout) take their defaults.
+            replaceIfOld("companionMultiplierPattern", "/multiplier:\\s*(?<x>[\\d,.]+)\\s*x/");
+            replaceIfOld("companionFuseTitlePattern", "/^fuse companions\\b/");
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
+    }
+
+    /**
+     * 0.9.37: a pattern that still holds an older version's default takes the current one;
+     * a hand-set value survives. The v39 and v40 migrations each missed a live pattern by
+     * only filling blanks - this is the one way to ship a pattern fix.
+     */
+    private void replaceIfOld(String field, String oldDefault) {
+        try {
+            java.lang.reflect.Field f = YCBotChallengeConfig.class.getDeclaredField(field);
+            Object cur = f.get(this);
+            if (cur == null || oldDefault.equals(cur)) f.set(this, f.get(new YCBotChallengeConfig()));
+        } catch (ReflectiveOperationException ignored) {
+        }
     }
 
     /** Fill nulls when an older config json is missing new fields. */
@@ -1858,6 +1948,30 @@ public class YCBotChallengeConfig {
         if (companionStageSettleMs < 0) companionStageSettleMs = 0;
         if (zoneBackMargin < 1.0) zoneBackMargin = 1.0;
         if (zoneMoneyGrowthPrior < 1.0) zoneMoneyGrowthPrior = 1.0;
+        if (companionFuseMinGroup < 2) companionFuseMinGroup = 2;
+        if (companionFuseAllPattern == null || companionFuseAllPattern.isBlank()) companionFuseAllPattern = fresh.companionFuseAllPattern;
+        if (companionObservedTolerancePct < 0) companionObservedTolerancePct = 0;
+        if (ggWavePatterns == null) ggWavePatterns = fresh.ggWavePatterns;
+        if (ggPerkPatterns == null) ggPerkPatterns = fresh.ggPerkPatterns;
+        if (ggWaveMessages == null || ggWaveMessages.isEmpty()) ggWaveMessages = fresh.ggWaveMessages;
+        if (ggPerkMessages == null || ggPerkMessages.isEmpty()) ggPerkMessages = fresh.ggPerkMessages;
+        if (ggWaveChance < 0 || ggWaveChance > 1) ggWaveChance = fresh.ggWaveChance;
+        if (ggPerkChance < 0 || ggPerkChance > 1) ggPerkChance = fresh.ggPerkChance;
+        if (ggWaveDelayMinMs < 0) ggWaveDelayMinMs = 0;
+        if (ggWaveDelayMaxMs < ggWaveDelayMinMs) ggWaveDelayMaxMs = ggWaveDelayMinMs;
+        if (ggPerkDelayMinMs < 0) ggPerkDelayMinMs = 0;
+        if (ggPerkDelayMaxMs < ggPerkDelayMinMs) ggPerkDelayMaxMs = ggPerkDelayMinMs;
+        if (ggWaveWindowMs < 1000) ggWaveWindowMs = 1000;
+        if (ggPerkWindowMs < 1000) ggPerkWindowMs = 1000;
+        if (ggWaveBlockMs < 0) ggWaveBlockMs = 0;
+        if (ggMinGapMs < 0) ggMinGapMs = 0;
+        if (buyNoticeSnowballMinMs < 0) buyNoticeSnowballMinMs = 0;
+        if (buyNoticeSnowballMaxMs < buyNoticeSnowballMinMs) buyNoticeSnowballMaxMs = buyNoticeSnowballMinMs;
+        if (serverQuoteRelaxMs < 0) serverQuoteRelaxMs = 0;
+        if (stageProbePredictedMult < 0) stageProbePredictedMult = 0;
+        if (approachClickMaxAimDeg < 0) approachClickMaxAimDeg = 0;
+        if (noConnectTimeoutMs < 500) noConnectTimeoutMs = 500;
+        if (noConnectIgnoreAfter < 1) noConnectIgnoreAfter = 1;
         if (companionDelayMinMs < 0) companionDelayMinMs = 0;
         if (companionDelayMaxMs < companionDelayMinMs) companionDelayMaxMs = companionDelayMinMs;
         if (companionSettleMinMs < 200) companionSettleMinMs = 200;
