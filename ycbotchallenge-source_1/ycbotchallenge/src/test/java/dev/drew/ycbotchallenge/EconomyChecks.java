@@ -2134,6 +2134,7 @@ public final class EconomyChecks {
         fresh.companionIncomeSettled = false;
         fresh.incomePerMin = null;
         n += eq("fresh stage, no income: sooner still buys", Economy.decide(fresh).reason(), "companion-sooner");
+        fresh.rebirthTarget = 15.94 * N;          // the rebirth 1.66N away: too small a gap for "sooner"
         fresh.companionZoneStopped = true;
         n += eq("... the persist rule waits", Economy.decide(fresh).eggs(), "settle");
         fresh.companionIncomeSettled = true;
@@ -2156,7 +2157,8 @@ public final class EconomyChecks {
         l16.companionBatchPrice = 141.75 * O;
         l16.now = 1_000L;
         Decision d16 = Economy.decide(l16);
-        n += eq("19:19:47 bought", d16.reason(), "companion-sooner");
+        // 0.9.37: the rebirth (128.78O away) is the nearer milestone; the 0.8-min delay fits the 3-min floor.
+        n += eq("19:19:47 bought", d16.reason(), "companion-persist");
         n += eq("19:19:47 gate from the first slow kill", d16.gate() + " " + d16.gateVia(), "hard kill");
 
         // --- Late and high: a stage below the last one bought is never bought again.
