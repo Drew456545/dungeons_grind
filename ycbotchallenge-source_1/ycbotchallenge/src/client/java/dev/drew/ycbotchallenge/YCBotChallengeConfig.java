@@ -639,6 +639,8 @@ public class YCBotChallengeConfig {
      * carries the server's prefix).
      */
     public boolean ggEnabled = true;
+    /** 0.9.39: the perk-pull replies on their own switch (Drew); ggEnabled covers both. */
+    public boolean ggPerkEnabled = true;
     public List<String> ggWavePatterns = List.of("gg wave activated");
     public double ggWaveChance = 0.85;
     public List<String> ggWaveMessages = List.of("gg");

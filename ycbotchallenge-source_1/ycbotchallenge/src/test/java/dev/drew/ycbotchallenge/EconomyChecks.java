@@ -2529,6 +2529,7 @@ public final class EconomyChecks {
         n += eq("fresh wave chance", CFG.ggWaveChance, 0.85, 1e-9);
         n += eq("fresh perk chance", CFG.ggPerkChance, 0.5, 1e-9);
         n += eq("fresh gap", CFG.ggMinGapMs, 60_000);
+        n += eq("fresh perk toggle", CFG.ggPerkEnabled, true);
         return n;
     }
 

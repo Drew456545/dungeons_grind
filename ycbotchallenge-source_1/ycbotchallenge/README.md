@@ -193,6 +193,7 @@ Each zone has an `[AFKMOB]` upgrade mob ("[AFKMOB] LVL7 Donkey ❤∞", right-cl
 - `zoneBackMeasureEnabled` (true) / `zoneBackMargin` (1.5) / `zoneMoneyGrowthPrior` (20) — the `zone_back_candidate` measurement: log when the previous stage would out-earn a fresh one by the margin; nothing is sent (0.9.36).
 - `companionFuseEnabled` (true) / `companionFuseMinGroup` (5) / `companionFuseAllPattern` — fuse before Equip Best when the storage holds a group (0.9.37).
 - `companionObservedTolerancePct` (3) — a sidebar drop this close to 1/3/10 eggs at the stage price is a hand purchase (0.9.37).
+- `ggPerkEnabled` (true) — the perk-pull replies on their own Y-screen switch ("GG on perk pulls"); `ggEnabled` covers both (0.9.39).
 - `ggEnabled` (true), `ggWavePatterns` / `ggWaveChance` (0.85) / `ggWaveMessages` / `ggWaveDelayMin/MaxMs` (300–1500) / `ggWaveWindowMs` (6000) / `ggWaveBlockMs` (2000), `ggPerkPatterns` / `ggPerkChance` (0.5) / `ggPerkMessages` / `ggPerkDelayMin/MaxMs` (2000–8000) / `ggPerkWindowMs` (20000), `ggMinGapMs` (60000) — the gg replies (0.9.37).
 - `stageProbePredictedMult` (3.0) — a fresh-stage prediction this far over the patience reads HARD at once (0.9.37).
 - `buyNoticeSnowballMin/MaxMs` (500–3000) / `serverQuoteRelaxMs` (300000) — the snowball notice roll and how long a server-quoted price beats the per-kind cap (0.9.37).

@@ -783,7 +783,7 @@ public class UpgradeController {
         if (seq == lastGgSeq) return;
         lastGgSeq = seq;
         String kind = stats.ggKind;
-        if (!cfg.ggEnabled) {
+        if (!cfg.ggEnabled || ("perk".equals(kind) && !cfg.ggPerkEnabled)) {
             if (logger != null) logger.log("gg_skip", "reason", "disabled", "kind", kind);
             return;
         }

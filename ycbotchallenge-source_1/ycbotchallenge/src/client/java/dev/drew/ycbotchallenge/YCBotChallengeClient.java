@@ -329,6 +329,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("giveawayWinReplyEnabled", "Giveaway win reply", () -> config.giveawayWinReplyEnabled, v -> config.giveawayWinReplyEnabled = v));
         opts.add(new BotOptionsScreen.Option("ggEnabled", "GG replies", () -> config.ggEnabled, v -> config.ggEnabled = v,
             () -> stats.ggSeq == 0 ? "no wave seen yet" : "last " + stats.ggKind + (stats.ggWho != null ? " · " + stats.ggWho : "")));
+        opts.add(new BotOptionsScreen.Option("ggPerkEnabled", "GG on perk pulls", () -> config.ggPerkEnabled, v -> config.ggPerkEnabled = v,
+            () -> !config.ggEnabled ? "off with GG replies" : "Universal Perk 5, half of them"));
         opts.add(new BotOptionsScreen.Option("breaksEnabled", "Breaks", () -> config.breaksEnabled, v -> config.breaksEnabled = v,
             () -> combat.isOnBreak() ? "on break · " + (combat.breakRemainingMs() + 999) / 1000 + "s left" : "focused"));
         opts.add(new BotOptionsScreen.Option("stopProtocolEnabled", "Stop protocol", () -> config.stopProtocolEnabled, v -> config.stopProtocolEnabled = v,
