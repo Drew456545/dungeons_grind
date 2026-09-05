@@ -2034,7 +2034,7 @@ public final class EconomyChecks {
         // 18.53N in hand for a 7.41N batch while the whole rebirth cost 15.94N).
         Economy.Inputs rich = lvl15();
         rich.companionBatchPrice = 0.6 * rich.bal;   // 60% of the wallet
-        n += eq("most of the balance is fine when it pays", Economy.decide(rich).reason(), "companion-sooner");
+        n += eq("most of the balance is fine when it pays", Economy.decide(rich).actsCompanion(), true);
 
         Economy.Inputs blocked = lvl15();
         blocked.companionBlocked = "abort-cooldown";
@@ -2113,7 +2113,8 @@ public final class EconomyChecks {
         n += eq("20:40 hold", h.action() + " " + h.kind() + " " + h.reason(), "wait sword sword-hard-unaffordable");
         n += eq("20:40 gate", h.gate() + " " + h.gateVia(), "hard median");
         Decision d17 = Economy.decide(lvl17());
-        n += eq("20:40 the batch is the buy", d17.action() + " " + d17.kind() + " " + d17.reason(), "buy companion companion-sooner");
+        // 0.9.37: the rebirth (1.66N away) is the nearer milestone, so the payback rule decides - and buys.
+        n += eq("20:40 the batch is the buy", d17.action() + " " + d17.kind() + " " + d17.reason(), "buy companion companion-persist");
         // Zone buys stopped: the rebirth gap (1.66N) is too small for "sooner", the persist rule takes it.
         Economy.Inputs stopped = lvl17();
         stopped.companionZoneStopped = true;
@@ -2126,13 +2127,17 @@ public final class EconomyChecks {
         Decision dpoor = Economy.decide(poor);
         n += eq("5N in hand: hold", dpoor.reason(), "sword-hard-unaffordable");
         n += eq("5N in hand: eggs unaffordable", dpoor.eggs(), "unaffordable");
-        // A fresh hard stage before its income is its own: the sooner rule needs no income at all.
+        // A fresh hard stage before its income is its own: the sooner rule needs no income at all
+        // (0.9.37: on a stage whose zone is the nearer milestone), the persist rule waits.
         Economy.Inputs fresh = lvl17();
+        fresh.rebirthTarget = 400.0 * N;         // the zone (91N) is the nearer milestone
         fresh.companionIncomeSettled = false;
         fresh.incomePerMin = null;
         n += eq("fresh stage, no income: sooner still buys", Economy.decide(fresh).reason(), "companion-sooner");
         fresh.companionZoneStopped = true;
         n += eq("... the persist rule waits", Economy.decide(fresh).eggs(), "settle");
+        fresh.companionIncomeSettled = true;
+        n += eq("... and with no income it cannot judge", Economy.decide(fresh).eggs(), "no-income");
 
         // --- 19:19:47 lvl16: eight refusals in 0.9.35 on the percentage rule; the stage gap takes it now.
         Economy.Inputs l16 = new Economy.Inputs();
