@@ -28,5 +28,11 @@
     "answer": "udWn",
     "kind": "map",
     "source": "bot capture 2026-09-04 03:50 (512 px x4 smoothed dump, box-downsampled to the 128 px grid); the 4B ballot elected uaWm then ulaWm, both rejected (map still held); Drew confirmed udWn"
+  },
+  {
+    "file": "3PS-map128.png",
+    "answer": "3PS",
+    "kind": "map",
+    "source": "bot capture 2026-09-05 03:41 (native 128 px map render, the image the model read); bot read 3PS at x1 and x3, typed 3PS, server accepted (map gone 12 s later)"
   }
 ]
