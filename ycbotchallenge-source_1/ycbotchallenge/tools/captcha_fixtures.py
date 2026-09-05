@@ -19,18 +19,35 @@ KrA): only logs from --since (default 2026-09-05, the current solver with reject
 detection) are read, and an answer that is a case variant or a look-alike of an existing
 fixture (B8 O0 S5 Z2 I1 l1 G6 b6 g9 q9) is skipped rather than imported as a second truth.
 """
+import argparse, glob, json, os, shutil, sys
+
 LOOKALIKES = "B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9"
 
 
-def normal(answer):
-    """Case-folded with every look-alike pair collapsed: pBb, p8b -> p8b; Kra, KrA -> kra."""
-    table = {}
+def _classes():
+    """Every look-alike pair joined into one class (B-8-b-6 are one class, not two overlapping pairs)."""
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
     for pair in LOOKALIKES.split(","):
-        pair = pair.strip()
+        pair = pair.strip().lower()
         if len(pair) == 2:
-            table[pair[0].lower()] = pair[1].lower()
-    return "".join(table.get(c, c) for c in answer.lower())
-import argparse, glob, json, os, shutil, sys
+            parent[find(pair[0])] = find(pair[1])
+    return {c: find(c) for c in list(parent)}
+
+
+CLASSES = _classes()
+
+
+def normal(answer):
+    """Case-folded with every look-alike class collapsed: pBb and p8b agree; Kra and KrA agree."""
+    return "".join(CLASSES.get(c, c) for c in answer.lower())
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "captcha-fixtures")
