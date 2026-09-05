@@ -32,6 +32,10 @@ public class UpgradeController {
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
     private EventLogger logger;
+    /** 0.9.43: the Rebirth GUI's diamond lore, read before any click. */
+    private RebirthLore rebirthLore;
+    private Integer rebirthGuiLoggedAtRebirths = null;
+    private long rebirthGuiReadAt = 0;
 
     private Phase phase = Phase.IDLE;
     private long phaseUntil;
@@ -598,6 +602,7 @@ public class UpgradeController {
                     return true;
                 }
                 if (now < phaseUntil) return true;
+                readRebirthGui(client, now);
                 if (rebirthAffordable()) {
                     phase = Phase.GUI_CLICK;
                     phaseUntil = now + GuiHuman.clickDelayMs(cfg);
@@ -653,6 +658,33 @@ public class UpgradeController {
         if (now < phaseUntil) return true;
         abort(client, rebirthGuiOpen(client) ? "rebirth-timeout" : "no-signal");
         return false;
+    }
+
+    /**
+     * 0.9.43: the diamond says "Required: 282.430T Money" and "Multiplier: 4.59Kx -> 6.43Kx";
+     * read before deciding click-vs-Esc, so the cost is known without a blind click and the
+     * permanent multiplier is on record. The whole GUI is dumped once per rebirth (rebirth_gui).
+     */
+    private void readRebirthGui(MinecraftClient client, long now) {
+        if (now - rebirthGuiReadAt < 1000) return;
+        rebirthGuiReadAt = now;
+        if (!(client.currentScreen instanceof HandledScreen<?> hs)) return;
+        if (rebirthLore == null) rebirthLore = new RebirthLore(cfg);
+        Integer slot = RebirthScreens.diamondSlot(hs.getScreenHandler());
+        java.util.List<GuiHuman.Item> items = GuiHuman.items(client);
+        GuiHuman.Item diamond = null;
+        for (GuiHuman.Item it : items) if (slot != null && it.slot() == slot) { diamond = it; break; }
+        if (rebirthGuiLoggedAtRebirths == null || !rebirthGuiLoggedAtRebirths.equals(stats.rebirths)) {
+            rebirthGuiLoggedAtRebirths = stats.rebirths;
+            if (logger != null) logger.log("rebirth_gui", "title", GuiHuman.title(client), "diamondSlot", slot, "items", GuiHuman.describe(items));
+        }
+        if (diamond == null) return;
+        RebirthLore.RebirthItem r = rebirthLore.parseRebirthItem(diamond.lore());
+        if (r.required() == null && r.multFrom() == null) {
+            if (logger != null) logger.log("rebirth_gui_unparsed", "slot", slot, "name", diamond.name(), "lore", diamond.lore());
+            return;
+        }
+        stats.noteRebirthGui(r.required(), r.multFrom(), r.multTo());
     }
 
     private boolean clickDiamond(MinecraftClient client) {

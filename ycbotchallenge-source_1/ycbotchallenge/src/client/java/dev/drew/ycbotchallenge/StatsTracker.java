@@ -38,6 +38,19 @@ public class StatsTracker {
     public String zone = null;
     public String multiplier = null;
     public Double rebirthProgressPct = null;
+    /** 0.9.43: the permanent money multiplier from the Rebirth GUI (now / after the next rebirth), persisted. */
+    public Double rebirthMultiplier = null;
+    public Double rebirthMultiplierNext = null;
+    private Integer rebirthMultiplierAtRebirths = null;
+    /** 0.9.43: "YOUR SWORD IS NOW LEVEL N!" - the level, and a counter the enchant module watches for unlocks. */
+    public Integer swordLevel = null;
+    public volatile int swordLevelSeq = 0;
+    /** 0.9.43: the server's last enchant-prestige success line (name, cost) - the click's confirmation. */
+    public volatile long lastEnchantPrestigeAt = 0;
+    public volatile String lastEnchantPrestigeName = null;
+    public volatile Double lastEnchantPrestigeCost = null;
+    /** 0.9.43: each enchant's beacon as last read (persisted). */
+    private final Map<String, StateStore.PrestigeEntry> enchantPrestige = new LinkedHashMap<>();
     public final Map<String, String> balances = new LinkedHashMap<>();
     /** Absolute next-tier price (bal at fail + gap), null while unknown. */
     public Double swordTarget = null;
@@ -528,6 +541,7 @@ public class StatsTracker {
     private final List<Pattern> balanceRes = new ArrayList<>();
     private final List<Pattern> ascensionRes = new ArrayList<>();
     private final List<Pattern> prestigeRes = new ArrayList<>();
+    private Pattern enchantPrestigeRe, enchantPrestigeGateRe, enchantPrestigeMaxRe, swordLevelRe;
     private final List<Pattern> captchaRes = new ArrayList<>();
     private final List<Pattern> upgradeFailRes = new ArrayList<>();
     private final List<Pattern> upgradeMaxedRes = new ArrayList<>();
@@ -634,6 +648,10 @@ public class StatsTracker {
         bossTargetNameRe = compileLoose(cfg.bossTargetNamePattern);
         if (cfg.ggPerkPatterns != null) for (String p : cfg.ggPerkPatterns) ggPerkRes.add(compileLoose(p));
         for (String p : cfg.prestigeChatPatterns) prestigeRes.add(compileLoose(p));
+        enchantPrestigeRe = compileLoose(cfg.enchantPrestigeChatPattern);
+        enchantPrestigeGateRe = compileLoose(cfg.enchantPrestigeGatePattern);
+        enchantPrestigeMaxRe = compileLoose(cfg.enchantPrestigeMaxPattern);
+        swordLevelRe = compileLoose(cfg.swordLevelChatPattern);
         for (String p : cfg.captchaChatPatterns) captchaRes.add(compileLoose(p));
         if (cfg.captchaChatHintPatterns != null) {
             for (String p : cfg.captchaChatHintPatterns) captchaHintRes.add(compileLoose(p));
@@ -946,6 +964,8 @@ public class StatsTracker {
         if (lastCycleOnMin == null) lastCycleOnMin = e.lastCycleOnMin;
         if (companionSaturatedStage == null) companionSaturatedStage = e.companionSaturatedStage;
         if (companionRosterByZs.isEmpty() && e.companionRosterByZs != null) companionRosterByZs.putAll(e.companionRosterByZs);
+        if (enchantPrestige.isEmpty() && e.enchantPrestige != null) enchantPrestige.putAll(e.enchantPrestige);
+        if (rebirthMultiplier == null) { rebirthMultiplier = e.rebirthMultiplier; rebirthMultiplierNext = e.rebirthMultiplierNext; rebirthMultiplierAtRebirths = e.rebirthMultiplierAtRebirths; }
         if (cycleHistory.isEmpty() && e.cycleHistory != null) cycleHistory.addAll(e.cycleHistory);
         if (cycleStages.isEmpty() && e.cycleStages != null
             && (rebirths == null || e.cycleAtRebirths == null || rebirths.equals(e.cycleAtRebirths))) cycleStages.addAll(e.cycleStages);
@@ -976,6 +996,62 @@ public class StatsTracker {
     }
 
     private static String fmt(Double v) { return v != null ? Amounts.format(v) : null; }
+
+    private static String groupOrNull(Matcher m, String name) {
+        try { return m.group(name); } catch (IllegalArgumentException | IllegalStateException e) { return null; }
+    }
+
+    /** 0.9.43: an enchant's beacon as last read, or null when never seen. */
+    public EnchantLore.PrestigeState enchantPrestigeState(String name) {
+        StateStore.PrestigeEntry p = name == null ? null : enchantPrestige.get(name);
+        return p == null ? null : new EnchantLore.PrestigeState(p.level, p.max, p.cost, p.currency, p.rebirthReq, p.tab);
+    }
+
+    /** 0.9.43: every remembered beacon, for the pick. */
+    public Map<String, EnchantLore.PrestigeState> enchantPrestigeStates() {
+        Map<String, EnchantLore.PrestigeState> out = new LinkedHashMap<>();
+        for (Map.Entry<String, StateStore.PrestigeEntry> e : enchantPrestige.entrySet()) {
+            StateStore.PrestigeEntry p = e.getValue();
+            out.put(e.getKey(), new EnchantLore.PrestigeState(p.level, p.max, p.cost, p.currency, p.rebirthReq, p.tab));
+        }
+        return out;
+    }
+
+    public void rememberEnchantPrestige(String name, String tab, EnchantLore.Prestige p) {
+        if (name == null || p == null) return;
+        StateStore.PrestigeEntry e = new StateStore.PrestigeEntry();
+        e.level = p.level(); e.max = p.max(); e.cost = p.cost(); e.currency = p.currency(); e.rebirthReq = p.rebirthReq();
+        e.tab = tab; e.at = System.currentTimeMillis();
+        enchantPrestige.put(name, e);
+        markStateDirty();
+    }
+
+    /**
+     * 0.9.43: the Rebirth GUI's diamond, read before any click. A parsed Required is the
+     * rebirth cost itself (rebirth_target via=gui); the multiplier pair is kept across the
+     * reset (it is permanent - it just goes up).
+     */
+    public void noteRebirthGui(Double required, Double multFrom, Double multTo) {
+        long now = System.currentTimeMillis();
+        if (required != null && required > 0) {
+            boolean changed = rebirthTarget == null || Math.abs(rebirthTarget - required) > required * 1e-6;
+            if (rebirthTarget == null) rebirthPriceSeenAt = now;
+            rebirthTarget = required;
+            Double bal = money();
+            if (bal != null) rebirthGap = Math.max(0, required - bal);
+            if (changed) log("rebirth_target", "via", "gui", "target", Amounts.format(required), "gap", rebirthGap != null ? Amounts.format(rebirthGap) : null);
+            markStateDirty();
+        }
+        if (multFrom != null && multTo != null && multFrom > 0) {
+            boolean changed = rebirthMultiplier == null || !rebirthMultiplier.equals(multFrom) || rebirths == null || !rebirths.equals(rebirthMultiplierAtRebirths);
+            rebirthMultiplier = multFrom;
+            rebirthMultiplierNext = multTo;
+            rebirthMultiplierAtRebirths = rebirths;
+            if (changed) log("rebirth_multiplier", "from", Amounts.format(multFrom), "to", Amounts.format(multTo),
+                "ratio", Math.round(multTo / multFrom * 1000.0) / 1000.0, "rebirths", rebirths);
+            markStateDirty();
+        }
+    }
 
     private void markStateDirty() {
         if (stateDirtyAt == 0) stateDirtyAt = System.currentTimeMillis();
@@ -1011,6 +1087,10 @@ public class StatsTracker {
         e.cycleAtRebirths = cycleAtRebirths != null ? cycleAtRebirths : rebirths;
         e.companionSaturatedStage = companionSaturatedStage;
         e.companionRosterByZs = companionRosterByZs.isEmpty() ? null : new LinkedHashMap<>(companionRosterByZs);
+        e.enchantPrestige = enchantPrestige.isEmpty() ? null : new LinkedHashMap<>(enchantPrestige);
+        e.rebirthMultiplier = rebirthMultiplier;
+        e.rebirthMultiplierNext = rebirthMultiplierNext;
+        e.rebirthMultiplierAtRebirths = rebirthMultiplierAtRebirths;
         e.cycleStages = cycleStages.isEmpty() ? null : new ArrayList<>(cycleStages);
         e.cycleHistory = cycleHistory.isEmpty() ? null : new ArrayList<>(cycleHistory);
         stateStore.put(stateUser, e);
@@ -1167,6 +1247,7 @@ public class StatsTracker {
         ctx.addProperty("ascensions", ascensions);
         if (zone != null) ctx.addProperty("zone", zone);
         if (multiplier != null) ctx.addProperty("multiplier", multiplier);
+        if (rebirthMultiplier != null) ctx.addProperty("rebirthMult", Amounts.format(rebirthMultiplier));
         Double bal = money();
         if (bal != null) ctx.addProperty("money", Amounts.format(bal));
         Map<String, String> bals = formattedBalances();
@@ -2225,8 +2306,39 @@ public class StatsTracker {
                 break;
             }
         }
+        // 0.9.43: an ENCHANT prestige line (success, the rebirth gate, the max) is the
+        // enchant module's confirmation, never an account prestige (the 05:30 chat counted
+        // 120 of them as such).
+        boolean enchantPrestigeLine = false;
+        if (!playerLine) {
+            Matcher em = enchantPrestigeRe.matcher(text);
+            if (em.find()) {
+                enchantPrestigeLine = true;
+                lastEnchantPrestigeName = groupOrNull(em, "name");
+                lastEnchantPrestigeCost = Amounts.parse(groupOrNull(em, "amount"));
+                lastEnchantPrestigeAt = now;
+                log("enchant_prestige_chat", "kind", "success", "name", lastEnchantPrestigeName,
+                    "cost", lastEnchantPrestigeCost != null ? Amounts.format(lastEnchantPrestigeCost) : null,
+                    "currency", groupOrNull(em, "currency"), "raw", text);
+            } else if (enchantPrestigeGateRe.matcher(text).find()) {
+                enchantPrestigeLine = true;
+                Matcher gm = enchantPrestigeGateRe.matcher(text);
+                log("enchant_prestige_chat", "kind", "rebirth-gate", "need", gm.find() ? groupOrNull(gm, "n") : null, "raw", text);
+            } else if (enchantPrestigeMaxRe.matcher(text).find()) {
+                enchantPrestigeLine = true;
+                log("enchant_prestige_chat", "kind", "max", "raw", text);
+            }
+            Matcher sm = swordLevelRe.matcher(text);
+            if (sm.find()) {
+                try { swordLevel = Integer.parseInt(groupOrNull(sm, "n").replace(",", "")); } catch (Exception ignored) { }
+                swordLevelSeq++;
+                log("sword_level", "level", swordLevel, "raw", text);
+                known = true;
+            }
+        }
+        if (enchantPrestigeLine) known = true;
         for (Pattern p : prestigeRes) {
-            if (!playerLine && p.matcher(text).find()) {
+            if (!playerLine && !enchantPrestigeLine && p.matcher(text).find()) {
                 prestiges++;
                 log("prestige", "via", "chat", "message", text, "prestiges", prestiges);
                 known = true;

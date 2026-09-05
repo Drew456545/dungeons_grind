@@ -63,10 +63,27 @@ public final class StateStore {
         public Integer companionSaturatedStage;
         /** 0.9.41: companions owned per zone/stage ("z3s1" -> count) at the last menu read. */
         public Map<String, Integer> companionRosterByZs;
+        /** 0.9.43: each enchant's beacon as last read (prestige level/max, next cost, rebirth floor, tab). */
+        public Map<String, PrestigeEntry> enchantPrestige;
+        /** 0.9.43: the permanent money multiplier from the Rebirth GUI, now and after the next rebirth. */
+        public Double rebirthMultiplier;
+        public Double rebirthMultiplierNext;
+        public Integer rebirthMultiplierAtRebirths;
         /** 0.9.37: the stages of the rebirth in progress, and the last cycles, so the record survives a restart. */
         public List<StageEntry> cycleStages;
         public List<CycleEntry> cycleHistory;
         public long savedAt;
+    }
+
+    /** 0.9.43: one enchant's prestige beacon as last read. */
+    public static final class PrestigeEntry {
+        public Integer level;
+        public Integer max;
+        public Double cost;
+        public String currency;
+        public Integer rebirthReq;
+        public String tab;
+        public long at;
     }
 
     /** One stage of a rebirth (0.9.37): bot-on and wall minutes, kills, buys, what it earned. */

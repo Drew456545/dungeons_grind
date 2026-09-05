@@ -392,6 +392,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
             () -> upgrades.horizonBlockedKind() != null ? "holding " + upgrades.horizonBlockedKind() + " (rebirth sooner)" : "not limiting"));
         opts.add(new BotOptionsScreen.Option("enchantsEnabled", "Enchant visits", () -> config.enchantsEnabled, v -> config.enchantsEnabled = v,
             () -> moduleStatus(enchants.hudLine(), enchants.isBusy(), enchants.isSuspended())));
+        opts.add(new BotOptionsScreen.Option("enchantPrestigeEnabled", "Enchant prestige", () -> config.enchantPrestigeEnabled, v -> config.enchantPrestigeEnabled = v,
+            () -> enchants.prestigeHudLine()));
         opts.add(new BotOptionsScreen.Option("rebirthUpgradesEnabled", "Rebirth upgrades", () -> config.rebirthUpgradesEnabled, v -> config.rebirthUpgradesEnabled = v,
             () -> moduleStatus(rebirthUpgrades.hudLine(), rebirthUpgrades.isBusy(), rebirthUpgrades.isSuspended())));
         opts.add(new BotOptionsScreen.Option("companionsEnabled", "Companions", () -> config.companionsEnabled, v -> config.companionsEnabled = v,

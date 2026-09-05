@@ -49,6 +49,28 @@ public final class EnchantLore {
         }
     }
 
+    /**
+     * 0.9.43: the "Enchant Prestige" beacon of an Upgrade menu. {@code level}/{@code max} =
+     * "Prestige: 6 / 10", {@code cost} in {@code currency} = "Cost: 2.5T Souls",
+     * {@code rebirthReq} = "Rebirth: 21", {@code multiplier} = "Multiplier: 13.30x" (evidence).
+     */
+    public record Prestige(int slot, Integer level, Integer max, Double cost, String currency,
+                           Integer rebirthReq, Double multiplier) {
+        public boolean maxedOut() { return level != null && max != null && level >= max; }
+        public String summary() {
+            return "prestige " + level + "/" + max + (cost != null ? " " + Amounts.format(cost) + " " + currency : "")
+                + (rebirthReq != null ? " rb>=" + rebirthReq : "") + (multiplier != null ? " " + multiplier + "x" : "");
+        }
+    }
+
+    /** 0.9.43: what a visit remembers about an enchant's beacon (persisted), so the menu is not opened for nothing. */
+    public record PrestigeState(Integer level, Integer max, Double cost, String currency, Integer rebirthReq, String tab) {}
+
+    private final Pattern prestigeNameRe;
+    private final Pattern prestigeLevelRe;
+    private final Pattern prestigeCostRe;
+    private final Pattern prestigeRebirthRe;
+    private final Pattern prestigeMultRe;
     private final Pattern levelRe;
     private final Pattern priceRe;
     private final Pattern lockedRe;
@@ -67,6 +89,11 @@ public final class EnchantLore {
         maxLevelsRe = compileLoose(cfg.enchantMaxLevelsPattern);
         upgradeTitleRe = compileLoose(cfg.enchantUpgradeTitlePattern);
         swordRe = compileLoose(cfg.enchantSwordPattern);
+        prestigeNameRe = compileLoose(cfg.enchantPrestigeNamePattern);
+        prestigeLevelRe = compileLoose(cfg.enchantPrestigeLevelPattern);
+        prestigeCostRe = compileLoose(cfg.enchantPrestigeCostPattern);
+        prestigeRebirthRe = compileLoose(cfg.enchantPrestigeRebirthPattern);
+        prestigeMultRe = compileLoose(cfg.enchantPrestigeMultiplierPattern);
         maxUpgradeName = cfg.enchantMaxUpgradeName == null ? "max upgrade"
             : cfg.enchantMaxUpgradeName.trim().toLowerCase(Locale.ROOT);
         List<String> t = new ArrayList<>();
@@ -77,6 +104,83 @@ public final class EnchantLore {
     }
 
     public List<String> tabs() { return tabs; }
+
+    /** 0.9.43: the beacon, parsed from its stripped name and lore; null for any other item. */
+    public Prestige parsePrestige(int slot, String rawName, List<String> rawLore) {
+        String name = rawName == null ? "" : SidebarParser.strip(rawName);
+        List<String> lore = new ArrayList<>();
+        if (rawLore != null) for (String l : rawLore) { String s = SidebarParser.strip(l); if (!s.isEmpty()) lore.add(s); }
+        boolean isIt = prestigeNameRe.matcher(name).find();
+        if (!isIt) for (String l : lore) if (prestigeNameRe.matcher(l).find()) { isIt = true; break; }
+        if (!isIt) return null;
+        Integer level = null, max = null, req = null;
+        Double cost = null, mult = null;
+        String currency = null;
+        for (String line : lore) {
+            Matcher m;
+            if (level == null && (m = prestigeLevelRe.matcher(line)).find()) { level = intGroup(m, "cur"); max = intGroup(m, "max"); }
+            if (cost == null && (m = prestigeCostRe.matcher(line)).find()) {
+                cost = Amounts.parse(m.group("amount"));
+                String c = m.group("currency");
+                currency = c != null ? c.toLowerCase(Locale.ROOT) : null;
+            }
+            if (req == null && (m = prestigeRebirthRe.matcher(line)).find()) req = intGroup(m, "n");
+            if (mult == null && (m = prestigeMultRe.matcher(line)).find()) mult = Amounts.parse(m.group("x"));
+        }
+        return new Prestige(slot, level, max, cost, currency, req, mult);
+    }
+
+    /**
+     * 0.9.43: why a beacon cannot be clicked right now, or null when it can. An unknown
+     * rebirth count or balance never clicks (the 0.9.11 rule: a person does not buy blind).
+     */
+    public static String prestigeBlock(Prestige p, Integer rebirths, Double balance) {
+        if (p == null) return "no-item";
+        if (p.maxedOut()) return "max";
+        if (p.cost() == null) return "no-cost";
+        if (p.rebirthReq() != null && rebirths == null) return "no-rebirths";
+        if (p.rebirthReq() != null && rebirths < p.rebirthReq()) return "rebirth";
+        if (balance == null) return "no-balance";
+        if (p.cost() > balance + 1e-6) return "balance";
+        return null;
+    }
+
+    /** The same gate on a remembered state (null state = unknown = worth opening). */
+    public static String prestigeBlock(PrestigeState s, Integer rebirths, java.util.Map<String, Double> balances) {
+        if (s == null) return null;
+        if (s.level() != null && s.max() != null && s.level() >= s.max()) return "max";
+        if (s.rebirthReq() != null && rebirths != null && rebirths < s.rebirthReq()) return "rebirth";
+        if (s.cost() != null && s.currency() != null && balances != null) {
+            Double bal = balances.get(s.currency());
+            if (bal != null && s.cost() > bal + 1e-6) return "balance";
+        }
+        return null;
+    }
+
+    /**
+     * 0.9.43: the maxed enchant whose Upgrade menu to open for its beacon: never one blocked
+     * by what was remembered, unknown ones first (to learn them), then the cheapest known
+     * next prestige (Drew: most prestiges per soul). Pure.
+     */
+    public static Item prestigePick(List<Item> inSlotOrder, java.util.Map<String, PrestigeState> remembered,
+                                    Integer rebirths, java.util.Map<String, Double> balances, Set<String> skipNames) {
+        Item best = null;
+        double bestCost = Double.MAX_VALUE;
+        boolean bestUnknown = false;
+        if (inSlotOrder == null) return null;
+        for (Item it : inSlotOrder) {
+            if (!it.maxed() || it.locked()) continue;
+            if (skipNames != null && skipNames.contains(it.name())) continue;
+            PrestigeState s = remembered != null ? remembered.get(it.name()) : null;
+            if (prestigeBlock(s, rebirths, balances) != null) continue;
+            boolean unknown = s == null || s.cost() == null;
+            double cost = unknown ? Double.MAX_VALUE : s.cost();
+            if (best == null || (unknown && !bestUnknown) || (unknown == bestUnknown && cost < bestCost)) {
+                best = it; bestCost = cost; bestUnknown = unknown;
+            }
+        }
+        return best;
+    }
 
     /** Parse one item from its stripped name and stripped lore lines. */
     public Item parse(String rawName, List<String> rawLore) {

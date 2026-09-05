@@ -29,7 +29,8 @@ import net.minecraft.util.hit.HitResult;
 public class EnchantController {
     private enum Phase {
         IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_PRESS, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
-        MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, SWORDS_CLICK, SWORDS_PRESS, SWORDS_WAIT, SWORDS_READ, CLOSE
+        MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, PRESTIGE_CLICK, PRESTIGE_SETTLE,
+        SWORDS_CLICK, SWORDS_PRESS, SWORDS_WAIT, SWORDS_READ, CLOSE
     }
 
     private final YCBotChallengeConfig cfg;
@@ -87,9 +88,26 @@ public class EnchantController {
     /** 0.9.37: the upgrade controller, so a visit never opens the enchanter over a buy that is decided or in flight. */
     private UpgradeController upgrades;
     public void attachUpgrades(UpgradeController u) { upgrades = u; }
-    /** 0.9.37: tabs every enchant of which is maxed (souls: 28/28 MAX, 163.87T idle, probed every visit). */
-    private final java.util.Set<String> maxedTabs = new java.util.HashSet<>();
+    /**
+     * 0.9.37: tabs every enchant of which is maxed (souls: 28/28 MAX, 163.87T idle, probed every
+     * visit). 0.9.43: when it was seen so, not for good - a prestige or a newly unlocked enchant
+     * shows up on exactly such a tab (enchantMaxedTabRescanMs; a sword-level line clears it).
+     */
+    private final Map<String, Long> maxedTabAt = new HashMap<>();
     private long lastBuyPendingSkipAt = 0;
+    // 0.9.43: enchant prestige.
+    private boolean prestigeMode = false;
+    private EnchantLore.Prestige prestigeItem = null;
+    private int prestigesThisEnchant = 0;
+    private int prestigeOpensThisVisit = 0;
+    private int prestigesThisVisit = 0;
+    private int prestigesSession = 0;
+    private long prestigeClickAt = 0;
+    private final Set<String> upgradeGuiLogged = new HashSet<>();
+    private final Map<String, Set<String>> lockedByTab = new HashMap<>();
+    private int swordLevelSeqSeen = -1;
+    private boolean unlockHint = false;
+    private String lastPrestigeLine = null;
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
@@ -131,7 +149,22 @@ public class EnchantController {
         if (!cfg.enchantsEnabled) return null;
         if (phase == Phase.IDLE) return suspended ? "enchant: suspended after repeated aborts (toggle to reset)" : null;
         return "enchant: " + phase.name().toLowerCase(Locale.ROOT)
-            + (currentTab != null ? " " + currentTab : "") + (buys > 0 ? "  bought " + buys : "");
+            + (currentTab != null ? " " + currentTab : "") + (buys > 0 ? "  bought " + buys : "")
+            + (prestigesThisVisit > 0 ? "  prestiged " + prestigesThisVisit : "");
+    }
+
+    /** 0.9.43: the Y-screen line under "Enchant prestige". */
+    public String prestigeHudLine() {
+        if (!cfg.enchantPrestigeEnabled) return "off";
+        String next = null;
+        double best = Double.MAX_VALUE;
+        Map<String, Double> bals = balancesMap();
+        for (Map.Entry<String, EnchantLore.PrestigeState> e : stats.enchantPrestigeStates().entrySet()) {
+            EnchantLore.PrestigeState s = e.getValue();
+            if (s.cost() == null || EnchantLore.prestigeBlock(s, stats.rebirths, bals) != null) continue;
+            if (s.cost() < best) { best = s.cost(); next = e.getKey() + " " + Amounts.format(s.cost()) + " " + s.currency(); }
+        }
+        return "prestiged " + prestigesSession + " this session" + (next != null ? " · next " + next : lastPrestigeLine != null ? " · " + lastPrestigeLine : "");
     }
 
     public void reset(MinecraftClient client) {
@@ -214,8 +247,9 @@ public class EnchantController {
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
                 currentTab = lore.tabs().get(tabIndex);
-                if (maxedTabs.contains(currentTab)) {
-                    log("enchant_skip", "reason", "tab-maxed", "tab", currentTab);
+                Long maxedAt = maxedTabAt.get(currentTab);
+                if (maxedAt != null && now - maxedAt < cfg.enchantMaxedTabRescanMs && !prestigeWorthOnTab(currentTab)) {
+                    log("enchant_skip", "reason", "tab-maxed", "tab", currentTab, "ageMs", now - maxedAt);
                     nextTab();
                     return true;
                 }
@@ -291,24 +325,54 @@ public class EnchantController {
                 if (cheapest != null) cheapestByTab.put(currentTab, cheapest); else cheapestByTab.remove(currentTab);
                 if (scansThisTab++ == 0) {
                     List<String> summary = new ArrayList<>();
-                    for (EnchantLore.Item it : items) summary.add(it.summary());
+                    Set<String> lockedNow = new HashSet<>();
+                    for (EnchantLore.Item it : items) { summary.add(it.summary()); if (it.locked()) lockedNow.add(it.name()); }
+                    // 0.9.43: an enchant LOCKED at the last scan of this tab and not now has unlocked.
+                    Set<String> lockedBefore = lockedByTab.get(currentTab);
+                    List<String> unlocked = new ArrayList<>();
+                    if (lockedBefore != null) for (String n : lockedBefore) if (!lockedNow.contains(n)) unlocked.add(n);
+                    lockedByTab.put(currentTab, lockedNow);
                     log("enchant_scan", "tab", currentTab, "clicked", tabClicked,
                         "balance", bal != null ? Amounts.format(bal) : null,
-                        "count", items.size(), "items", summary);
+                        "count", items.size(), "locked", lockedNow.size(), "items", summary);
+                    if (!unlocked.isEmpty()) log("enchant_unlocked", "tab", currentTab, "names", unlocked, "swordLevel", stats.swordLevel);
                 }
                 double roll = ThreadLocalRandom.current().nextDouble();
                 List<EnchantLore.Item> candidates = EnchantLore.enchantCandidates(items, balances, currentTab, attempted);
                 EnchantLore.Item choice = EnchantLore.chooseEnchant(items, balances, currentTab, attempted, roll, cfg.enchantLagBias);
                 if (choice == null) {
+                    // 0.9.43: level buys are done on this tab - a maxed enchant's beacon next
+                    // (Drew: levels first, then prestige; cheapest next prestige first).
+                    EnchantLore.Item pp = cfg.enchantPrestigeEnabled && !wrapUp && prestigeOpensThisVisit < cfg.enchantPrestigeOpensPerVisit
+                        ? EnchantLore.prestigePick(items, stats.enchantPrestigeStates(), stats.rebirths, balances, attempted) : null;
+                    if (pp != null) {
+                        picked = pp;
+                        prestigeMode = true;
+                        prestigeOpensThisVisit++;
+                        prestigesThisEnchant = 0;
+                        pickedSlot = -1;
+                        for (EnchantScreens.SlotItem si : slots) if (si.item() == pp) { pickedSlot = si.slot(); break; }
+                        attempted.add(pp.name());
+                        EnchantLore.PrestigeState known = stats.enchantPrestigeState(pp.name());
+                        log("enchant_pick", "tab", currentTab, "via", "prestige", "name", pp.name(), "slot", pickedSlot,
+                            "level", pp.level(), "maxLevel", pp.maxLevel(),
+                            "known", known != null ? known.level() + "/" + known.max() : null,
+                            "knownCost", known != null && known.cost() != null ? Amounts.format(known.cost()) : null,
+                            "balance", bal != null ? Amounts.format(bal) : null, "rebirths", stats.rebirths);
+                        phase = Phase.ENCHANT_CLICK;
+                        phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                        return true;
+                    }
                     // 0.9.37: "nothing affordable" and "nothing left to buy" are different states.
                     long enchants = items.stream().filter(EnchantLore.Item::isEnchant).count();
                     boolean allMaxed = enchants > 0 && items.stream().filter(EnchantLore.Item::isEnchant).allMatch(EnchantLore.Item::maxed);
-                    if (allMaxed) maxedTabs.add(currentTab);
+                    if (allMaxed) maxedTabAt.put(currentTab, now);
                     log("enchant_skip", "reason", allMaxed ? "all-maxed" : "none-affordable", "tab", currentTab,
                         "balance", bal != null ? Amounts.format(bal) : null, "buysThisTab", buysThisTab);
                     nextTab();
                     return true;
                 }
+                prestigeMode = false;
                 picked = choice;
                 pickedSlot = -1;
                 for (EnchantScreens.SlotItem si : slots) if (si.item() == choice) { pickedSlot = si.slot(); break; }
@@ -356,6 +420,39 @@ public class EnchantController {
                     return true;
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
+                // 0.9.43: the menu's contents, once per enchant per visit (never dumped before
+                // this; the beacon's slot and lore are read from here), and the beacon itself.
+                String pname = picked != null ? picked.name() : "?";
+                List<GuiHuman.Item> guiItems = GuiHuman.items(client);
+                if (upgradeGuiLogged.add(pname)) {
+                    log("enchant_upgrade_gui", "name", pname, "title", GuiHuman.title(client), "items", GuiHuman.describe(guiItems));
+                }
+                prestigeItem = findPrestige(guiItems);
+                if (prestigeMode) {
+                    String block = EnchantLore.prestigeBlock(prestigeItem, stats.rebirths,
+                        prestigeItem != null && prestigeItem.currency() != null ? stats.currency(prestigeItem.currency()) : null);
+                    if (prestigeItem != null) stats.rememberEnchantPrestige(pname, currentTab, prestigeItem);
+                    log("enchant_prestige_read", "name", pname, "beacon", prestigeItem != null ? prestigeItem.summary() : null,
+                        "slot", prestigeItem != null ? prestigeItem.slot() : null,
+                        "level", prestigeItem != null ? prestigeItem.level() : null, "max", prestigeItem != null ? prestigeItem.max() : null,
+                        "cost", prestigeItem != null && prestigeItem.cost() != null ? Amounts.format(prestigeItem.cost()) : null,
+                        "currency", prestigeItem != null ? prestigeItem.currency() : null,
+                        "rebirthReq", prestigeItem != null ? prestigeItem.rebirthReq() : null,
+                        "multiplier", prestigeItem != null ? prestigeItem.multiplier() : null,
+                        "rebirths", stats.rebirths,
+                        "balance", prestigeItem != null && prestigeItem.currency() != null && stats.currency(prestigeItem.currency()) != null
+                            ? Amounts.format(stats.currency(prestigeItem.currency())) : null,
+                        "eligible", block == null, "why", block);
+                    if (block != null) {
+                        GuiHuman.close(client, "enchant", logger);
+                        phase = Phase.RETURN_WAIT;
+                        phaseUntil = now + 1500;
+                        return true;
+                    }
+                    phase = Phase.PRESTIGE_CLICK;
+                    phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                    return true;
+                }
                 EnchantScreens.SlotItem mi = EnchantScreens.maxUpgradeItem(h, lore);
                 if (mi == null) {
                     log("enchant_skip", "reason", "no-max-item", "name", picked != null ? picked.name() : null);
@@ -430,6 +527,65 @@ public class EnchantController {
                 } else if (now >= phaseUntil) {
                     onEnchanterGone(client, now);
                 }
+            }
+            case PRESTIGE_CLICK -> {
+                if (now < phaseUntil) return true;
+                if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.UPGRADE || prestigeItem == null) {
+                    phase = Phase.RETURN_WAIT;
+                    phaseUntil = now + 1500;
+                    return true;
+                }
+                GuiHuman.click(client, prestigeItem.slot(), "enchant", "prestige", logger);
+                prestigeClickAt = now;
+                log("enchant_prestige_click", "name", picked != null ? picked.name() : null, "slot", prestigeItem.slot(),
+                    "from", prestigeItem.level(), "cost", prestigeItem.cost() != null ? Amounts.format(prestigeItem.cost()) : null,
+                    "currency", prestigeItem.currency(), "n", prestigesThisEnchant + 1);
+                phase = Phase.PRESTIGE_SETTLE;
+                phaseUntil = now + HumanTiming.logNormalMs(cfg.enchantBuySettleMinMs, cfg.enchantBuySettleMaxMs);
+            }
+            case PRESTIGE_SETTLE -> {
+                if (now < phaseUntil) return true;
+                EnchantLore.Prestige before = prestigeItem;
+                boolean chat = stats.lastEnchantPrestigeAt >= prestigeClickAt;
+                EnchantScreens.Kind k = EnchantScreens.classify(client, lore);
+                EnchantLore.Prestige after = k == EnchantScreens.Kind.UPGRADE ? findPrestige(GuiHuman.items(client)) : null;
+                boolean rose = after != null && after.level() != null && before != null && before.level() != null && after.level() > before.level();
+                String pname = picked != null ? picked.name() : null;
+                if (rose || chat) {
+                    prestigesThisEnchant++;
+                    prestigesThisVisit++;
+                    prestigesSession++;
+                    Double cost = before != null ? before.cost() : null;
+                    String cur = before != null ? before.currency() : null;
+                    if (chat && stats.lastEnchantPrestigeCost != null) cost = stats.lastEnchantPrestigeCost;
+                    if (cost != null && cur != null) spent.merge(cur, cost, Double::sum);
+                    lastPrestigeLine = pname + " -> " + (after != null && after.level() != null ? after.level() : before != null && before.level() != null ? before.level() + 1 : "?");
+                    log("enchant_prestige", "name", pname, "from", before != null ? before.level() : null,
+                        "to", after != null ? after.level() : null, "cost", cost != null ? Amounts.format(cost) : null, "currency", cur,
+                        "chat", chat, "chatName", chat ? stats.lastEnchantPrestigeName : null,
+                        "next", after != null ? after.summary() : null, "n", prestigesThisEnchant);
+                    if (after != null) stats.rememberEnchantPrestige(pname, currentTab, after);
+                } else {
+                    log("enchant_prestige_stop", "reason", after == null ? "gui-gone" : "no-change", "name", pname,
+                        "level", after != null ? after.level() : null, "n", prestigesThisEnchant);
+                    if (after != null) stats.rememberEnchantPrestige(pname, currentTab, after);
+                }
+                if (k != EnchantScreens.Kind.UPGRADE) {
+                    phase = Phase.RETURN_WAIT;
+                    phaseUntil = now + 1500;
+                    return true;
+                }
+                String block = after == null ? "no-item" : EnchantLore.prestigeBlock(after, stats.rebirths,
+                    after.currency() != null ? stats.currency(after.currency()) : null);
+                if ((rose || chat) && block == null && prestigesThisEnchant < cfg.enchantPrestigeMaxPerVisit && !wrapUp) {
+                    prestigeItem = after;
+                    phase = Phase.PRESTIGE_CLICK;
+                    phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                    return true;
+                }
+                GuiHuman.close(client, "enchant", logger);
+                phase = Phase.RETURN_WAIT;
+                phaseUntil = now + 1500;
             }
             case SWORDS_CLICK -> {
                 if (wrapUp) { phase = Phase.CLOSE; return true; }
@@ -554,12 +710,20 @@ public class EnchantController {
             }
             return false;
         }
+        // 0.9.43: a sword level came in - an enchant may have unlocked: every tab is scanned
+        // again on the next visit, and that visit does not wait for the hazard or the growth.
+        if (stats.swordLevelSeq != swordLevelSeqSeen) {
+            boolean first = swordLevelSeqSeen == -1;
+            swordLevelSeqSeen = stats.swordLevelSeq;
+            if (!first) { unlockHint = true; maxedTabAt.clear(); log("enchant_unlock_hint", "swordLevel", stats.swordLevel); }
+        }
         double pull = affordPull();
         double hazard = Economy.visitHazard(now - lastVisitAt, cfg.enchantHazardRampStartMs, cfg.enchantHazardRampFullMs,
             cfg.enchantHazardFullChance, pull, bonus);
+        if (unlockHint) { via = "unlock"; hazard = 1.0; }
         if (ThreadLocalRandom.current().nextDouble() >= hazard) return false;
         boolean curiosity = false;
-        if (!balanceGrew()) {
+        if (!unlockHint && !balanceGrew()) {
             if (ThreadLocalRandom.current().nextDouble() >= cfg.enchantCuriosityChance) {
                 log("enchant_skip", "reason", "no-growth", "via", via, "hazard", Math.round(hazard * 1000) / 1000.0);
                 return false;
@@ -600,6 +764,13 @@ public class EnchantController {
         maxItem = null;
         visitVia = via;
         buysThisTab = 0;
+        prestigeMode = false;
+        prestigeItem = null;
+        prestigesThisEnchant = 0;
+        prestigeOpensThisVisit = 0;
+        prestigesThisVisit = 0;
+        upgradeGuiLogged.clear();
+        unlockHint = false;
         log("sword_lore", "lines", EnchantScreens.mainHandLore(client));
         log("enchant_visit_start", "via", via, "etaMs", eta != null ? Math.round(eta) : null,
             "sinceLastVisitMs", now - lastVisitAt, "hazard", Math.round(hazard * 1000) / 1000.0,
@@ -713,7 +884,7 @@ public class EnchantController {
     private void finish(MinecraftClient client, long now, String reason) {
         Map<String, String> spentFmt = new HashMap<>();
         spent.forEach((k, v) -> spentFmt.put(k, Amounts.format(v)));
-        log("enchant_menu_close", "reason", reason, "buys", buys, "spent", spentFmt,
+        log("enchant_menu_close", "reason", reason, "buys", buys, "prestiges", prestigesThisVisit, "spent", spentFmt,
             "durationMs", now - visitStartedAt, "balances", balancesNow());
         consecutiveAborts = 0;
         endVisit(client, now);
@@ -743,6 +914,31 @@ public class EnchantController {
         phase = Phase.IDLE;
         picked = null;
         maxItem = null;
+    }
+
+    /** 0.9.43: the beacon among an Upgrade menu's items, or null. */
+    private EnchantLore.Prestige findPrestige(List<GuiHuman.Item> items) {
+        for (GuiHuman.Item it : items) {
+            EnchantLore.Prestige p = lore.parsePrestige(it.slot(), it.name(), it.lore());
+            if (p != null) return p;
+        }
+        return null;
+    }
+
+    /**
+     * 0.9.43: a maxed tab is still worth a scan when a remembered beacon on it could be
+     * clicked now (the floor met, the cost covered) - or when nothing on it has been read yet.
+     */
+    private boolean prestigeWorthOnTab(String tab) {
+        if (!cfg.enchantPrestigeEnabled) return false;
+        Map<String, Double> bals = balancesMap();
+        boolean anyOnTab = false;
+        for (EnchantLore.PrestigeState s : stats.enchantPrestigeStates().values()) {
+            if (s.tab() == null || !s.tab().equals(tab)) continue;
+            anyOnTab = true;
+            if (EnchantLore.prestigeBlock(s, stats.rebirths, bals) == null) return true;
+        }
+        return !anyOnTab;
     }
 
     private static long now() { return System.currentTimeMillis(); }

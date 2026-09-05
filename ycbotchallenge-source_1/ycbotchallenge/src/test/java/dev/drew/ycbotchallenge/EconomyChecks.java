@@ -88,6 +88,7 @@ public final class EconomyChecks {
         n += zone0940();
         n += checks0941();
         n += checks0942();
+        n += checks0943();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -2862,6 +2863,77 @@ public final class EconomyChecks {
         double[] none = Economy.cycleSplit(st, mins, kills, null);
         n += eq("no top: all climb", none[0], 32.9, 1e-9);
         n += eq("no top: no farm", none[1], 0.0, 1e-9);
+        return n;
+    }
+
+    /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    private static int checks0943() {
+        int n = 0;
+        EnchantLore el = new EnchantLore(CFG);
+        List<String> beacon = List.of("Clicking this button will prestige your enchant", "providing an additional damage/currency multi to the enchant.",
+            "Information:", "* Prestige: 6 [\u2605] / 10", "* Multiplier: 13.30x DMG", "Requirement:", "* Cost: 2.5T Souls", "* Rebirth: 21",
+            "CLICK HERE", "Click here to prestige your enchant");
+        EnchantLore.Prestige p = el.parsePrestige(26, "Enchant Prestige", beacon);
+        n += eq("beacon parses", p != null, true);
+        if (p != null) {
+            n += eq("prestige level", p.level(), 6);
+            n += eq("prestige max", p.max(), 10);
+            n += eq("prestige cost", p.cost(), 2.5e12, 1e3);
+            n += eq("prestige currency", p.currency(), "souls");
+            n += eq("prestige rebirth floor", p.rebirthReq(), 21);
+            n += eq("prestige multiplier", p.multiplier(), 13.30, 1e-6);
+            n += eq("not maxed out", p.maxedOut(), false);
+            n += eq("eligible at rb23 with 156T", EnchantLore.prestigeBlock(p, 23, 156.68e12) == null, true);
+            n += eq("rebirth floor blocks", EnchantLore.prestigeBlock(p, 20, 156.68e12), "rebirth");
+            n += eq("unknown rebirths block", EnchantLore.prestigeBlock(p, null, 156.68e12), "no-rebirths");
+            n += eq("balance blocks", EnchantLore.prestigeBlock(p, 23, 2.0e12), "balance");
+            n += eq("unknown balance blocks", EnchantLore.prestigeBlock(p, 23, null), "no-balance");
+        }
+        n += eq("max upgrade hopper is no beacon", el.parsePrestige(20, "Max Upgrade", List.of("* Levels: 1", "* Price: 7,730,000 Souls")) == null, true);
+        EnchantLore.Prestige maxed = el.parsePrestige(26, "Enchant Prestige", List.of("Prestige: 10 / 10", "Cost: 967.17B Souls", "Rebirth: 25"));
+        n += eq("max prestige blocks", EnchantLore.prestigeBlock(maxed, 30, 1e15), "max");
+
+        // The pick: unknown first, then the cheapest remembered next prestige; blocked ones never.
+        EnchantLore.Item thor = el.parse("Thor Enchant", List.of("Level: 10,000 / 10,000", "Price: 5,010,000 Souls"));
+        EnchantLore.Item crit = el.parse("Critical Enchant", List.of("Level: 1,000 / 1,000", "Price: 2,600,000 Souls"));
+        EnchantLore.Item rage = el.parse("Rage Enchant", List.of("Level: 100 / 100", "Price: 270,000,000 Souls"));
+        EnchantLore.Item hand = el.parse("Second Hand Enchant", List.of("Level: 9,365 / 25,000", "Price: 478,250 Essence"));
+        n += eq("thor maxed", thor.maxed(), true);
+        n += eq("second hand not maxed", hand.maxed(), false);
+        java.util.Map<String, EnchantLore.PrestigeState> rem = new java.util.HashMap<>();
+        java.util.Map<String, Double> bals = java.util.Map.of("souls", 156.68e12, "essence", 54.3e6);
+        List<EnchantLore.Item> items = List.of(thor, crit, rage, hand);
+        n += eq("nothing remembered: first maxed in slot order", EnchantLore.prestigePick(items, rem, 23, bals, java.util.Set.of()).name(), "Thor Enchant");
+        rem.put("Thor Enchant", new EnchantLore.PrestigeState(6, 10, 2.5e12, "souls", 21, "souls"));
+        rem.put("Critical Enchant", new EnchantLore.PrestigeState(10, 10, 967e9, "souls", 25, "souls"));
+        n += eq("unknown Rage before known Thor", EnchantLore.prestigePick(items, rem, 23, bals, java.util.Set.of()).name(), "Rage Enchant");
+        rem.put("Rage Enchant", new EnchantLore.PrestigeState(6, 10, 1.4e12, "souls", 21, "souls"));
+        n += eq("cheapest known next: Rage 1.4T over Thor 2.5T", EnchantLore.prestigePick(items, rem, 23, bals, java.util.Set.of()).name(), "Rage Enchant");
+        n += eq("attempted this visit skipped", EnchantLore.prestigePick(items, rem, 23, bals, java.util.Set.of("Rage Enchant")).name(), "Thor Enchant");
+        n += eq("rebirth floor keeps the menu shut", EnchantLore.prestigePick(items, rem, 20, bals, java.util.Set.of()) == null, true);
+        n += eq("Critical at max prestige never", EnchantLore.prestigePick(List.of(crit), rem, 30, bals, java.util.Set.of()) == null, true);
+        n += eq("cost above balance keeps it shut", EnchantLore.prestigePick(List.of(thor), rem, 23, java.util.Map.of("souls", 1e12), java.util.Set.of()) == null, true);
+
+        // The diamond.
+        RebirthLore rl = new RebirthLore(CFG);
+        RebirthLore.RebirthItem d = rl.parseRebirthItem(List.of("REBIRTHS", "When you rebirth, your money, swords, and stage will reset.",
+            "INFORMATION:", "| Required: 282.430T Money", "| Multiplier: 4.59Kx -> 6.43Kx", "| |||||||||| 0%", "REWARDS:", "| Points: +1 Rebirth Point",
+            "[CLICK HERE TO REBIRTH]"));
+        n += eq("required money", d.required(), 282.43e12, 1e6);
+        n += eq("multiplier now", d.multFrom(), 4590.0, 1e-6);
+        n += eq("multiplier after", d.multTo(), 6430.0, 1e-6);
+        n += eq("nothing on a star", rl.parseRebirthItem(List.of("Current Points: 1")).required() == null, true);
+
+        // The chat lines.
+        java.util.regex.Pattern ok = loose(CFG.enchantPrestigeChatPattern);
+        java.util.regex.Matcher m = ok.matcher("You have successflly prestiged the Thor Enchant enchant for 1.3T Souls.");
+        n += eq("success line", m.find(), true);
+        n += eq("success name", m.group("name"), "Thor Enchant");
+        n += eq("success amount", m.group("amount"), "1.3T");
+        n += eq("gate line", loose(CFG.enchantPrestigeGatePattern).matcher("You need to be at least 21 rebirths to prestige this enchantment!").find(), true);
+        n += eq("max line", loose(CFG.enchantPrestigeMaxPattern).matcher("This enchantment is already at the max prestige!").find(), true);
+        n += eq("sword level line", loose(CFG.swordLevelChatPattern).matcher("YOUR SWORD IS NOW LEVEL 127!").find(), true);
+        n += eq("a player asking is not a prestige", ok.matcher("LiterallyWorst » how do i prestige").find(), false);
         return n;
     }
 }

@@ -42,6 +42,11 @@ public final class RebirthLore {
         }
     }
 
+    /** 0.9.43: the diamond's lore - the rebirth cost and the permanent money multiplier now / after. */
+    public record RebirthItem(Double required, Double multFrom, Double multTo) {}
+
+    private final Pattern requiredRe;
+    private final Pattern multiplierRe;
     private final Pattern starRe;
     private final Pattern pointsRe;
     private final Pattern menuTitleRe;
@@ -53,6 +58,8 @@ public final class RebirthLore {
     public RebirthLore(YCBotChallengeConfig cfg) {
         starRe = compileLoose(cfg.rebirthUpgradesItemPattern);
         pointsRe = compileLoose(cfg.rebirthPointsPattern);
+        requiredRe = compileLoose(cfg.rebirthRequiredPattern);
+        multiplierRe = compileLoose(cfg.rebirthMultiplierPattern);
         menuTitleRe = compileLoose(cfg.rebirthUpgradesTitlePattern);
         levelRe = compileLoose(cfg.rebirthUpgradeLevelPattern);
         costRe = compileLoose(cfg.rebirthUpgradeCostPattern);
@@ -65,6 +72,26 @@ public final class RebirthLore {
     }
 
     public List<String> order() { return order; }
+
+    /** 0.9.43: "Required: 282.430T Money" and "Multiplier: 4.59Kx -> 6.43Kx" from the diamond's stripped lore. */
+    public RebirthItem parseRebirthItem(List<String> lore) {
+        Double required = null, from = null, to = null;
+        if (lore != null) {
+            for (String raw : lore) {
+                if (raw == null) continue;
+                String l = SidebarParser.strip(raw);
+                if (required == null) {
+                    Matcher m = requiredRe.matcher(l);
+                    if (m.find()) required = Amounts.parse(groupOr(m, "amount", 1));
+                }
+                if (from == null) {
+                    Matcher m = multiplierRe.matcher(l);
+                    if (m.find()) { from = Amounts.parse(groupOr(m, "from", 1)); to = Amounts.parse(groupOr(m, "to", 2)); }
+                }
+            }
+        }
+        return new RebirthItem(required, from, to);
+    }
 
     static Pattern compileLoose(String p) {
         if (p == null || p.isBlank()) return Pattern.compile("(?!)");

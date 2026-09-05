@@ -726,6 +726,15 @@ public class YCBotChallengeConfig {
     public String rebirthUpgradesItemPattern = "/rebirth upgrades/";
     /** "| Current Points: 0" → 0. */
     public String rebirthPointsPattern = "/current points:?\\s*(?<n>[\\d,]+)/";
+    /**
+     * 0.9.43: the diamond's own lore, read before any click: "Required: 282.430T Money" is the
+     * rebirth cost (it used to be learned only from the chat gap line after a blind click,
+     * and a silent server left rebirth_probe_unresolved), "Multiplier: 4.59Kx -> 6.43Kx" is
+     * the permanent money multiplier now and after the rebirth (x1.40 a rebirth; Drew: "this
+     * is the rebirth income modifier").
+     */
+    public String rebirthRequiredPattern = "/\\brequired:?\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money/";
+    public String rebirthMultiplierPattern = "/\\bmultiplier:?\\s*(?<from>[\\d,.]+\\s*[A-Za-z]{0,3})x\\s*-+>\\s*(?<to>[\\d,.]+\\s*[A-Za-z]{0,3})x/";
     /** Title of the menu the star opens (screenshot: "Upgrades"). */
     public String rebirthUpgradesTitlePattern = "/^upgrades\\b/";
     /** Tooltip patterns for the upgrade items (unverified until the first rebirth_upgrade_menu log; tune from it). */
@@ -1192,6 +1201,42 @@ public class YCBotChallengeConfig {
     public String enchantUpgradeTitlePattern = "/\\bupgrade\\s*$/";
     /** The held item counts as the sword when its name or lore matches. */
     public String enchantSwordPattern = "/\\bsword\\b|enchants:/";
+
+    // ---- 0.9.43: enchant prestige. Every "<Name> Upgrade" menu carries a beacon "Enchant
+    // Prestige" (slot 26 in Drew's screenshot): "Prestige: 6 [star] / 10", "Multiplier: 13.30x
+    // DMG", "Cost: 2.5T Souls", "Rebirth: 21", "CLICK HERE". One click prestiges when the souls
+    // cover the cost and the rebirth count meets the floor; the level is NOT reset (Critical
+    // read 1000/1000 MAX after ten prestiges in the 05:30 chat), the cost climbs x1.93 a
+    // prestige, the floor rises with it ("You need to be at least 21 rebirths ..."), 10 is the
+    // max ("This enchantment is already at the max prestige!"). Every soul enchant was MAX with
+    // 156T souls idle when this was written. Drew: cheapest next prestige first, level buys
+    // before prestige, no reserve.
+    public boolean enchantPrestigeEnabled = true;
+    public String enchantPrestigeNamePattern = "/enchant prestige/";
+    /** "Prestige: 6 [star] / 10" - a glyph may sit between the number and the slash. */
+    public String enchantPrestigeLevelPattern = "/\\bprestige:?\\s*(?<cur>[\\d,]+)[^\\d\\/]*?\\/\\s*(?<max>[\\d,]+)/";
+    /** "Cost: 2.5T Souls" - amount with its suffix, then the currency word (never swallowed as a suffix). */
+    public String enchantPrestigeCostPattern =
+        "/\\bcost:?\\s*\\$?(?<amount>[\\d,.]+(?:\\s*(?!souls|essence|shards|money)[A-Za-z]{1,4})?)\\s*(?<currency>souls|essence|shards|money)/";
+    /** "Rebirth: 21" - the rebirth floor. */
+    public String enchantPrestigeRebirthPattern = "/\\brebirth:?\\s*(?<n>[\\d,]+)/";
+    /** "Multiplier: 13.30x DMG" - evidence only. */
+    public String enchantPrestigeMultiplierPattern = "/\\bmultiplier:?\\s*(?<x>[\\d,.]+\\s*[A-Za-z]{0,3})x/";
+    /** Clicks on one beacon in one visit (each read again before the next), and Upgrade menus opened only for the beacon per visit. */
+    public int enchantPrestigeMaxPerVisit = 10;
+    public int enchantPrestigeOpensPerVisit = 6;
+    /**
+     * A tab every enchant of which was MAX is skipped for this long, then scanned again: the
+     * old set lasted the whole process, which is exactly when a prestige or a newly unlocked
+     * enchant (sword level 150: Archer) appears on it. A sword-level chat line clears it.
+     */
+    public int enchantMaxedTabRescanMs = 600_000;
+    /** The server's lines: success, the rebirth gate, the max - never counted as account prestiges. */
+    public String enchantPrestigeChatPattern = "/prestiged the (?<name>.+? enchant) enchant for (?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?<currency>souls|essence|shards|money)/";
+    public String enchantPrestigeGatePattern = "/at least (?<n>[\\d,]+) rebirths to prestige/";
+    public String enchantPrestigeMaxPattern = "/already at the max prestige/";
+    /** "YOUR SWORD IS NOW LEVEL 127!" - enchants unlock at sword levels; the next visit scans every tab again. */
+    public String swordLevelChatPattern = "/your sword is now level\\s*(?<n>[\\d,]+)/";
     public int upgradeStopPauseMinMs = 200;
     public int upgradeStopPauseMaxMs = 800;
     public int typeKeyMinMs = 80;
@@ -1530,7 +1575,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 44;
+    public static final int CURRENT_CONFIG_VERSION = 45;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1912,6 +1957,11 @@ public class YCBotChallengeConfig {
             // dismissal, the perf row. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 45) {
+            // v45 (0.9.43): enchant prestige, the maxed-tab rescan, the sword-level hook, the
+            // Rebirth GUI lore read. Every knob is new and takes its default.
+            changed = true;
+        }
         if (configVersion < 44) {
             // v44 (0.9.42): the reader moves from qwen3.6-flash to qwen3.8-flash (a config
             // still on the 3.6 default follows; a hand-set model is left alone), the second
@@ -2049,6 +2099,8 @@ public class YCBotChallengeConfig {
         if (rebirthUpgradeOrder == null || rebirthUpgradeOrder.isEmpty()) rebirthUpgradeOrder = fresh.rebirthUpgradeOrder;
         if (rebirthUpgradesItemPattern == null || rebirthUpgradesItemPattern.isBlank()) rebirthUpgradesItemPattern = fresh.rebirthUpgradesItemPattern;
         if (rebirthPointsPattern == null || rebirthPointsPattern.isBlank()) rebirthPointsPattern = fresh.rebirthPointsPattern;
+        if (rebirthRequiredPattern == null || rebirthRequiredPattern.isBlank()) rebirthRequiredPattern = fresh.rebirthRequiredPattern;
+        if (rebirthMultiplierPattern == null || rebirthMultiplierPattern.isBlank()) rebirthMultiplierPattern = fresh.rebirthMultiplierPattern;
         if (rebirthUpgradesTitlePattern == null || rebirthUpgradesTitlePattern.isBlank()) rebirthUpgradesTitlePattern = fresh.rebirthUpgradesTitlePattern;
         if (rebirthUpgradeLevelPattern == null) rebirthUpgradeLevelPattern = fresh.rebirthUpgradeLevelPattern;
         if (rebirthUpgradeCostPattern == null) rebirthUpgradeCostPattern = fresh.rebirthUpgradeCostPattern;
@@ -2260,6 +2312,18 @@ public class YCBotChallengeConfig {
         if (enchantMaxLevelsPattern == null || enchantMaxLevelsPattern.isBlank()) enchantMaxLevelsPattern = freshEnchant.enchantMaxLevelsPattern;
         if (enchantMaxUpgradeName == null || enchantMaxUpgradeName.isBlank()) enchantMaxUpgradeName = freshEnchant.enchantMaxUpgradeName;
         if (enchantUpgradeTitlePattern == null || enchantUpgradeTitlePattern.isBlank()) enchantUpgradeTitlePattern = freshEnchant.enchantUpgradeTitlePattern;
+        if (enchantPrestigeNamePattern == null || enchantPrestigeNamePattern.isBlank()) enchantPrestigeNamePattern = freshEnchant.enchantPrestigeNamePattern;
+        if (enchantPrestigeLevelPattern == null || enchantPrestigeLevelPattern.isBlank()) enchantPrestigeLevelPattern = freshEnchant.enchantPrestigeLevelPattern;
+        if (enchantPrestigeCostPattern == null || enchantPrestigeCostPattern.isBlank()) enchantPrestigeCostPattern = freshEnchant.enchantPrestigeCostPattern;
+        if (enchantPrestigeRebirthPattern == null || enchantPrestigeRebirthPattern.isBlank()) enchantPrestigeRebirthPattern = freshEnchant.enchantPrestigeRebirthPattern;
+        if (enchantPrestigeMultiplierPattern == null) enchantPrestigeMultiplierPattern = freshEnchant.enchantPrestigeMultiplierPattern;
+        if (enchantPrestigeChatPattern == null || enchantPrestigeChatPattern.isBlank()) enchantPrestigeChatPattern = freshEnchant.enchantPrestigeChatPattern;
+        if (enchantPrestigeGatePattern == null) enchantPrestigeGatePattern = freshEnchant.enchantPrestigeGatePattern;
+        if (enchantPrestigeMaxPattern == null) enchantPrestigeMaxPattern = freshEnchant.enchantPrestigeMaxPattern;
+        if (swordLevelChatPattern == null) swordLevelChatPattern = freshEnchant.swordLevelChatPattern;
+        if (enchantPrestigeMaxPerVisit < 0) enchantPrestigeMaxPerVisit = 0;
+        if (enchantPrestigeOpensPerVisit < 0) enchantPrestigeOpensPerVisit = 0;
+        if (enchantMaxedTabRescanMs < 0) enchantMaxedTabRescanMs = 0;
         if (enchantSwordPattern == null || enchantSwordPattern.isBlank()) enchantSwordPattern = freshEnchant.enchantSwordPattern;
         if (enchantCookSettleMs < 0) enchantCookSettleMs = 3_000;
         if (enchantHazardRampStartMs < 0) enchantHazardRampStartMs = 120_000;
