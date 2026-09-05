@@ -488,6 +488,13 @@ public class CompanionController {
                         phaseUntil = now + cfg.companionOpenTimeoutMs;
                         return true;
                     }
+                    if (isOurGui(client) && now - phaseUntil < 6_000) {
+                        // 0.9.39: the server re-renders the fusion menu after Fuse All (the 02:51
+                        // log: our close, then the menu again reading "No Companions fuseable"),
+                        // so a menu of ours here is closed again and waited out, never an abort.
+                        if (now - lastLookAt > 400) { lastLookAt = now; EnchantScreens.closeGui(client); }
+                        return true;
+                    }
                     abort(client, combat, "screen-open");
                     return false;
                 }
@@ -529,9 +536,10 @@ public class CompanionController {
                 // a 7-of-a-kind and a 6-of-a-kind. Groups are read from this page (the
                 // fusion menu lists the same companions), so no menu is opened for nothing.
                 if (!fusedThisVisit) {
-                    List<CompanionLore.Companion> all = new ArrayList<>(storage);
-                    all.addAll(equippedBefore);
-                    fuseGroupsBefore = CompanionLore.fuseGroups(all, cfg.companionFuseMinGroup);
+                    // 0.9.39: the storage only. The 02:51 log counted 7 Eagle z2s8 with three of
+                    // them equipped, clicked Fuse All, and the server answered "No Companions
+                    // fuseable" - it fuses what sits in the backpack, not what is worn.
+                    fuseGroupsBefore = CompanionLore.fuseGroups(storage, cfg.companionFuseMinGroup);
                     storageBefore = storage.size();
                     List<String> gs = new ArrayList<>();
                     for (CompanionLore.FuseGroup g : fuseGroupsBefore) gs.add(g.summary());
@@ -676,8 +684,17 @@ public class CompanionController {
                 for (CompanionLore.FuseGroup g : fuseGroupsBefore) gb.add(g.summary());
                 List<String> ga = new ArrayList<>();
                 for (CompanionLore.FuseGroup g : groupsAfter) ga.add(g.summary());
+                // The server's own verdict replaces the Fuse All item ("No Companions fuseable").
+                String verdict = null;
+                for (Entry e : after) {
+                    if (e.name() != null && e.name().toLowerCase(Locale.ROOT).contains("fuseable")) {
+                        verdict = e.name() + (e.lore() != null && !e.lore().isEmpty() ? " | " + String.join(" | ", e.lore()) : "");
+                        break;
+                    }
+                }
                 log("companion_fuse", "groupsBefore", gb, "groupsAfter", ga, "storageBefore", storageBefore,
-                    "storageAfter", storageAfter, "fuseGuiStillOpen", fuseGuiOpen(client));
+                    "storageAfter", storageAfter, "fuseGuiStillOpen", fuseGuiOpen(client),
+                    "fused", verdict == null, "verdict", verdict);
                 fusedThisVisit = true;
                 if (client.currentScreen != null) EnchantScreens.closeGui(client);
                 phase = Phase.TYPE_COMPANION;
@@ -1273,8 +1290,13 @@ public class CompanionController {
     }
 
     private void abort(MinecraftClient client, CombatController combat, String why) {
+        // 0.9.39: eggs already opened are a visit whatever happened next - three aborted
+        // visits on lvl19 (02:40, 02:51, 03:03) each bought again because none was counted.
+        boolean counted = eggsOpened > 0;
+        if (counted) stats.noteCompanionVisit(visitStage, true, true);
         log("companion_abort", "reason", why, "phase", phase.name().toLowerCase(Locale.ROOT), "eggs", eggsOpened,
-            "opens", opensClicked, "visitMs", System.currentTimeMillis() - visitStartedAt);
+            "opens", opensClicked, "visitMs", System.currentTimeMillis() - visitStartedAt, "counted", counted,
+            "visitsThisStage", stats.companionVisitsThisStage(visitStage));
         if (isOurGui(client)) EnchantScreens.closeGui(client);
         finish(client, combat);
         // The economy keeps asking every eval; without this it live-locks on a buy that
