@@ -13,10 +13,23 @@ has ever accepted.
     python tools/captcha_fixtures.py --dry-run  # show what would be added
     python tools/captcha_fixtures.py path/to/logs
 
-A solve is imported only when the answer was typed once and accepted (answersSent 1) or
-when the accepted answer is the last one sent; a `captcha_failed` after the capture, or a
-`captcha_reprompted` naming the answer as wrong, disqualifies it.
+Two guards, because the 2026-09-03 builds logged "solved" whenever the map vanished - which
+it also did when Drew answered by hand after the bot's wrong guess (pBb for p8b, Kra for
+KrA): only logs from --since (default 2026-09-05, the current solver with rejection
+detection) are read, and an answer that is a case variant or a look-alike of an existing
+fixture (B8 O0 S5 Z2 I1 l1 G6 b6 g9 q9) is skipped rather than imported as a second truth.
 """
+LOOKALIKES = "B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9"
+
+
+def normal(answer):
+    """Case-folded with every look-alike pair collapsed: pBb, p8b -> p8b; Kra, KrA -> kra."""
+    table = {}
+    for pair in LOOKALIKES.split(","):
+        pair = pair.strip()
+        if len(pair) == 2:
+            table[pair[0].lower()] = pair[1].lower()
+    return "".join(table.get(c, c) for c in answer.lower())
 import argparse, glob, json, os, shutil, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -36,10 +49,17 @@ def rows(path):
                 continue
 
 
+SINCE = "2026-09-05"
+
+
 def accepted_solves(logs_dir):
     """(answer, capture png path, iso, log file) for every accepted map solve with a dump on disk."""
     out = []
     for path in sorted(glob.glob(os.path.join(logs_dir, "events-*.jsonl"))):
+        stamp = os.path.basename(path)[len("events-"):]
+        stamp = stamp[stamp.find("-") + 1:] if "-" in stamp else stamp
+        if stamp < SINCE:
+            continue
         pending_png = None
         wrong = set()
         for r in rows(path):
@@ -65,15 +85,22 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", nargs="?", default=DEFAULT_LOGS)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--since", default="2026-09-05", help="only logs whose file stamp is on/after this date")
     a = ap.parse_args()
     fx_path = os.path.join(FIX, "fixtures.json")
     fixtures = json.load(open(fx_path, encoding="utf-8")) if os.path.exists(fx_path) else []
     known = {f["file"] for f in fixtures}
     known_answers = {(f["answer"], f.get("kind", "map")) for f in fixtures}
+    known_normal = {normal(f["answer"]) for f in fixtures}
+    global SINCE
+    SINCE = a.since
     added = 0
     for ans, png, iso, log in accepted_solves(a.path):
         name = f"{ans}-map128.png"
         if name in known or (ans, "map") in known_answers:
+            continue
+        if normal(ans) in known_normal:
+            print(f"- skip {ans}: a case or look-alike variant of an existing fixture ({log} at {iso})")
             continue
         print(f"+ {name}  answer={ans}  from {log} at {iso}")
         if not a.dry_run:
@@ -82,6 +109,7 @@ def main():
                              "source": f"bot capture {iso} (native 128 px map render, the image the model read); typed {ans}, server accepted (auto-imported)"})
         known.add(name)
         known_answers.add((ans, "map"))
+        known_normal.add(normal(ans))
         added += 1
     if added and not a.dry_run:
         with open(fx_path, "w", encoding="utf-8", newline="\n") as f:
