@@ -932,6 +932,45 @@ public final class Economy {
         return startMs > 0 && now - startMs > Math.max(0, durationMs) + Math.max(0, graceMs);
     }
 
+    // ---- 0.9.40: a zone buy without a teleport, plates as zone evidence, the stand in the ray
+
+    /**
+     * A /zone max succeeded but no teleport big enough for the stop protocol to notice
+     * followed (lvl18 -> lvl19 are adjacent pens: 2026-09-05 03:43, two minutes of
+     * target_offzone). After {@code graceMs} with no zone change the buy itself is the
+     * advance. A real teleport inside the grace wins (its zone change moves lastZoneChangeAt).
+     */
+    public static boolean zoneBuyAdvanceDue(long pendingAt, long lastZoneChangeAt, long now, int graceMs) {
+        return pendingAt != 0 && lastZoneChangeAt < pendingAt && now - pendingAt >= Math.max(0, graceMs);
+    }
+
+    /**
+     * The plates as zone evidence: when every mob in sight is refused as another level's
+     * and at least {@code min} distinct entities agree on one level with no rival level at
+     * half its count, that level is the zone. Null when nothing is clear, or when the
+     * majority already agrees with the confirmed level.
+     */
+    public static Integer plateMajority(java.util.Map<Integer, Integer> votersByLevel, Integer zoneLevel, int min) {
+        if (votersByLevel == null || votersByLevel.isEmpty()) return null;
+        Integer best = null;
+        int bestN = 0, secondN = 0;
+        for (java.util.Map.Entry<Integer, Integer> e : votersByLevel.entrySet()) {
+            if (e.getKey() == null || e.getValue() == null) continue;
+            int n = e.getValue();
+            if (n > bestN) { secondN = bestN; bestN = n; best = e.getKey(); }
+            else if (n > secondN) secondN = n;
+        }
+        if (best == null || bestN < Math.max(1, min)) return null;
+        if (secondN * 2 > bestN) return null;
+        if (zoneLevel != null && zoneLevel.equals(best)) return null;
+        return best;
+    }
+
+    /** The aim point dropped a step down the body (the nameplate stand sits in the ray above it), never under the floor. */
+    public static double loweredAim(double frac, double step, double floor) {
+        return Math.max(floor, frac - Math.max(0, step));
+    }
+
     // ---- 0.9.38: the zone boss
 
     /**

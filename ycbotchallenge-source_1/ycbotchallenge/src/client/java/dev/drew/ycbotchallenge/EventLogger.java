@@ -47,8 +47,14 @@ public class EventLogger {
 
     public Path getFile() { return file; }
 
+    private long rows = 0;
+
+    /** Rows written so far (0.9.40: the perf row reports the log rate). */
+    public synchronized long rowsWritten() { return rows; }
+
     public synchronized void log(String type, Object... kv) {
         if (writer == null) return;
+        rows++;
         JsonObject row = new JsonObject();
         long now = System.currentTimeMillis();
         row.addProperty("t", now);

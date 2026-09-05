@@ -85,6 +85,7 @@ public final class EconomyChecks {
         n += targeting0937();
         n += progress0937();
         n += boss0938();
+        n += zone0940();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1775,7 +1776,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 42", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 42);
+        n += eq("config version 43", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 43);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2704,6 +2705,39 @@ public final class EconomyChecks {
             System.err.println("FAIL mixin json: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /** 0.9.40: a zone buy without a teleport, the plate majority, the lowered aim. */
+    private static int zone0940() {
+        int n = 0;
+        // 03:43:24 /zone max, no teleport: the advance is due 2.5 s later; a teleport inside the grace wins.
+        n += eq("no teleport: due after the grace", Economy.zoneBuyAdvanceDue(1_000, 0, 3_600, 2500), true);
+        n += eq("not yet", Economy.zoneBuyAdvanceDue(1_000, 0, 3_000, 2500), false);
+        n += eq("a teleport landed: not due", Economy.zoneBuyAdvanceDue(1_000, 1_800, 3_600, 2500), false);
+        n += eq("nothing pending", Economy.zoneBuyAdvanceDue(0, 0, 3_600, 2500), false);
+
+        // 03:43:25-03:43:30: 16 distinct Horses and Cats at plate 19 against a confirmed 18.
+        n += eq("sixteen at 19 vs zone 18", Economy.plateMajority(Map.of(19, 16), 18, 4), 19);
+        n += eq("three is not enough", Economy.plateMajority(Map.of(19, 3), 18, 4) == null, true);
+        n += eq("contested levels", Economy.plateMajority(Map.of(19, 6, 20, 4), 18, 4) == null, true);
+        n += eq("a clear winner over a stray", Economy.plateMajority(Map.of(19, 9, 20, 2), 18, 4), 19);
+        n += eq("agrees with the zone: nothing to adopt", Economy.plateMajority(Map.of(18, 9), 18, 4) == null, true);
+        n += eq("no zone known yet: adopt", Economy.plateMajority(Map.of(19, 5), null, 4), 19);
+        n += eq("empty", Economy.plateMajority(Map.of(), 18, 4) == null, true);
+
+        // The aim drops a step under the nameplate stand, never below the floor.
+        double f = 0.74;
+        double[] want = {0.59, 0.44, 0.29, 0.2, 0.2};
+        for (int i = 0; i < want.length; i++) {
+            f = Economy.loweredAim(f, 0.15, 0.2);
+            n += eq("lowered aim step " + i, f, want[i], 1e-9);
+        }
+
+        n += eq("fresh grace", CFG.zoneBuyAdvanceGraceMs, 2500);
+        n += eq("fresh plate majority", CFG.plateMajorityMin, 4);
+        n += eq("fresh gui needs a map", CFG.captchaGuiRequiresMap, true);
+        n += eq("fresh perf interval", CFG.perfLogIntervalMs, 60_000);
         return n;
     }
 

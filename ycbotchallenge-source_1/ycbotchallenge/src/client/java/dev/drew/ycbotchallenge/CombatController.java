@@ -169,6 +169,12 @@ public class CombatController {
     private final java.util.Set<Integer> ignoredIds = new java.util.HashSet<>();
     /** Entity ids already logged as another zone's mob (target_offzone). */
     private final java.util.Set<Integer> offzoneLogged = new java.util.HashSet<>();
+    /** 0.9.40: distinct entities refused per plate level - the vote that can move the zone level when no bar will. */
+    private final java.util.Map<Integer, java.util.Set<Integer>> offzoneVotes = new java.util.HashMap<>();
+    private long offzoneVotesAt = 0;
+    private long lastPlateAdoptAt = 0;
+    /** 0.9.40: the last time the aim point was dropped under a nameplate stand in the ray. */
+    private long lastAimDropAt = 0;
     /** Manual marks (kind + position), persisted. */
     private IgnoreStore ignoreStore;
     /** Plate entities (text displays, named armor stands) near the player, refreshed at most every 250ms. */
@@ -373,6 +379,7 @@ public class CombatController {
         int zseq = stats.zoneChangeSeq();
         if (zseq != lastZoneSeq) {
             lastZoneSeq = zseq;
+            offzoneVotes.clear();
             retargetForZone(client);
         }
 
@@ -843,6 +850,21 @@ public class CombatController {
                     "dist", Math.round(dist * 100.0) / 100.0, "reach", Math.round(effectiveReach() * 100.0) / 100.0,
                     "count", noRayCount, "clicks", clicksThisTarget);
             }
+            // 0.9.40: the mob's nameplate stand sits in the ray when the aim point is high on
+            // the body (no_ray hit=entity:Armor Stand at aimErr 0.0, 54 and 62 times in the
+            // 03:19 log): drop the aim a step and look again, never under the floor.
+            HitResult hr2 = client.crosshairTarget;
+            Entity rayEntity = hr2 instanceof EntityHitResult eh2 ? eh2.getEntity() : null;
+            if ((rayEntity instanceof ArmorStandEntity || rayEntity instanceof DisplayEntity) && now - lastAimDropAt > 700) {
+                double from = aimHeightFrac;
+                aimHeightFrac = (float) Economy.loweredAim(aimHeightFrac, 0.15, 0.2);
+                lastAimDropAt = now;
+                lookIssued = false;
+                if (logger != null && aimHeightFrac < from) {
+                    logger.log("aim_lowered", "from", Math.round(from * 100.0) / 100.0, "to", Math.round(aimHeightFrac * 100.0) / 100.0,
+                        "hit", typeName(rayEntity), "mob", targetMob);
+                }
+            }
         }
         if (aimErr <= tapTol
             && rayOk
@@ -1249,6 +1271,11 @@ public class CombatController {
                         "entityId", e.getId());
                 }
                 if (offzoneLogged.size() > 4096) offzoneLogged.clear();
+                if (plateLevel != null) {
+                    long nowV = System.currentTimeMillis();
+                    if (nowV - offzoneVotesAt > 15_000) { offzoneVotes.clear(); offzoneVotesAt = nowV; }
+                    offzoneVotes.computeIfAbsent(plateLevel, k -> new java.util.HashSet<>()).add(e.getId());
+                }
                 return false;
             }
         }
@@ -1338,6 +1365,18 @@ public class CombatController {
             dominantType = null;
             dominantCount = 0;
             dominantDesc = null;
+            // 0.9.40: nothing in sight is ours, but the plates agree on a level - adopt it.
+            java.util.Map<Integer, Integer> counts2 = new java.util.HashMap<>();
+            for (java.util.Map.Entry<Integer, java.util.Set<Integer>> v : offzoneVotes.entrySet()) counts2.put(v.getKey(), v.getValue().size());
+            Integer adopt = Economy.plateMajority(counts2, stats.confirmedZoneLevel(), cfg.plateMajorityMin);
+            long nowMs = System.currentTimeMillis();
+            if (adopt != null && nowMs - lastPlateAdoptAt > 10_000) {
+                lastPlateAdoptAt = nowMs;
+                int voters = counts2.getOrDefault(adopt, 0);
+                offzoneVotes.clear();
+                offzoneLogged.clear();
+                stats.adoptZoneLevel(adopt, "plates", voters);
+            }
             return null;
         }
 

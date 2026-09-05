@@ -59,6 +59,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private int tickCounter = 0;
     private long lastStatusAt = 0;
     private long guiRetryBlockUntil = 0;
+    private String lastCaptchaDetail = null;
+    /** 0.9.40: the mod's own tick cost, logged every perfLogIntervalMs (evidence for the "lags after a while" report). */
+    private long perfTicks = 0, perfSumNs = 0, perfMaxNs = 0, perfLastLogAt = 0, perfRowsAt = 0;
     /** When the current container screen first appeared (0 = none open); see guiRecognizeGraceMs. */
     private long guiSeenAt = 0;
 
@@ -95,6 +98,20 @@ public class YCBotChallengeClient implements ClientModInitializer {
             }
             @Override public void onFailed(MinecraftClient client, String stage, String why) {
                 pauseForCaptcha(client, "autosolve", stage, why);
+            }
+            @Override public void onGuiNoMap(MinecraftClient client) {
+                // 0.9.40: a menu with no map is a server menu, not a captcha (03:29:47, the
+                // "Artifacts" tier reward paused the bot for 11 s) - unless the server's own
+                // captcha chat line is on the table, in which case a person is needed.
+                if (stats.captchaMessage != null) {
+                    pauseForCaptcha(client, "autosolve", "capture", "no-map with a captcha chat line");
+                    return;
+                }
+                String title = client.currentScreen != null && client.currentScreen.getTitle() != null
+                    ? client.currentScreen.getTitle().getString() : null;
+                if (logger != null) logger.log("captcha_gui_dismissed", "title", title, "detail", lastCaptchaDetail);
+                EnchantScreens.closeGui(client);
+                guiRetryBlockUntil = System.currentTimeMillis() + 20_000;
             }
         }, FabricLoader.getInstance().getGameDir().resolve("ycbotchallenge-logs"));
         captchaDetector = new CaptchaDetector(config, stats);
@@ -136,6 +153,41 @@ public class YCBotChallengeClient implements ClientModInitializer {
     }
 
     private void onTick(MinecraftClient client) {
+        long t0 = System.nanoTime();
+        try {
+            onTickInner(client);
+        } finally {
+            notePerf(client, System.nanoTime() - t0);
+        }
+    }
+
+    /** 0.9.40: our tick's average and worst milliseconds, the client's FPS, the heap, the log rate - once a minute. */
+    private void notePerf(MinecraftClient client, long dtNs) {
+        perfTicks++;
+        perfSumNs += dtNs;
+        if (dtNs > perfMaxNs) perfMaxNs = dtNs;
+        long now = System.currentTimeMillis();
+        if (perfLastLogAt == 0) perfLastLogAt = now;
+        if (now - perfLastLogAt < Math.max(5_000, config.perfLogIntervalMs)) return;
+        if (logger != null) {
+            Runtime rt = Runtime.getRuntime();
+            int entities = 0;
+            if (client.world != null) for (net.minecraft.entity.Entity e : client.world.getEntities()) entities++;
+            long rows = logger.rowsWritten();
+            logger.log("perf", "tickAvgMs", Math.round(perfSumNs / Math.max(1.0, perfTicks) / 1e4) / 100.0,
+                "tickMaxMs", Math.round(perfMaxNs / 1e4) / 100.0, "ticks", perfTicks,
+                "fps", client.getCurrentFps(),
+                "heapUsedMb", (rt.totalMemory() - rt.freeMemory()) / 1_048_576, "heapMaxMb", rt.maxMemory() / 1_048_576,
+                "logRows", rows - perfRowsAt, "entitiesInWorld", entities, "botOn", enabled);
+            perfRowsAt = rows;
+        }
+        perfTicks = 0;
+        perfSumNs = 0;
+        perfMaxNs = 0;
+        perfLastLogAt = now;
+    }
+
+    private void onTickInner(MinecraftClient client) {
         while (optionsKey.wasPressed()) {
             if (client.currentScreen == null && client.player != null) client.setScreen(newOptionsScreen());
         }
@@ -416,6 +468,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
     }
 
     private void beginCaptcha(MinecraftClient client, String source, String detail) {
+        lastCaptchaDetail = detail;
         if (!config.captchaAutoSolve) {
             pauseForCaptcha(client, source, "autosolve-off", detail);
             return;

@@ -428,6 +428,8 @@ public class StatsTracker {
     private long expectTeleportUntil = 0;
     private int zoneChangeSeq = 0;
     private long lastZoneChangeAt = 0;
+    /** 0.9.40: a zone buy waiting for its teleport; the buy itself is the advance once the grace has passed. */
+    private long pendingZoneAdvanceAt = 0;
     private int swordBuysThisZone = 0;
     /** Zone proxy: the LVLn prefix on mob boss bars (the EnchantedMC sidebar has no Zone row). */
     private static final Pattern BOSS_LEVEL = Pattern.compile("(?i)\\bLVL\\.?\\s*(\\d+)");
@@ -1131,6 +1133,12 @@ public class StatsTracker {
             if (nowMs - cycleDirtyAt > 60_000) { cycleDirtyAt = nowMs; markStateDirty(); }
         }
         lastPollAt = nowMs;
+        // 0.9.40: a zone buy whose teleport was too short for the stop protocol to notice is a
+        // zone advance all the same, once the real teleport has had its chance.
+        if (Economy.zoneBuyAdvanceDue(pendingZoneAdvanceAt, lastZoneChangeAt, nowMs, cfg.zoneBuyAdvanceGraceMs)) {
+            pendingZoneAdvanceAt = 0;
+            onZoneAdvance("zone-buy");
+        }
         if (currentStage == null && zone != null) openStageRecord();
         if (currentStage != null) {
             if (currentStage.stage == null && bossLevel != null) currentStage.stage = bossLevel;
@@ -1784,8 +1792,25 @@ public class StatsTracker {
      * benchmark baseline restarts. Duplicate signals for the same advance
      * (teleport + boss level) within 10s collapse into one.
      */
+    /**
+     * 0.9.40: the plates as zone evidence. With every mob in sight refused as another level's
+     * and a clear majority on one plate level, that level is the zone - the bar can only
+     * confirm it after a tag, and no tag was ever going to happen (03:43-03:45, lvl19).
+     */
+    public void adoptZoneLevel(int lvl, String via, int voters) {
+        Integer prev = bossLevel;
+        if (prev != null && prev == lvl) return;
+        bossLevel = lvl;
+        pendingBossLevel = null;
+        pendingBossLevelPolls = 0;
+        if (!zoneFromSidebar) zone = "lvl" + lvl;
+        log("boss_level", "level", lvl, "prev", prev, "via", via, "voters", voters);
+        onZoneChange(via);
+    }
+
     private void onZoneChange(String via) {
         long now = System.currentTimeMillis();
+        pendingZoneAdvanceAt = 0;
         if (lastZoneChangeAt != 0 && now - lastZoneChangeAt < 10_000) {
             log("zone_change", "via", via, "zone", zone, "dedup", true);
             return;
@@ -2372,6 +2397,7 @@ public class StatsTracker {
             zoneGap = null;
             zonePriceSeenAt = 0;
             zoneExploratorySent = false;
+            pendingZoneAdvanceAt = now;
         } else {
             swordLastPrice = retryFloor != null ? retryFloor : swordLastPrice;
             swordRetryGrowth = growth;

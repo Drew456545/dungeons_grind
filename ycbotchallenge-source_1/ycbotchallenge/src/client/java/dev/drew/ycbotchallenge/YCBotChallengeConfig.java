@@ -329,6 +329,13 @@ public class YCBotChallengeConfig {
     /** Most reads fired for one captcha. A and B always go; C only if one failed or the ballot split. */
     public int captchaHedgeMax = 3;
     /**
+     * 0.9.40: a GUI trigger with no map anywhere is dismissed (the menu closed, the bot
+     * kept running) instead of pausing for a person - every captcha this server has shown
+     * is a map, and "Artifacts" / "Auras" were reward menus (03:29:47, 11 s paused). A
+     * captcha chat line on the table still pauses.
+     */
+    public boolean captchaGuiRequiresMap = true;
+    /**
      * Max solve cycles for NON-answer failures only (capture failed, model
      * timeout — nothing was sent to chat). Chat answers are capped separately
      * and harder: primary + ALT, then hard stop. We never spam guesses.
@@ -1225,6 +1232,17 @@ public class YCBotChallengeConfig {
      */
     public int zoneMinStageKills = 1;
     /**
+     * 0.9.40: a /zone max whose teleport was too short for the stop protocol to notice
+     * (adjacent pens: lvl18 -> lvl19) is a zone advance once this grace has passed with no
+     * zone change; a real teleport inside it takes precedence. And when every mob in sight
+     * is refused as another level's, plateMajorityMin distinct entities agreeing on one
+     * plate level with no rival move the zone level (boss_level via=plates).
+     */
+    public int zoneBuyAdvanceGraceMs = 2500;
+    public int plateMajorityMin = 4;
+    /** 0.9.40: the perf row cadence (our tick cost, FPS, heap, log rate). */
+    public int perfLogIntervalMs = 60_000;
+    /**
      * 0.9.36: the retreat question, measured only. On a fresh stage the first time the gate
      * reads HARD, and after every sword buy on it, log zone_back_candidate: what this stage
      * earns per minute right now (money per kill over the kill time) against the previous
@@ -1415,7 +1433,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 42;
+    public static final int CURRENT_CONFIG_VERSION = 43;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1792,6 +1810,11 @@ public class YCBotChallengeConfig {
             // v42 (0.9.38): the zone boss module. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 43) {
+            // v43 (0.9.40): the zone-buy advance grace, the plate majority, the GUI-without-map
+            // dismissal, the perf row. Every knob is new and takes its default.
+            changed = true;
+        }
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -2031,6 +2054,9 @@ public class YCBotChallengeConfig {
         if (bossClickCpsMax < bossClickCpsMin) bossClickCpsMax = bossClickCpsMin;
         if (bossHitLogEvery < 1) bossHitLogEvery = 1;
         if (bossMaxConsecutiveAborts < 1) bossMaxConsecutiveAborts = 1;
+        if (zoneBuyAdvanceGraceMs < 500) zoneBuyAdvanceGraceMs = 500;
+        if (plateMajorityMin < 1) plateMajorityMin = 1;
+        if (perfLogIntervalMs < 5000) perfLogIntervalMs = 5000;
         if (companionDelayMinMs < 0) companionDelayMinMs = 0;
         if (companionDelayMaxMs < companionDelayMinMs) companionDelayMaxMs = companionDelayMinMs;
         if (companionSettleMinMs < 200) companionSettleMinMs = 200;

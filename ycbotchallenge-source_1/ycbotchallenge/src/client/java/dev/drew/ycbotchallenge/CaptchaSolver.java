@@ -65,6 +65,8 @@ public class CaptchaSolver {
     public interface Callbacks {
         void onSolved(MinecraftClient client);
         void onFailed(MinecraftClient client, String reason, String detail);
+        /** 0.9.40: a GUI trigger with no map anywhere - the client decides whether that is a captcha at all. */
+        default void onGuiNoMap(MinecraftClient client) { onFailed(client, "capture", "no-map: gui"); }
     }
 
     /** Sonar path: "ANSWER: xxx" and "ALT: yyy" lines. */
@@ -818,6 +820,17 @@ public class CaptchaSolver {
             // Map-only (default since 0.9.16): a chat/GUI trigger with no map is not a
             // captcha we can read. Hand over at once rather than screenshot the arena
             // and type a guess into public chat (the "qwe" incident, 2026-09-03).
+            // 0.9.40: a GUI trigger with no map has never been a captcha on this server
+            // ("Artifacts", "Auras": reward menus) - the client dismisses it instead of pausing.
+            if ("gui".equals(source) && cfg.captchaGuiRequiresMap) {
+                typer.cancel(client);
+                restoreHud(client);
+                stopVoting();
+                phase = Phase.IDLE;
+                log("captcha_gui_no_map", "source", source, "attempts", attempt);
+                callbacks.onGuiNoMap(client);
+                return;
+            }
             fail(client, "capture", "no-map: no filled map in hands, hotbar or nearby item frames");
             return;
         }
