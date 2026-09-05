@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -25,6 +26,17 @@ public class YCBotChallengeClient implements ClientModInitializer {
     public static boolean enabled = false;
     /** Why the bot last auto-paused (e.g. "captcha"); null after a manual re-enable. */
     public static String pausedReason = null;
+    /** 0.9.41: the screen seen last tick, for the close edge that starts the swing hold. */
+    private boolean screenWasOpen = false;
+    private String lastScreenKind = "screen";
+    /** 0.9.41: the hub stop - the world object seen last tick, and whether a money line has shown since the enable. */
+    private Object lastWorld = null;
+    private long worldChangedAt = 0;
+    private boolean moneySeenSinceOn = false;
+    /** 0.9.41: when the auto-disconnect timer fires (0 = not armed), and whether this launch armed it already. */
+    private static long autoDisconnectAt = 0;
+    private static boolean autoDcArmedThisLaunch = false;
+    private static final List<String> AUTO_DC_CHOICES = List.of("off", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "10h", "12h");
     private static long lastOnAt = 0;
     private static long lastOffAt = 0;
 
@@ -207,7 +219,17 @@ public class YCBotChallengeClient implements ClientModInitializer {
         if (tickCounter % 20 == 0) stats.poll(client);
         stats.onTitle(titleText, subtitleText);
 
+        // 0.9.41: the auto-disconnect timer runs whether the bot is on, paused or off.
+        if (autoDisconnectAt != 0 && System.currentTimeMillis() >= autoDisconnectAt) {
+            autoDisconnectAt = 0;
+            autoDisconnect(client);
+            return;
+        }
+
         if (!enabled) return;
+        noteScreenEdge(client);
+        String hub = hubSignal(client, System.currentTimeMillis());
+        if (hub != null) { emergencyStop(client, "hub (" + hub + ")"); return; }
 
         // 0.9.30: our own options screen is open — hands off the keys, nothing else runs.
         if (client.currentScreen instanceof BotOptionsScreen) {
@@ -331,6 +353,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
         }
         transcend.tick(client, combat);
 
+        // 0.9.41: a reply's chat screen closes inside the upgrade tick above, so look again
+        // before combat swings - the first swing after any screen waits its beat.
+        noteScreenEdge(client);
         combat.tick(client);
 
         if (combat.stopRequest != null) {
@@ -406,11 +431,100 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("hudShowPlan", "HUD plan row", () -> config.hudShowPlan, v -> config.hudShowPlan = v));
         opts.add(new BotOptionsScreen.Option("hudShowModules", "HUD module row", () -> config.hudShowModules, v -> config.hudShowModules = v));
         opts.add(new BotOptionsScreen.Option("hudShowBalances", "HUD balances row", () -> config.hudShowBalances, v -> config.hudShowBalances = v));
+        // 0.9.41: the auto-disconnect timer (Drew): pick a duration, the countdown starts now.
+        opts.add(BotOptionsScreen.Option.choice("autoDisconnectMin", "Auto disconnect", AUTO_DC_CHOICES,
+            () -> autoDcChoice(config.autoDisconnectMin), v -> armAutoDisconnect(autoDcMinutes(v), "options"),
+            YCBotChallengeClient::autoDcStatus));
         return new BotOptionsScreen(opts, (key, value) -> {
             config.save(configPath);
             if (logger != null) logger.log("option_toggle", "name", key, "value", value);
             LOGGER.info("option {} = {}", key, value);
         });
+    }
+
+    /**
+     * 0.9.41: were we sent to the hub? The world object replaced (a proxy switch), a server
+     * line saying so, or the money line gone from the sidebar for hubSidebarLostMs after it
+     * had been seen this enable. Returns the signal, or null.
+     */
+    private String hubSignal(MinecraftClient client, long now) {
+        if (!config.hubStopEnabled) return null;
+        if (lastWorld != null && client.world != lastWorld) {
+            worldChangedAt = now;
+            if (logger != null) logger.log("world_changed", "confirmMs", config.hubWorldConfirmMs);
+        }
+        lastWorld = client.world;
+        String msg = stats.hubMessage;
+        if (msg != null) {
+            stats.hubMessage = null;
+            return "chat: " + msg;
+        }
+        long moneyAt = stats.lastMoneyLineAt();
+        if (moneyAt > lastOnAt) moneySeenSinceOn = true;
+        if (worldChangedAt != 0) {
+            // A hop between dungeon worlds shows the money line again at once; the hub does not.
+            if (moneyAt >= worldChangedAt) worldChangedAt = 0;
+            else if (now - worldChangedAt >= config.hubWorldConfirmMs) return "world changed, no money line for " + (now - worldChangedAt) / 1000 + "s";
+        }
+        if (moneySeenSinceOn && moneyAt != 0 && now - moneyAt > config.hubSidebarLostMs) {
+            return "sidebar lost " + (now - moneyAt) / 1000 + "s";
+        }
+        return null;
+    }
+
+    /** 0.9.41: any screen open last tick and gone now starts the post-screen swing hold. */
+    private void noteScreenEdge(MinecraftClient client) {
+        boolean open = client.currentScreen != null;
+        if (screenWasOpen && !open) combat.noteScreenClosed(client, System.currentTimeMillis(), lastScreenKind);
+        if (open) {
+            lastScreenKind = client.currentScreen instanceof ChatScreen ? "chat"
+                : client.currentScreen instanceof HandledScreen ? "menu"
+                : client.currentScreen instanceof BotOptionsScreen ? "options" : "screen";
+        }
+        screenWasOpen = open;
+    }
+
+    /** 0.9.41: arm (or clear) the auto-disconnect timer from the Y screen's choice. */
+    private void armAutoDisconnect(int minutes, String via) {
+        autoDcArmedThisLaunch = true;
+        config.autoDisconnectMin = Math.max(0, minutes);
+        autoDisconnectAt = minutes > 0 ? System.currentTimeMillis() + minutes * 60_000L : 0;
+        if (logger != null) logger.log("auto_disconnect_armed", "minutes", minutes, "via", via, "at", autoDisconnectAt == 0 ? null : autoDisconnectAt);
+    }
+
+    private static int autoDcMinutes(String choice) {
+        if (choice == null || "off".equals(choice)) return 0;
+        try {
+            if (choice.endsWith("m")) return Integer.parseInt(choice.substring(0, choice.length() - 1));
+            if (choice.endsWith("h")) return Integer.parseInt(choice.substring(0, choice.length() - 1)) * 60;
+        } catch (NumberFormatException ignored) { }
+        return 0;
+    }
+
+    private static String autoDcChoice(int minutes) {
+        for (String c : AUTO_DC_CHOICES) if (autoDcMinutes(c) == minutes) return c;
+        return "off";
+    }
+
+    private static String autoDcStatus() {
+        if (autoDisconnectAt == 0) return "off · arms when picked, or on the bot's first enable";
+        long left = Math.max(0, autoDisconnectAt - System.currentTimeMillis()) / 60_000L;
+        return "disconnects in " + (left >= 60 ? left / 60 + "h " + left % 60 + "m" : left + "m");
+    }
+
+    /** 0.9.41: the timer fired - bot off, then leave the server the way a person does. */
+    private void autoDisconnect(MinecraftClient client) {
+        if (logger != null) logger.log("auto_disconnect", "minutes", config.autoDisconnectMin, "botOn", enabled);
+        LOGGER.info("YCBotChallenge auto-disconnect after {} min", config.autoDisconnectMin);
+        if (client.player != null) client.player.sendMessage(Text.literal("§e[YCBotChallenge] auto-disconnect timer: leaving the server"), false);
+        setEnabled(client, false, true);
+        try {
+            if (client.getNetworkHandler() != null) {
+                client.getNetworkHandler().getConnection().disconnect(Text.literal("YCBotChallenge auto-disconnect timer"));
+            }
+        } catch (RuntimeException e) {
+            LOGGER.warn("auto-disconnect failed", e);
+        }
     }
 
     /** Status line for a visiting module: what it is doing, else suspended, else idle. */
@@ -570,6 +684,16 @@ public class YCBotChallengeClient implements ClientModInitializer {
             companions.onEnable(System.currentTimeMillis(), combat.kills);
             bossEvent.onEnable(System.currentTimeMillis(), combat.kills);
             transcend.onEnable(System.currentTimeMillis(), combat.kills);
+            // 0.9.41: a toggle is a screen edge too (no swing in the first beat), and a saved
+            // auto-disconnect timer arms on the session's first enable.
+            if (client != null) {
+                combat.noteScreenClosed(client, System.currentTimeMillis(), "toggle");
+                lastWorld = client.world;
+            }
+            worldChangedAt = 0;
+            moneySeenSinceOn = false;
+            stats.hubMessage = null;
+            if (config.autoDisconnectMin > 0 && autoDisconnectAt == 0 && !autoDcArmedThisLaunch) armAutoDisconnect(config.autoDisconnectMin, "enable");
         } else {
             if (logger != null) logger.log("bot_off", "onMs", lastOnAt > 0 ? System.currentTimeMillis() - lastOnAt : null);
             lastOffAt = System.currentTimeMillis();

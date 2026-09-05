@@ -26,9 +26,17 @@ public class BotOptionsScreen extends Screen {
      * config, and (0.9.33) an optional live status drawn under the button — what the module
      * is doing right now ("idle · last visit 12m ago", "suspended", the plan line).
      */
-    public record Option(String key, String label, BooleanSupplier get, Consumer<Boolean> set, Supplier<String> status) {
+    public record Option(String key, String label, BooleanSupplier get, Consumer<Boolean> set, Supplier<String> status,
+                         List<String> choices, Supplier<String> getChoice, Consumer<String> setChoice) {
         public Option(String key, String label, BooleanSupplier get, Consumer<Boolean> set) {
-            this(key, label, get, set, null);
+            this(key, label, get, set, null, null, null, null);
+        }
+        public Option(String key, String label, BooleanSupplier get, Consumer<Boolean> set, Supplier<String> status) {
+            this(key, label, get, set, status, null, null, null);
+        }
+        /** 0.9.41: a button that cycles through {@code choices} (the auto-disconnect timer) instead of ON/OFF. */
+        public static Option choice(String key, String label, List<String> choices, Supplier<String> get, Consumer<String> set, Supplier<String> status) {
+            return new Option(key, label, null, null, status, choices, get, set);
         }
     }
 
@@ -42,10 +50,10 @@ public class BotOptionsScreen extends Screen {
     private static final int TOP = 36;
 
     private final List<Option> options;
-    private final BiConsumer<String, Boolean> onChange;
+    private final BiConsumer<String, Object> onChange;
     private final List<StatusSlot> statusSlots = new ArrayList<>();
 
-    public BotOptionsScreen(List<Option> options, BiConsumer<String, Boolean> onChange) {
+    public BotOptionsScreen(List<Option> options, BiConsumer<String, Object> onChange) {
         super(Text.literal("YCBotChallenge options"));
         this.options = options;
         this.onChange = onChange;
@@ -68,11 +76,21 @@ public class BotOptionsScreen extends Screen {
             int row = i / cols;
             int x = left + col * (BUTTON_W + GAP_X);
             int y = TOP + row * rowH;
-            addDrawableChild(CyclingButtonWidget.onOffBuilder(o.get().getAsBoolean())
-                .build(x, y, BUTTON_W, BUTTON_H, Text.literal(o.label()), (button, value) -> {
-                    o.set().accept(value);
-                    if (onChange != null) onChange.accept(o.key(), value);
-                }));
+            if (o.choices() != null) {
+                String cur = o.getChoice().get();
+                if (cur == null || !o.choices().contains(cur)) cur = o.choices().get(0);
+                addDrawableChild(CyclingButtonWidget.<String>builder(v -> Text.literal(v)).values(o.choices()).initially(cur)
+                    .build(x, y, BUTTON_W, BUTTON_H, Text.literal(o.label()), (button, value) -> {
+                        o.setChoice().accept(value);
+                        if (onChange != null) onChange.accept(o.key(), value);
+                    }));
+            } else {
+                addDrawableChild(CyclingButtonWidget.onOffBuilder(o.get().getAsBoolean())
+                    .build(x, y, BUTTON_W, BUTTON_H, Text.literal(o.label()), (button, value) -> {
+                        o.set().accept(value);
+                        if (onChange != null) onChange.accept(o.key(), value);
+                    }));
+            }
             if (showStatus && o.status() != null) statusSlots.add(new StatusSlot(x + 2, y + BUTTON_H + 1, BUTTON_W - 4, o.status()));
         }
         int doneY = Math.min(this.height - BUTTON_H - 8, TOP + rows * rowH + 8);

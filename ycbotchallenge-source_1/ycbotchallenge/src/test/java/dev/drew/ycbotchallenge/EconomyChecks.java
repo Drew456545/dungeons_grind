@@ -86,6 +86,7 @@ public final class EconomyChecks {
         n += progress0937();
         n += boss0938();
         n += zone0940();
+        n += checks0941();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1405,17 +1406,20 @@ public final class EconomyChecks {
         List<CompanionLore.OpenOption> opts = List.of(
             new CompanionLore.OpenOption(36, "1x", 1, 121.33), new CompanionLore.OpenOption(37, "3x", 3, 363.98),
             new CompanionLore.OpenOption(38, "10x", 10, 1213.3));
-        CompanionLore.OpenOption p = CompanionLore.pickOpen(opts, 7, 200.0, 100_000.0, 40);
+        CompanionLore.OpenOption p = CompanionLore.pickOpen(opts, 7, 200.0, 3);
         n += eq("tight income -> 1x", p != null ? p.count() : null, 1);
-        p = CompanionLore.pickOpen(opts, 7, 2000.0, 100_000.0, 40);
+        p = CompanionLore.pickOpen(opts, 7, 2000.0, 3);
         n += eq("room for 3x, 10x over eggs left", p != null ? p.count() : null, 3);
-        p = CompanionLore.pickOpen(opts, 10, 2000.0, 100_000.0, 40);
+        p = CompanionLore.pickOpen(opts, 10, 2000.0, 3);
         n += eq("10x fits", p != null ? p.count() : null, 10);
-        p = CompanionLore.pickOpen(opts, 10, 2000.0, 500.0, 40);
-        n += eq("balance cap -> 1x", p != null ? p.count() : null, 1);
-        n += eq("no budget -> nothing", CompanionLore.pickOpen(opts, 7, null, 100_000.0, 40) == null, true);
-        n += eq("no eggs left -> nothing", CompanionLore.pickOpen(opts, 0, 2000.0, 100_000.0, 40) == null, true);
-        n += eq("too poor -> nothing", CompanionLore.pickOpen(opts, 7, 20.0, 100_000.0, 40) == null, true);
+        // 0.9.41: the balance cap is gone from the pick (manual visits cap the budget instead).
+        p = CompanionLore.pickOpen(opts, 10, 1213.3 * 0.99, 3);
+        n += eq("budget a hair under the 10x still buys it (3 % tolerance)", p != null ? p.count() : null, 10);
+        p = CompanionLore.pickOpen(opts, 10, 1213.3 * 0.9, 3);
+        n += eq("budget 10 % under the 10x -> 3x", p != null ? p.count() : null, 3);
+        n += eq("no budget -> nothing", CompanionLore.pickOpen(opts, 7, null, 3) == null, true);
+        n += eq("no eggs left -> nothing", CompanionLore.pickOpen(opts, 0, 2000.0, 3) == null, true);
+        n += eq("too poor -> nothing", CompanionLore.pickOpen(opts, 7, 20.0, 3) == null, true);
         n += eq("income minutes", CompanionLore.incomeMinutes(363.98, 100.0), 3.6398, 1e-6);
         n += eq("income minutes unknown", CompanionLore.incomeMinutes(363.98, null) == null, true);
 
@@ -1561,7 +1565,7 @@ public final class EconomyChecks {
                 n += eq("lesson count", lesson.count(), 250);
             }
             n += eq("pickOpen skips the unparsed option",
-                CompanionLore.pickOpen(opts, 250, 1e25, 1e25, 100).count(), 50);
+                CompanionLore.pickOpen(opts, 250, 1e25, 0).count(), 50);
             List<CompanionLore.OpenOption> wrong = List.of(
                 new CompanionLore.OpenOption(38, "open: [1x companion egg]", 1, 2e21, "2S"),
                 new CompanionLore.OpenOption(42, "open: [250x companion egg]", 250, null, "1.58SS"));
@@ -2763,5 +2767,68 @@ public final class EconomyChecks {
             return 1;
         }
         return 0;
+    }
+
+    /**
+     * 0.9.41: the 2026-09-05 lvl21 visits. Every economy visit clicked the 1x (a 40 % balance
+     * clamp that 0.9.36 had made manual-only, plus 18.4 x 3 = 55.199999 losing to the 55.2
+     * button), the batch was a fixed three eggs, and Equip Best ran before the hatch landed.
+     */
+    private static int checks0941() {
+        int n = 0;
+        // The 06:28:57 pick: batch 55.2UN, balance 473UN, buttons 18.4 / 55.2 / 184 / 920UN.
+        double un = 1e36;
+        List<CompanionLore.OpenOption> opts = List.of(
+            new CompanionLore.OpenOption(38, "open: [1x companion egg]", 1, 18.4 * un),
+            new CompanionLore.OpenOption(39, "open: [3x companion egg]", 3, 55.2 * un),
+            new CompanionLore.OpenOption(40, "open: [10x companion egg]", 10, 184 * un),
+            new CompanionLore.OpenOption(41, "open: [50x companion egg]", 50, 920 * un));
+        double batch = 18.4 * un * 3; // the ladder's perEgg x 3, a hair under the parsed 55.2UN in floating point
+        CompanionLore.OpenOption p = CompanionLore.pickOpen(opts, 3, batch, CFG.companionObservedTolerancePct);
+        n += eq("06:28 batch of three buys the 3x, not the 1x", p != null ? p.count() : null, 3);
+        p = CompanionLore.pickOpen(opts, 10, 184 * un, CFG.companionObservedTolerancePct);
+        n += eq("a ten-egg batch buys the 10x", p != null ? p.count() : null, 10);
+        p = CompanionLore.pickOpen(opts, 4, 184 * un, CFG.companionObservedTolerancePct);
+        n += eq("four eggs wanted: the 3x (10x over the count)", p != null ? p.count() : null, 3);
+
+        // The batch waxes and wanes with income: 1.5 min of income in eggs, floored at 3, capped at 10.
+        n += eq("no income -> the floor", StatsTracker.batchEggs(18.4 * un, null, 1.5, 3, 10), 3);
+        n += eq("lvl21 at 60UN/min: 90UN / 18.4 = 4 eggs", StatsTracker.batchEggs(18.4 * un, 60 * un, 1.5, 3, 10), 4);
+        n += eq("lvl21 at 300UN/min: 450 / 18.4 = 24 -> the cap", StatsTracker.batchEggs(18.4 * un, 300 * un, 1.5, 3, 10), 10);
+        n += eq("fresh stage, income tiny -> the floor", StatsTracker.batchEggs(18.4 * un, 1 * un, 1.5, 3, 10), 3);
+        n += eq("income minutes off -> the floor", StatsTracker.batchEggs(18.4 * un, 300 * un, 0, 3, 10), 3);
+        n += eq("floor wins over a lower cap", StatsTracker.batchEggs(18.4 * un, 300 * un, 1.5, 5, 3), 5);
+
+        // The landed check: the egg's zone/stage counted over storage + equipped.
+        CompanionLore cl = new CompanionLore(CFG);
+        List<String> lolli = List.of("companion", "Information:", "Rarity: Basic", "Multiplier: 71.21Kx Money", "[zone 3 stage 1]");
+        List<String> eagle = List.of("companion", "Information:", "Rarity: Basic", "Multiplier: 39.34Kx Money", "[zone 2 stage 10]");
+        CompanionLore.Companion l1 = cl.companion(9, "Lollipop Companion", lolli);
+        CompanionLore.Companion l2 = cl.companion(10, "Lollipop Companion", lolli);
+        CompanionLore.Companion e1 = cl.companion(3, "Eagle Companion", eagle);
+        CompanionLore.ZoneStage z3s1 = new CompanionLore.ZoneStage(3, 1);
+        n += eq("two Lollipops of z3s1", CompanionLore.landed(List.of(l1, e1, l2), z3s1), 2);
+        n += eq("none of z2s9", CompanionLore.landed(List.of(l1, e1, l2), new CompanionLore.ZoneStage(2, 9)), 0);
+        n += eq("null zs -> 0", CompanionLore.landed(List.of(l1), null), 0);
+        n += eq("egg zone/stage from the previews", cl.eggZoneStage(List.of(l1, l2)), z3s1);
+        n += eq("roster key", StatsTracker.rosterKey(z3s1), "z3s1");
+        n += eq("06:04 page: 0 landed < 0 owned + 1 opened -> missing", CompanionLore.landed(List.of(e1), z3s1) < 0 + 1, true);
+
+        // The egg GUI's animation toggle.
+        List<String> toggle = List.of("Toggle if an animation should play", "when opening any of your companion eggs.", "[click to disable the animation]");
+        n += eq("anim toggle by name", cl.isAnimToggle("animations toggle", toggle), true);
+        n += eq("anim enabled reads from the lore", cl.isAnimEnabled("animations toggle", toggle), true);
+        n += eq("anim off after the click", cl.isAnimEnabled("animations toggle", List.of("[click to enable the animation]")), false);
+        n += eq("an open item is no toggle", cl.isAnimToggle("open: [1x companion egg]", List.of("Price: 18.4UN Money")), false);
+
+        // Hub lines: the server's, never a player's "hub".
+        java.util.regex.Pattern hub0 = loose(CFG.hubChatPatterns.get(0));
+        java.util.regex.Pattern hub1 = loose(CFG.hubChatPatterns.get(1));
+        n += eq("sent to the hub", hub0.matcher("You have been sent to the hub.").find(), true);
+        n += eq("sending you to lobby", hub0.matcher("Sending you to Lobby-3...").find(), true);
+        n += eq("welcome to the hub", hub1.matcher("Welcome to the Hub!").find(), true);
+        n += eq("a player saying hub is not a send", hub0.matcher("StayRentless » hub").find(), false);
+        n += eq("teleported to lvl19 is not the hub", hub0.matcher("You have been teleported to lvl19").find(), false);
+        return n;
     }
 }

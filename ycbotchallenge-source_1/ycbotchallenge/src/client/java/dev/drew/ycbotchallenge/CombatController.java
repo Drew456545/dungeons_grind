@@ -94,6 +94,9 @@ public class CombatController {
     private long lastFocusTickAt = 0;
     private int lastZoneSeq = 0;
     private long lastClickAt = 0;
+    /** 0.9.41: no swing before this after any screen closed or the bot was toggled (postScreenSwing*). */
+    private long swingHoldUntil = 0;
+    private long lastPressAt = 0;
     /** Set to request the client stop the bot (teleport / player radar); consumed by the main tick. */
     public String stopRequest = null;
     private Vec3d lastTickPos = null;
@@ -347,6 +350,33 @@ public class CombatController {
         }
         MouseDriver.INSTANCE.cancel();
         releaseKeys(client);
+        noteScreenClosed(client, System.currentTimeMillis(), "reset");
+    }
+
+    /**
+     * 0.9.41: a screen just closed (or the bot was toggled): hold every swing for a
+     * postScreenSwing* beat and drop any attack-key edge still queued from before the screen
+     * appeared, so the first swing after a menu is a fresh one at human spacing.
+     */
+    public void noteScreenClosed(MinecraftClient client, long now, String kind) {
+        long hold = HumanTiming.logNormalMs(cfg.postScreenSwingMinMs, Math.max(cfg.postScreenSwingMinMs + 1, cfg.postScreenSwingMaxMs));
+        swingHoldUntil = Math.max(swingHoldUntil, now + hold);
+        lastClickAt = now;
+        dropQueuedAttacks(client);
+        if (logger != null && !"reset".equals(kind)) logger.log("screen_closed", "kind", kind, "holdMs", hold);
+    }
+
+    /** True while the post-screen swing hold is running. */
+    public boolean swingHeld(long now) {
+        return now < swingHoldUntil;
+    }
+
+    private static void dropQueuedAttacks(MinecraftClient client) {
+        if (client == null || client.options == null) return;
+        var attack = client.options.attackKey;
+        if (((dev.drew.ycbotchallenge.mixin.KeyBindingAccessor) attack).ycbotchallenge$getTimesPressed() != 0) {
+            ((dev.drew.ycbotchallenge.mixin.KeyBindingAccessor) attack).ycbotchallenge$setTimesPressed(0);
+        }
     }
 
     /** Zone switched: full targeting reset plus the dominant-type cache. */
@@ -367,6 +397,8 @@ public class CombatController {
         client.options.sprintKey.setPressed(false);
         // never hold the attack key; we fire discrete presses via timesPressed
         client.options.attackKey.setPressed(false);
+        // 0.9.41: nor leave a press queued for the tick a screen goes away.
+        dropQueuedAttacks(client);
     }
 
     public void tick(MinecraftClient client) {
@@ -797,7 +829,8 @@ public class CombatController {
         if (cfg.approachClickCpsMax > 0 && dist <= cfg.approachClickMaxDist
             && Economy.approachClickAllowed(dist, effectiveReach(),
                 MouseDriver.aimErrorDeg(client, target, aimHeightFrac), cfg.approachClickMaxAimDeg)
-            && now - lastClickAt >= approachIntervalMs()) {
+            && now - lastClickAt >= approachIntervalMs()
+            && !swingHeld(now)) {
             pressAttack(client);
             lastClickAt = now;
             clicksThisTarget++; // a whiff counts; a lucky early land is how connects happen
@@ -870,6 +903,7 @@ public class CombatController {
             && rayOk
             && !MouseDriver.INSTANCE.isBusy()
             && now - lastClickAt >= clickIntervalMs()
+            && !swingHeld(now)
             && vanillaAttackReady(client)) {
             pressAttack(client);
             lastClickAt = now;
@@ -1106,6 +1140,10 @@ public class CombatController {
      */
     /** One real attack-key edge; package-private since 0.9.38 (the boss module taps the same way). */
     void pressAttack(MinecraftClient client) {
+        long now = System.currentTimeMillis();
+        // 0.9.41: two presses inside 100 ms is the burst this release removes - if it shows, say so.
+        if (logger != null && lastPressAt != 0 && now - lastPressAt < 100) logger.log("swing_burst", "sinceMs", now - lastPressAt);
+        lastPressAt = now;
         var attack = client.options.attackKey;
         int cur = ((dev.drew.ycbotchallenge.mixin.KeyBindingAccessor) attack).ycbotchallenge$getTimesPressed();
         ((dev.drew.ycbotchallenge.mixin.KeyBindingAccessor) attack).ycbotchallenge$setTimesPressed(cur + 1);

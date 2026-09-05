@@ -93,6 +93,8 @@ public class StatsTracker {
     private Double companionPriceGrowthLearned = null;
     private final Map<String, Integer> companionVisitsByStage = new LinkedHashMap<>();
     private Integer companionVisitsStageRebirths = null;
+    /** 0.9.41: companions owned per zone/stage ("z3s1" -> count, storage + equipped) at the last menu read (persisted). */
+    private final Map<String, Integer> companionRosterByZs = new LinkedHashMap<>();
 
     // ---- 0.9.36: the rebirth cycle clock and the per-stage record
     /** Bot-on ms since the last rebirth, the rebirth it belongs to, and the last full cycle's bot-on minutes (persisted). */
@@ -240,6 +242,15 @@ public class StatsTracker {
      * bought (visit 2 on lvl16, 2026-09-04: 3 eggs, same four companions, 1.17x measured).
      */
     public void noteCompanionVisit(Integer stage, boolean bought, boolean equipChanged) {
+        noteCompanionVisit(stage, bought, equipChanged, true);
+    }
+
+    /**
+     * 0.9.41: {@code hatchConfirmed} says the bought companions were seen in the menu before
+     * Equip Best ran. A visit whose eggs had not hatched yet (the 06:04 Lollipop, equipped by
+     * hand later) proves nothing about the stage's egg pool, so it never saturates it.
+     */
+    public void noteCompanionVisit(Integer stage, boolean bought, boolean equipChanged, boolean hatchConfirmed) {
         if (companionVisitsThisRebirth() == 0 && companionVisits != 0) companionVisits = 0;
         companionVisits++;
         companionVisitsAtRebirths = rebirths;
@@ -249,11 +260,33 @@ public class StatsTracker {
                 companionLastBoughtStage = stage;
                 if (companionSaturatedStage != null && companionSaturatedStage < stage) companionSaturatedStage = null;
             }
-            if (!equipChanged) companionSaturatedStage = stage;
-            else if (stage.equals(companionSaturatedStage)) companionSaturatedStage = null;
+            if (!equipChanged && hatchConfirmed) companionSaturatedStage = stage;
+            else if (equipChanged && stage.equals(companionSaturatedStage)) companionSaturatedStage = null;
         }
         markStateDirty();
     }
+
+    /** 0.9.41: companions owned of a zone/stage at the last menu read (0 when never seen). */
+    public int companionOwned(CompanionLore.ZoneStage zs) {
+        if (zs == null) return 0;
+        Integer n = companionRosterByZs.get(rosterKey(zs));
+        return n == null ? 0 : n;
+    }
+
+    /** 0.9.41: a Companions-menu read (storage + equipped) replaces the roster wholesale. */
+    public void noteCompanionRoster(java.util.Collection<CompanionLore.Companion> all) {
+        if (all == null) return;
+        Map<String, Integer> fresh = new LinkedHashMap<>();
+        for (CompanionLore.Companion c : all) {
+            if (c == null || c.zoneStage() == null) continue;
+            fresh.merge(rosterKey(c.zoneStage()), 1, Integer::sum);
+        }
+        companionRosterByZs.clear();
+        companionRosterByZs.putAll(fresh);
+        markStateDirty();
+    }
+
+    public static String rosterKey(CompanionLore.ZoneStage zs) { return "z" + zs.zone() + "s" + zs.stage(); }
 
     /** 0.9.37: the stage whose last bought visit changed nothing (persisted), or null. */
     public Integer companionSaturatedStage = null;
@@ -306,11 +339,37 @@ public class StatsTracker {
         return nearestPrice * Math.pow(growth, stage - nearest);
     }
 
-    /** companionEggsMin eggs at this stage: the unit Economy.decideCompanion prices. */
+    /**
+     * 0.9.41: eggs per batch - companionBatchIncomeMin minutes of income at this stage's
+     * per-egg price, floored at companionEggsMin, capped at companionEggsMax; the floor alone
+     * when income is unknown. Pure form for the checks.
+     */
+    public static int batchEggs(Double perEgg, Double incomePerMin, double incomeMin, int eggsMin, int eggsMax) {
+        int lo = Math.max(1, eggsMin);
+        int hi = Math.max(lo, eggsMax);
+        if (perEgg == null || perEgg <= 0 || incomePerMin == null || incomePerMin <= 0 || incomeMin <= 0) return lo;
+        double eggs = Math.floor(incomeMin * incomePerMin / perEgg);
+        if (eggs < lo) return lo;
+        if (eggs > hi) return hi;
+        return (int) eggs;
+    }
+
+    /** The eggs a batch at this stage holds (0.9.41: waxes and wanes with income; see {@link #batchEggs}). */
+    public int companionBatchEggs(Integer stage) {
+        return batchEggs(companionEggPriceEstimate(stage), incomePerMinute(), cfg.companionBatchIncomeMin,
+            cfg.companionEggsMin, cfg.companionEggsMax);
+    }
+
+    /** "income" when the batch grew past the floor, else "floor". */
+    public String companionBatchVia(Integer stage) {
+        return companionBatchEggs(stage) > Math.max(1, cfg.companionEggsMin) ? "income" : "floor";
+    }
+
+    /** The batch at this stage: the unit Economy.decideCompanion prices (0.9.41: companionBatchEggs eggs, not a fixed companionEggsMin). */
     public Double companionBatchPrice(Integer stage) {
         Double per = companionEggPriceEstimate(stage);
         if (per == null || per <= 0) return null;
-        return per * Math.max(1, cfg.companionEggsMin);
+        return per * companionBatchEggs(stage);
     }
 
     private static Integer parseStageKey(String k) {
@@ -351,11 +410,20 @@ public class StatsTracker {
      * recorded and dropped rather than corrected by a made-up law.
      */
     public void noteCompanionGain(double ratio, int eggs, Integer stage) {
+        noteCompanionGain(ratio, eggs, Math.max(1, cfg.companionEggsMin), stage);
+    }
+
+    /**
+     * 0.9.41: {@code batchEggs} is the batch that visit priced. A visit that opened under half
+     * of it (the 1x clicks of 2026-09-05, blended as if they were three-egg batches) is
+     * recorded and dropped.
+     */
+    public void noteCompanionGain(double ratio, int eggs, int batchEggs, Integer stage) {
         boolean inBand = ratio > cfg.companionGainMin && ratio < cfg.companionGainMax;
-        boolean onCount = Math.abs(eggs - Math.max(1, cfg.companionEggsMin)) <= 2;
+        boolean onCount = eggs * 2 >= Math.max(1, batchEggs);
         boolean ok = inBand && onCount;
         if (ok) companionGainLearned = Economy.blendGrowth(companionGainLearned, ratio, 0.3);
-        log("companion_ratio", "ratio", Math.round(ratio * 100.0) / 100.0, "eggs", eggs, "stage", stage,
+        log("companion_ratio", "ratio", Math.round(ratio * 100.0) / 100.0, "eggs", eggs, "batchEggs", batchEggs, "stage", stage,
             "accepted", ok, "inBand", inBand, "onCount", onCount,
             "gain", Math.round(companionGain() * 100.0) / 100.0, "via", companionGainVia());
         markStateDirty();
@@ -470,6 +538,13 @@ public class StatsTracker {
     /** Last soft captcha hint line (captchaChatHintPatterns); the map detector confirms at once within 10s of it. */
     public volatile long captchaHintAt = 0;
     private final List<Pattern> captchaHintRes = new ArrayList<>();
+    /** 0.9.41: a server line that says we were sent to the hub/lobby (consumed by the client tick). */
+    public volatile String hubMessage = null;
+    private final List<Pattern> hubRes = new ArrayList<>();
+    /** 0.9.41: when the sidebar last carried the money line - the hub sidebar has none. */
+    private volatile long lastMoneyLineAt = 0;
+
+    public long lastMoneyLineAt() { return lastMoneyLineAt; }
     /** Evidence net for unclassified server lines (chat_raw). */
     private final RawChatNet rawNet;
     /** When the sidebar money row last increased: the kill credit for instant kills whose bar lived one tick. */
@@ -560,6 +635,7 @@ public class StatsTracker {
         if (cfg.captchaChatHintPatterns != null) {
             for (String p : cfg.captchaChatHintPatterns) captchaHintRes.add(compileLoose(p));
         }
+        if (cfg.hubChatPatterns != null) for (String p : cfg.hubChatPatterns) hubRes.add(compileLoose(p));
         rawNet = new RawChatNet(cfg.chatRawPerMinute);
         if (cfg.giveawayAnnouncePatterns != null) for (String p : cfg.giveawayAnnouncePatterns) giveawayAnnounceRes.add(compileLoose(p));
         if (cfg.giveawayJoinedPatterns != null) for (String p : cfg.giveawayJoinedPatterns) giveawayJoinedRes.add(compileLoose(p));
@@ -866,6 +942,7 @@ public class StatsTracker {
         if (zoneGrowthLearned == null) zoneGrowthLearned = e.zoneGrowth;
         if (lastCycleOnMin == null) lastCycleOnMin = e.lastCycleOnMin;
         if (companionSaturatedStage == null) companionSaturatedStage = e.companionSaturatedStage;
+        if (companionRosterByZs.isEmpty() && e.companionRosterByZs != null) companionRosterByZs.putAll(e.companionRosterByZs);
         if (cycleHistory.isEmpty() && e.cycleHistory != null) cycleHistory.addAll(e.cycleHistory);
         if (cycleStages.isEmpty() && e.cycleStages != null
             && (rebirths == null || e.cycleAtRebirths == null || rebirths.equals(e.cycleAtRebirths))) cycleStages.addAll(e.cycleStages);
@@ -930,6 +1007,7 @@ public class StatsTracker {
         e.cycleOnMs = cycleOnMs;
         e.cycleAtRebirths = cycleAtRebirths != null ? cycleAtRebirths : rebirths;
         e.companionSaturatedStage = companionSaturatedStage;
+        e.companionRosterByZs = companionRosterByZs.isEmpty() ? null : new LinkedHashMap<>(companionRosterByZs);
         e.cycleStages = cycleStages.isEmpty() ? null : new ArrayList<>(cycleStages);
         e.cycleHistory = cycleHistory.isEmpty() ? null : new ArrayList<>(cycleHistory);
         stateStore.put(stateUser, e);
@@ -1219,6 +1297,7 @@ public class StatsTracker {
 
     private void applyCurrency(String name, String raw, double value, String line) {
         String key = name.toLowerCase(Locale.ROOT);
+        if (key.equals(moneyKey())) lastMoneyLineAt = System.currentTimeMillis();
         Double prev = liveBals.put(key, value);
         String prevRaw = liveRaw.put(key, raw);
         balances.put(key, raw);
@@ -2025,6 +2104,14 @@ public class StatsTracker {
                     if (p.matcher(text).find()) {
                         captchaHintAt = now;
                         log("captcha_hint", "raw", text);
+                        break;
+                    }
+                }
+                // 0.9.41: a server line sending us to the hub/lobby stops the bot (never a player's).
+                for (Pattern p : hubRes) {
+                    if (p.matcher(text).find()) {
+                        hubMessage = text;
+                        log("hub_chat", "raw", text);
                         break;
                     }
                 }

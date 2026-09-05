@@ -178,6 +178,38 @@ public class YCBotChallengeConfig {
     public int noConnectIgnoreAfter = 2;
     /** Hard ceiling: skip a click if the vanilla attack cooldown isn't ready. */
     public boolean respectVanillaAttackCooldown = true;
+    /**
+     * 0.9.41: no swing for this long (log-normal) after any screen closes - a menu, the chat
+     * screen a reply was typed in, a captcha, the bot's own options - and after a toggle.
+     * Before this the click gates compared against a last-click time nothing reset, the gg
+     * reply path let combat tick on the very tick the chat screen closed, and attack-key
+     * edges queued before a GUI appeared drained together with the fresh press: several
+     * swings within milliseconds of a menu closing (Drew, 2026-09-05). The queued edges are
+     * dropped on every close and every releaseKeys; screen_closed / swing_burst log it.
+     */
+    public int postScreenSwingMinMs = 500;
+    public int postScreenSwingMaxMs = 900;
+    /**
+     * 0.9.41: the auto-disconnect timer on the Y screen (Drew, for the overnight run). Minutes
+     * after the timer is armed - picking a value on the screen, or the bot's first enable of
+     * the session when a value is saved - the bot turns off and the client leaves the server
+     * (auto_disconnect). 0 = off.
+     */
+    public int autoDisconnectMin = 0;
+    /**
+     * 0.9.41: a server-side /hub (Drew): the bot stops (stop_protocol reason=hub) on any of
+     * three signals - the client world was replaced (a proxy server switch) with no money
+     * line in the hubWorldConfirmMs after it, a chat line matching hubChatPatterns, or the
+     * sidebar's money line gone for hubSidebarLostMs after having been seen this enable. The
+     * stop is the usual one: toggle to resume.
+     */
+    public boolean hubStopEnabled = true;
+    public List<String> hubChatPatterns = List.of(
+        "/\\b(?:sent|sending|moved|moving|teleport(?:ed|ing)?|connect(?:ed|ing)?|return(?:ed|ing)?)\\b[^.]*\\b(?:hub|lobby)\\b/",
+        "/\\bwelcome to the (?:hub|lobby)\\b/");
+    public int hubSidebarLostMs = 10_000;
+    /** A replaced world is the hub only when no money line follows it within this long (a dungeon world hop shows one at once). */
+    public int hubWorldConfirmMs = 3000;
 
     /**
      * Ghost filter. Real dungeon mobs are ALWAYS stationary; client-side ghost
@@ -745,7 +777,7 @@ public class YCBotChallengeConfig {
      * 6-7 are "Slot #N Locked", 0 is empty), so this list saw three of four and filed the
      * fourth as storage — which let the bulk delete plan a pair an equipped companion held.
      */
-    public List<Integer> companionEquipSlots = List.of(0, 1, 2, 3);
+    public List<Integer> companionEquipSlots = List.of(1, 2, 3, 5);
     public String companionUnequipPattern = "/click here to un-?equip/";
     /**
      * Sliding window (Drew): keep the newest companionKeepZones zones (the current and the
@@ -785,6 +817,36 @@ public class YCBotChallengeConfig {
     public int companionEggsMin = 3;
     public int companionEggsMax = 10;
     public int companionMaxOpensPerVisit = 6;
+    /**
+     * 0.9.41: the batch waxes and wanes with how cheap eggs are against income - this many
+     * minutes of income, in eggs, floored at companionEggsMin and capped at companionEggsMax
+     * (Drew: "we should always spend, sometimes a lot, others not necessarily"). The 0.9.35
+     * batch was a fixed companionEggsMin eggs while eggsTarget rolled 3-10 for show, and the
+     * server closes the egg GUI after every purchase, so a visit gets exactly one click: the
+     * click has to be the right-sized button (1x/3x/10x/50x/250x). At lvl21 an egg was 18.4UN
+     * against 60-300UN/min, i.e. 4-10 eggs; on a fresh stage the floor holds.
+     */
+    public double companionBatchIncomeMin = 1.5;
+    /**
+     * 0.9.41: an egg hatches after an animation (~10 s), and the 06:04 visit sent /companion
+     * 5 s after paying, read a storage page without the new companion, clicked Equip Best
+     * for nothing and marked the stage saturated - the Lollipop sat in storage until Drew
+     * equipped it by hand. The visit now waits this long before /companion, then counts the
+     * egg's zone/stage in storage + equipped against what it owned before plus the eggs it
+     * opened; short, it closes and re-opens the menu after companionHatchRetryMs, up to
+     * companionHatchMaxRetries times (companion_hatch_wait / companion_hatch_missing).
+     */
+    public int companionHatchWaitMinMs = 10_000;
+    public int companionHatchWaitMaxMs = 16_000;
+    public int companionHatchRetryMs = 5000;
+    public int companionHatchMaxRetries = 3;
+    /**
+     * 0.9.41: the egg GUI's "animations toggle" item ("[click to disable the animation]"):
+     * clicked once per session while it reads enabled, so hatches land at once. Empty pattern
+     * = never touched.
+     */
+    public String companionAnimTogglePattern = "/animations? toggle/";
+    public String companionAnimEnabledPattern = "/click to disable/";
     /**
      * Manual visits only since 0.9.36 (Ctrl+Shift+toggle): the share of the wallet such a
      * visit may spend. An economy visit spends the priced batch (companionEggsMin eggs) and
@@ -1994,6 +2056,19 @@ public class YCBotChallengeConfig {
         if (companionEggsMin < 1) companionEggsMin = 1;
         if (companionEggsMax < companionEggsMin) companionEggsMax = companionEggsMin;
         if (companionMaxOpensPerVisit < 1) companionMaxOpensPerVisit = 1;
+        if (companionBatchIncomeMin < 0) companionBatchIncomeMin = 0;
+        if (companionHatchWaitMinMs < 0) companionHatchWaitMinMs = 0;
+        if (companionHatchWaitMaxMs < companionHatchWaitMinMs) companionHatchWaitMaxMs = companionHatchWaitMinMs;
+        if (companionHatchRetryMs < 500) companionHatchRetryMs = 500;
+        if (companionHatchMaxRetries < 0) companionHatchMaxRetries = 0;
+        if (companionAnimTogglePattern == null) companionAnimTogglePattern = fresh.companionAnimTogglePattern;
+        if (companionAnimEnabledPattern == null || companionAnimEnabledPattern.isBlank()) companionAnimEnabledPattern = fresh.companionAnimEnabledPattern;
+        if (postScreenSwingMinMs < 0) postScreenSwingMinMs = 0;
+        if (postScreenSwingMaxMs < postScreenSwingMinMs) postScreenSwingMaxMs = postScreenSwingMinMs;
+        if (autoDisconnectMin < 0) autoDisconnectMin = 0;
+        if (hubChatPatterns == null) hubChatPatterns = fresh.hubChatPatterns;
+        if (hubSidebarLostMs < 1000) hubSidebarLostMs = 1000;
+        if (hubWorldConfirmMs < 500) hubWorldConfirmMs = 500;
         if (companionMaxBalancePct < 0) companionMaxBalancePct = 0;
         if (companionMaxBalancePct > 100) companionMaxBalancePct = 100;
         if (companionMinStageGain < 0) companionMinStageGain = 0;

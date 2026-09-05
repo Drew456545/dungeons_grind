@@ -62,6 +62,8 @@ public final class CompanionLore {
     private final Pattern eggsTitleRe;
     private final Pattern companionsTitleRe;
     private final Pattern fuseTitleRe;
+    private final Pattern animToggleRe;
+    private final Pattern animEnabledRe;
 
     public CompanionLore(YCBotChallengeConfig cfg) {
         eggRe = RebirthLore.compileLoose(cfg.companionEggPattern);
@@ -78,6 +80,33 @@ public final class CompanionLore {
         eggsTitleRe = RebirthLore.compileLoose(cfg.companionEggsTitlePattern);
         companionsTitleRe = RebirthLore.compileLoose(cfg.companionsTitlePattern);
         fuseTitleRe = RebirthLore.compileLoose(cfg.companionFuseTitlePattern);
+        animToggleRe = RebirthLore.compileLoose(cfg.companionAnimTogglePattern);
+        animEnabledRe = RebirthLore.compileLoose(cfg.companionAnimEnabledPattern);
+    }
+
+    /** 0.9.41: the egg GUI's "animations toggle" item (slot 36 in every 2026-09-05 dump). */
+    public boolean isAnimToggle(String name, List<String> lore) {
+        return (name != null && animToggleRe.matcher(name).find()) || any(animToggleRe, lore);
+    }
+
+    /** 0.9.41: the toggle reads enabled ("[click to disable the animation]") - one click turns hatches instant. */
+    public boolean isAnimEnabled(String name, List<String> lore) {
+        return (name != null && animEnabledRe.matcher(name).find()) || any(animEnabledRe, lore);
+    }
+
+    /** 0.9.41: how many of a zone/stage a companion list holds (the landed check after a buy). */
+    public static int landed(Collection<Companion> companions, ZoneStage zs) {
+        if (companions == null || zs == null) return 0;
+        int n = 0;
+        for (Companion c : companions) if (c != null && zs.equals(c.zoneStage())) n++;
+        return n;
+    }
+
+    /** 0.9.41: the zone/stage the egg GUI's preview companions carry (all five share it), or null. */
+    public ZoneStage eggZoneStage(List<Companion> previews) {
+        if (previews == null) return null;
+        for (Companion c : previews) if (c != null && c.zoneStage() != null) return c.zoneStage();
+        return null;
     }
 
     private static boolean any(Pattern re, List<String> lines) {
@@ -268,19 +297,22 @@ public final class CompanionLore {
     }
 
     /**
-     * The open to click: the largest option that fits the eggs still wanted, costs at most
-     * {@code moneyBudget} and at most {@code maxBalancePct} of the balance. Unknown budget
-     * or balance = nothing (a person does not buy blind). Ties: cheaper.
+     * The open to click: the largest option that fits the eggs still wanted and costs at
+     * most {@code moneyBudget} (within {@code tolPct}, so a price the ladder extrapolated as
+     * 18.4 x 3 = 55.199999 still buys the 55.2 button). Unknown budget = nothing (a person
+     * does not buy blind). Ties: cheaper.
      *
      * <p>0.9.35: an absolute budget, carried from the decision that approved the visit. It
      * used to be "companionMaxIncomeMinutes of income" — the same knob that gated the
      * trigger — so once the economy stopped using that knob the walk would have reached the
-     * egg and bought nothing.
+     * egg and bought nothing. 0.9.41: the balance cap is gone from here too - it had stayed
+     * on every economy visit although 0.9.36 made it manual-only, and with the batch near
+     * the wallet only the 1x fit (every 2026-09-05 visit: slot 38, count 1). A manual visit's
+     * cap lives in the budget the controller hands over.
      */
-    public static OpenOption pickOpen(List<OpenOption> options, int eggsLeft, Double moneyBudget,
-                                      Double balance, double maxBalancePct) {
-        if (options == null || eggsLeft <= 0 || moneyBudget == null || moneyBudget <= 0 || balance == null) return null;
-        double budget = Math.min(moneyBudget, balance * Math.max(0, maxBalancePct) / 100.0);
+    public static OpenOption pickOpen(List<OpenOption> options, int eggsLeft, Double moneyBudget, double tolPct) {
+        if (options == null || eggsLeft <= 0 || moneyBudget == null || moneyBudget <= 0) return null;
+        double budget = moneyBudget * (1.0 + Math.max(0, tolPct) / 100.0);
         OpenOption best = null;
         for (OpenOption o : options) {
             if (o == null || o.price() == null || o.price() <= 0 || o.count() <= 0) continue;

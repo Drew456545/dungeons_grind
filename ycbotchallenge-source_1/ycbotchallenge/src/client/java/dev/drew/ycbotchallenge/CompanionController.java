@@ -68,6 +68,7 @@ public class CompanionController {
     private Double gainBefore = null;
     private long gainAt = 0;
     private int gainEggs = 0;
+    private int gainBatch = 0;
     private Integer gainStage = null;
     private long blockedUntil = 0;
     private int lastCombatKills = 0;
@@ -115,6 +116,18 @@ public class CompanionController {
     private boolean eggsGuiLogged;
     private boolean unparsedLogged;
     private boolean rungLessonTried;
+    // 0.9.41: the hatch. The egg's zone/stage (from the GUI's preview companions), how many
+    // of it were owned before this visit, and whether the bought ones were seen in the menu.
+    private CompanionLore.ZoneStage eggZs = null;
+    private int ownedBefore = 0;
+    private int hatchRetries = 0;
+    private boolean hatchConfirmed = false;
+    private int batchEggs = 0;
+    private String batchVia = null;
+    /** 0.9.41: the egg GUI's animation toggle, clicked once per session while it reads enabled. */
+    private boolean animToggleTried = false;
+    private boolean animKnownOff = false;
+    private boolean animReopened = false;
 
     // companions
     private List<CompanionLore.Companion> equippedBefore = List.of();
@@ -372,11 +385,53 @@ public class CompanionController {
                 }
             }
             case EGG_LOOK -> {
-                if (!eggsGuiOpen(client)) { abort(client, combat, "egg-gui-closed"); return false; }
+                if (!eggsGuiOpen(client)) {
+                    // 0.9.41: the animation toggle may have closed the menu - open the egg again, once.
+                    if (animToggleTried && animKnownOff && !animReopened && eggsOpened == 0) {
+                        animReopened = true;
+                        log("companion_anim_reopen", "title", title(client));
+                        if (client.currentScreen != null) EnchantScreens.closeGui(client);
+                        aimTry = 0;
+                        aimIssuedAt = 0;
+                        phase = Phase.AIM;
+                        return true;
+                    }
+                    abort(client, combat, "egg-gui-closed");
+                    return false;
+                }
                 if (now < phaseUntil) return true;
+                List<Entry> eggEntries = containerItems(client);
                 if (!eggsGuiLogged) {
                     eggsGuiLogged = true;
-                    log("companion_gui", "which", "eggs", "title", title(client), "items", describe(containerItems(client)));
+                    log("companion_gui", "which", "eggs", "title", title(client), "items", describe(eggEntries));
+                }
+                // 0.9.41: the preview companions name the zone/stage this egg hatches - the
+                // landed check after the buy counts that pair in the menu.
+                if (eggZs == null) {
+                    List<CompanionLore.Companion> previews = new ArrayList<>();
+                    for (Entry e : eggEntries) {
+                        CompanionLore.Companion c = lore.companion(e.slot(), e.name(), e.lore());
+                        if (c != null) previews.add(c);
+                    }
+                    eggZs = lore.eggZoneStage(previews);
+                    ownedBefore = stats.companionOwned(eggZs);
+                }
+                // 0.9.41: hatches play an animation (~10 s) that the 06:04 visit ran ahead of;
+                // the GUI's own toggle turns it off. Clicked once per session while it reads
+                // enabled, then the GUI is read again.
+                if (!animToggleTried) {
+                    animToggleTried = true;
+                    for (Entry e : eggEntries) {
+                        if (!lore.isAnimToggle(e.name(), e.lore())) continue;
+                        boolean enabledNow = lore.isAnimEnabled(e.name(), e.lore());
+                        if (!enabledNow) { animKnownOff = true; break; }
+                        GuiHuman.click(client, e.slot(), "companion", "anim-off", logger);
+                        log("companion_anim_toggle", "slot", e.slot(), "name", e.name(), "lore", e.lore());
+                        animKnownOff = true;
+                        phase = Phase.EGG_LOOK;
+                        phaseUntil = now + HumanTiming.logNormalMs(cfg.companionSettleMinMs, Math.max(cfg.companionSettleMinMs + 1, cfg.companionSettleMaxMs));
+                        return true;
+                    }
                 }
                 phase = Phase.BUY;
             }
@@ -416,7 +471,7 @@ public class CompanionController {
                 // The batch the economy priced is companionEggsMin eggs; the rolled eggsTarget
                 // only humanises the count, it may not enlarge the bill.
                 Double budget = visitBudget();
-                CompanionLore.OpenOption pick = CompanionLore.pickOpen(options, eggsLeft, budget, bal, cfg.companionMaxBalancePct);
+                CompanionLore.OpenOption pick = CompanionLore.pickOpen(options, eggsLeft, budget, cfg.companionObservedTolerancePct);
                 if (pick == null || opensClicked >= cfg.companionMaxOpensPerVisit) {
                     log("companion_skip", "reason", pick == null ? (options.isEmpty() ? "no-open-item" : "budget") : "open-cap",
                         "eggsLeft", eggsLeft, "opens", opensClicked, "options", options.size(),
@@ -475,6 +530,15 @@ public class CompanionController {
                 if (isOurGui(client)) GuiHuman.close(client, "companion", logger);
                 phase = Phase.TYPE_COMPANION;
                 phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+                // 0.9.41: bought eggs hatch after an animation; give it its time before the
+                // menu is read (the animation off, the usual beat is enough - the landed check
+                // still guards the read).
+                if (eggsOpened > 0 && hatchRetries == 0 && !animKnownOff) {
+                    long wait = HumanTiming.logNormalMs(cfg.companionHatchWaitMinMs, Math.max(cfg.companionHatchWaitMinMs + 1, cfg.companionHatchWaitMaxMs));
+                    phaseUntil = now + wait;
+                    log("companion_hatch_wait", "ms", wait, "eggs", eggsOpened, "zs", eggZs != null ? StatsTracker.rosterKey(eggZs) : null,
+                        "ownedBefore", ownedBefore);
+                }
             }
             case TYPE_COMPANION -> {
                 if (now < phaseUntil) return true;
@@ -525,6 +589,31 @@ public class CompanionController {
                 log("companion_gui", "which", "companions", "title", title(client), "items", describe(entries));
                 // The second pass of a visit (after a fusion) must not overwrite the "before" set.
                 readCompanions(entries, !fusedThisVisit);
+                // 0.9.41: did the bought companions land? Their zone/stage in storage + equipped
+                // against what was owned before plus the eggs opened. Short: close, wait, read
+                // again (the 06:04 visit ran Equip Best on a page without its Lollipop).
+                if (eggsOpened > 0 && !hatchConfirmed && !fusedThisVisit) {
+                    List<CompanionLore.Companion> all = new ArrayList<>(storage);
+                    all.addAll(equippedBefore);
+                    int landed = CompanionLore.landed(all, eggZs);
+                    int expected = ownedBefore + eggsOpened;
+                    if (eggZs == null || landed >= expected) {
+                        hatchConfirmed = true;
+                        log("companion_hatch_landed", "zs", eggZs != null ? StatsTracker.rosterKey(eggZs) : null,
+                            "landed", landed, "expected", expected, "retries", hatchRetries, "known", eggZs != null);
+                    } else if (hatchRetries < cfg.companionHatchMaxRetries) {
+                        hatchRetries++;
+                        log("companion_hatch_missing", "zs", StatsTracker.rosterKey(eggZs), "landed", landed, "expected", expected,
+                            "retry", hatchRetries, "of", cfg.companionHatchMaxRetries, "waitMs", cfg.companionHatchRetryMs);
+                        if (isOurGui(client)) EnchantScreens.closeGui(client);
+                        phase = Phase.TYPE_COMPANION;
+                        phaseUntil = now + cfg.companionHatchRetryMs;
+                        return true;
+                    } else {
+                        log("companion_hatch_unconfirmed", "zs", StatsTracker.rosterKey(eggZs), "landed", landed, "expected", expected,
+                            "retries", hatchRetries);
+                    }
+                }
                 equipSlot = -1;
                 fuseSlot = -1;
                 for (Entry e : entries) {
@@ -556,6 +645,7 @@ public class CompanionController {
                 }
                 if (equipSlot < 0) {
                     log("companion_skip", "reason", "no-equip-best");
+                    noteRoster(equippedBefore);
                     prepareDeletes();
                     phase = Phase.DELETE;
                     deleteIdx = 0;
@@ -586,10 +676,11 @@ public class CompanionController {
                 }
                 List<Entry> entries = containerItems(client);
                 readCompanions(entries, false);
+                noteRoster(equippedAfter);
                 equipChanged = !summaries(equippedBefore).equals(summaries(equippedAfter));
                 log("companion_equip", "guiOpen", true, "before", summaries(equippedBefore), "after", summaries(equippedAfter),
                     "changed", equipChanged, "multBefore", multSum(equippedBefore), "multAfter", multSum(equippedAfter),
-                    "storage", storage.size(), "fused", fusedThisVisit);
+                    "storage", storage.size(), "fused", fusedThisVisit, "hatchConfirmed", hatchConfirmed);
                 // 0.9.37: fusion already happened before Equip Best (or was not due); close and delete.
                 prepareDeletes();
                 phase = Phase.DELETE;
@@ -721,18 +812,22 @@ public class CompanionController {
             }
             case DONE -> {
                 if (isOurGui(client)) EnchantScreens.closeGui(client);
-                stats.noteCompanionVisit(visitStage, eggsOpened > 0, equipChanged || fusedThisVisit);
+                boolean confirmed = hatchConfirmed || eggsOpened == 0;
+                stats.noteCompanionVisit(visitStage, eggsOpened > 0, equipChanged || fusedThisVisit, confirmed);
                 log("companion_visit_done", "via", visitVia, "eggs", eggsOpened, "opens", opensClicked,
+                    "batchEggs", batchEggs, "batchVia", batchVia,
                     "spent", spent > 0 ? Amounts.format(spent) : null,
                     "perEgg", observedEggPrice != null ? Amounts.format(observedEggPrice) : null,
                     "stage", visitStage, "before", summaries(equippedBefore), "after", summaries(equippedAfter),
                     "equipChanged", equipChanged, "fused", fusedThisVisit,
+                    "hatchConfirmed", confirmed, "hatchRetries", hatchRetries,
                     "deletes", deletes.size(), "visitMs", now - visitStartedAt,
                     "visitsThisRebirth", stats.companionVisitsThisRebirth(),
                     "saturatedStage", stats.companionSaturatedStage, "persisted", true);
                 consecutiveAborts = 0;
                 if (eggsOpened > 0 && gainBefore != null) {
                     gainEggs = eggsOpened;
+                    gainBatch = batchEggs;
                     gainAt = now + cfg.companionGainWindowMs;
                 } else {
                     gainBefore = null;
@@ -801,6 +896,7 @@ public class CompanionController {
                 Double batch = stats.companionBatchPrice(stage);
                 log("companion_plan", "via", via, "delayMs", delay, "stage", stage,
                     "batch", batch != null ? Amounts.format(batch) : null,
+                    "batchEggs", stats.companionBatchEggs(stage), "batchVia", stats.companionBatchVia(stage),
                     "perEgg", stats.companionEggPriceEstimate(stage) != null ? Amounts.format(stats.companionEggPriceEstimate(stage)) : null,
                     "gain", Math.round(stats.companionGain() * 100.0) / 100.0, "gainVia", stats.companionGainVia(),
                     "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
@@ -834,7 +930,11 @@ public class CompanionController {
         gainStage = visitStage;
         gainEggs = 0;
         eggAim = hit.aim();
-        eggsTarget = HumanTiming.ticks(cfg.companionEggsMin, Math.max(cfg.companionEggsMin, cfg.companionEggsMax));
+        // 0.9.41: the batch the economy priced is the target (it waxes and wanes with income);
+        // a manual visit takes the ceiling and its balance cap decides.
+        batchEggs = stats.companionBatchEggs(visitStage);
+        batchVia = stats.companionBatchVia(visitStage);
+        eggsTarget = "manual".equals(visitVia) ? Math.max(cfg.companionEggsMin, cfg.companionEggsMax) : batchEggs;
         eggsOpened = 0;
         opensClicked = 0;
         spent = 0;
@@ -855,7 +955,11 @@ public class CompanionController {
         deletes = List.of();
         deleteIdx = 0;
         currentZone = null;
-        log("companion_visit", "via", visitVia, "stage", visitStage, "eggsTarget", eggsTarget,
+        eggZs = null;
+        ownedBefore = 0;
+        hatchRetries = 0;
+        hatchConfirmed = false;
+        log("companion_visit", "via", visitVia, "stage", visitStage, "eggsTarget", eggsTarget, "batchVia", batchVia,
             "dist", Math.round(hit.dist() * 10.0) / 10.0, "price", hit.price() != null ? Amounts.format(hit.price()) : null,
             "eggVia", hit.via(), "x", Math.round(hit.aim().x), "y", Math.round(hit.aim().y), "z", Math.round(hit.aim().z),
             "lines", hit.lines());
@@ -966,7 +1070,14 @@ public class CompanionController {
             "windowMs", cfg.companionGainWindowMs, "at", at,
             "equippedMultBefore", multSum(equippedBefore), "equippedMultAfter", multSum(equippedAfter),
             "equippedMaxBefore", multMax(equippedBefore), "equippedMaxAfter", multMax(equippedAfter));
-        stats.noteCompanionGain(ratio, gainEggs, gainStage);
+        stats.noteCompanionGain(ratio, gainEggs, gainBatch, gainStage);
+    }
+
+    /** 0.9.41: storage plus the equipped set of the last menu read, remembered for the next visit's landed check. */
+    private void noteRoster(List<CompanionLore.Companion> equipped) {
+        List<CompanionLore.Companion> all = new ArrayList<>(storage);
+        if (equipped != null) all.addAll(equipped);
+        stats.noteCompanionRoster(all);
     }
 
     private static Double multSum(List<CompanionLore.Companion> cs) {

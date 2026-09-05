@@ -288,6 +288,7 @@ public class BossEventController {
                     return true;
                 }
                 if (rayOk && !MouseDriver.INSTANCE.isBusy() && now - lastClickAt >= clickIntervalMs()
+                    && !combat.swingHeld(now)
                     && (!cfg.bossRespectVanillaCooldown || combat.vanillaAttackReady(client))) {
                     combat.pressAttack(client);
                     lastClickAt = now;

@@ -61,6 +61,8 @@ public final class StateStore {
         public Integer cycleAtRebirths;
         /** 0.9.37: the stage the last bought visit changed nothing on (its egg pool is spent). */
         public Integer companionSaturatedStage;
+        /** 0.9.41: companions owned per zone/stage ("z3s1" -> count) at the last menu read. */
+        public Map<String, Integer> companionRosterByZs;
         /** 0.9.37: the stages of the rebirth in progress, and the last cycles, so the record survives a restart. */
         public List<StageEntry> cycleStages;
         public List<CycleEntry> cycleHistory;
