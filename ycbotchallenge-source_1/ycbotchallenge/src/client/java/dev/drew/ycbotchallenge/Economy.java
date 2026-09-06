@@ -1036,6 +1036,18 @@ public final class Economy {
         return "abort";
     }
 
+    /**
+     * 0.9.45: the enchanter open with something under the crosshair. {@code press} when the
+     * crosshair is clear or the wait is spent; {@code glance} another step up when an entity is
+     * still there, a glance is left and the last one settled; else {@code wait}.
+     */
+    public static String enchantOpenClearAction(boolean entityUnderCrosshair, long waitedMs, int maxWaitMs,
+                                                int glances, int maxGlances, long sinceGlanceMs) {
+        if (!entityUnderCrosshair || waitedMs >= maxWaitMs) return "press";
+        if (glances < maxGlances && sinceGlanceMs >= 400) return "glance";
+        return "wait";
+    }
+
     /** The stand point {@code inset} blocks inside reach (0.9.44: 0.8, so a slid marker stays in the ray). */
     public static double[] bossStandPoint(double[] body, double[] marker, double reach, double[] player, double inset) {
         double ox = marker[0] - body[0], oz = marker[2] - body[2];

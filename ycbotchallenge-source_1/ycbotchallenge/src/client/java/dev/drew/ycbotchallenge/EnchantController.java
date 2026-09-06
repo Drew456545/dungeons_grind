@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.screen.ScreenHandler;
+import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 
 /**
@@ -62,6 +63,11 @@ public class EnchantController {
     private boolean useHeld;
     private int consecutiveAborts;
     private boolean suspended;
+    private long suspendedAt;
+    // 0.9.45: the open-clear glance, repeated while a corpse still fills the crosshair.
+    private long clearStartedAt;
+    private int clearGlances;
+    private long lastGlanceAt;
     /** Per-tab state: whether we looked at what is showing, whether we clicked the button, purchases so far. */
     private boolean tabChecked;
     private boolean tabClicked;
@@ -147,7 +153,12 @@ public class EnchantController {
 
     public String hudLine() {
         if (!cfg.enchantsEnabled) return null;
-        if (phase == Phase.IDLE) return suspended ? "enchant: suspended after repeated aborts (toggle to reset)" : null;
+        if (phase == Phase.IDLE) {
+            if (!suspended) return null;
+            if (cfg.enchantSuspendMs <= 0) return "enchant: suspended after repeated aborts (toggle to reset)";
+            long left = Math.max(0, cfg.enchantSuspendMs - (System.currentTimeMillis() - suspendedAt));
+            return "enchant: suspended after repeated aborts · retry in " + Math.max(1, Math.round(left / 60000.0)) + " min";
+        }
         return "enchant: " + phase.name().toLowerCase(Locale.ROOT)
             + (currentTab != null ? " " + currentTab : "") + (buys > 0 ? "  bought " + buys : "")
             + (prestigesThisVisit > 0 ? "  prestiged " + prestigesThisVisit : "");
@@ -206,6 +217,29 @@ public class EnchantController {
         switch (phase) {
             case OPEN_CLEAR -> {
                 if (now < phaseUntil || MouseDriver.INSTANCE.isBusy()) return true;
+                // 0.9.45: every no-gui open in the 2026-09-05/06 logs (11 of 11) began the
+                // tick a kill landed with an entity under the crosshair, and the one 15-degree
+                // glance left it there (a Polar Bear or a Horse at reach fills ~30 degrees and
+                // the corpse lingers ~1 s). Look again: glance once more after a beat while it
+                // is still there, else wait it out, and press only into a clear crosshair
+                // (or when the wait is spent - enchant_open_press says which).
+                HitResult hit = client.crosshairTarget;
+                boolean entity = hit != null && hit.getType() == HitResult.Type.ENTITY;
+                String action = Economy.enchantOpenClearAction(entity, now - clearStartedAt, cfg.enchantOpenClearMaxMs,
+                    clearGlances, cfg.enchantOpenClearGlances, now - lastGlanceAt);
+                if ("glance".equals(action)) {
+                    clearGlances++;
+                    lastGlanceAt = now;
+                    float pitch = Math.max(-90f, client.player.getPitch() - cfg.enchantOpenClearPitchDeg);
+                    MouseDriver.INSTANCE.lookTo(client, client.player.getYaw(), pitch, "enchant-open-clear");
+                    phaseUntil = now + HumanTiming.logNormalMs(250, 550);
+                    return true;
+                }
+                if ("wait".equals(action)) return true;
+                String under = entity && hit instanceof EntityHitResult ehr && ehr.getEntity() != null
+                    ? ehr.getEntity().getName().getString() : null;
+                log("enchant_open_press", "target", entity ? "entity" : hit == null || hit.getType() == HitResult.Type.MISS ? "none" : "block",
+                    "entity", under, "waitedMs", now - clearStartedAt, "glances", clearGlances);
                 pressUse(client, now);
             }
             case OPEN_WAIT -> {
@@ -226,7 +260,14 @@ public class EnchantController {
                     // idling the bot until toggled). Unrecognised = not yet, until the timeout.
                     if (now >= phaseUntil) abort(client, "wrong-gui", true);
                 } else if (now >= phaseUntil) {
-                    abort(client, "no-gui", false);
+                    // 0.9.45: one more try before a no-gui counts (the crosshair is checked again).
+                    if (!reopened) {
+                        reopened = true;
+                        log("enchant_reopen", "reason", "no-gui", "buys", buys, "tab", currentTab);
+                        openMenu(client, now);
+                    } else {
+                        abort(client, "no-gui", false);
+                    }
                 }
             }
             case LOOK -> {
@@ -669,6 +710,14 @@ public class EnchantController {
      * ever clustered right after zone advances.
      */
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
+        if (suspended && cfg.enchantSuspendMs > 0 && now - suspendedAt >= cfg.enchantSuspendMs) {
+            // 0.9.45: a suspension lifts on its own (the 01:43 log: three no-gui opens in a row
+            // - each one a corpse under the crosshair - parked the enchanter until the next
+            // toggle, which overnight is the whole night).
+            suspended = false;
+            consecutiveAborts = 0;
+            log("enchant_resumed", "afterMs", now - suspendedAt);
+        }
         if (suspended || combat.isOnBreak() || client.currentScreen != null) return false;
         if (lastVisitAt == 0) lastVisitAt = now; // session start counts as a visit for the ramp
         // 0.9.37: a zone/sword buy is decided or typing - the enchanter would steal the chat
@@ -797,8 +846,12 @@ public class EnchantController {
             MouseDriver.INSTANCE.lookTo(client, client.player.getYaw(), pitch, "enchant-open-clear");
             phase = Phase.OPEN_CLEAR;
             phaseUntil = now + HumanTiming.logNormalMs(250, 550);
+            clearStartedAt = now;
+            clearGlances = 1;
+            lastGlanceAt = now;
             return;
         }
+        log("enchant_open_press", "target", target, "entity", null, "waitedMs", 0, "glances", 0);
         pressUse(client, now);
     }
 
@@ -897,7 +950,9 @@ public class EnchantController {
         // bad luck: stop trying until the bot is toggled, rather than right-clicking forever.
         if (++consecutiveAborts >= Math.max(1, cfg.enchantMaxConsecutiveAborts)) {
             suspended = true;
-            log("enchant_suspended", "aborts", consecutiveAborts, "lastReason", why);
+            suspendedAt = now();
+            log("enchant_suspended", "aborts", consecutiveAborts, "lastReason", why,
+                "resumeInMs", cfg.enchantSuspendMs > 0 ? cfg.enchantSuspendMs : null);
         }
         endVisit(client, now());
     }

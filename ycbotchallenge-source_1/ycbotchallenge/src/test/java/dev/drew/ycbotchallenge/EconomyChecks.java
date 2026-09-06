@@ -90,6 +90,7 @@ public final class EconomyChecks {
         n += checks0942();
         n += checks0943();
         n += checks0944();
+        n += checks0945();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1783,7 +1784,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 46", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 46);
+        n += eq("config version 47", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 47);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2868,6 +2869,21 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.45: the enchanter opens into a clear crosshair. */
+    private static int checks0945() {
+        int n = 0;
+        n += eq("clear crosshair: press", Economy.enchantOpenClearAction(false, 0, 2000, 1, 3, 0), "press");
+        n += eq("entity, first beat: wait", Economy.enchantOpenClearAction(true, 300, 2000, 1, 3, 300), "wait");
+        n += eq("entity, beat over: glance", Economy.enchantOpenClearAction(true, 450, 2000, 1, 3, 450), "glance");
+        n += eq("glances spent: wait", Economy.enchantOpenClearAction(true, 900, 2000, 3, 3, 450), "wait");
+        n += eq("wait spent: press anyway", Economy.enchantOpenClearAction(true, 2000, 2000, 3, 3, 450), "press");
+        n += eq("clear later: press", Economy.enchantOpenClearAction(false, 1200, 2000, 2, 3, 100), "press");
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        n += eq("suspend lifts after 30 min", fresh.enchantSuspendMs, 1_800_000);
+        n += eq("three glances", fresh.enchantOpenClearGlances, 3);
+        return n;
+    }
+
     /** 0.9.44: the boss fight stays on the boss. */
     private static int checks0944() {
         int n = 0;

@@ -255,6 +255,28 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.45: the enchanter opens into a clear crosshair, and a suspension that lifts
+
+Drew saw "enchant: suspended after repeated aborts" on the HUD at 01:43. The log: three
+`enchant_abort reason=no-gui` in a row (01:28, 01:36, 01:43), and every no-gui open in the
+2026-09-05/06 logs - 11 of 11 - began the tick a kill landed with an entity under the
+crosshair; every open into an empty crosshair worked. The 0.9.30 fix (one 15-degree glance
+up) is not enough for a Polar Bear or a Horse at reach, whose corpse fills ~30 degrees for
+the second it lingers: the use-key hit the corpse and the enchanter never opened. Half the
+entity-under-crosshair opens failed; a bad run of three parked the enchanter until the
+next toggle.
+
+- **Look before the press.** After the glance the crosshair is checked again: another
+  glance (up to `enchantOpenClearGlances`, 3) after a 400 ms beat while an entity is still
+  there, otherwise wait, up to `enchantOpenClearMaxMs` (2 s), then press. `enchant_open_press`
+  logs what was under the crosshair, the wait and the glances.
+- **One retry before a no-gui counts.** A silent open reopens once within the visit
+  (`enchant_reopen reason=no-gui`), the crosshair checked again; only the second silence is
+  an abort.
+- **The suspension lifts.** `enchantSuspendMs` (30 min): the HUD line says when, and
+  `enchant_resumed` marks it. 0 keeps the toggle-only rule.
+- Config v47.
+
 ### 0.9.44: the boss fight stays on the boss
 
 The 2026-09-06 00:42 log is the first boss the bot killed on its own, and it did it in

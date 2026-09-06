@@ -1133,6 +1133,9 @@ public class YCBotChallengeConfig {
     public double enchantLagBias = 0.0;
     /** 0.9.30: an entity under the crosshair when the enchanter is opened gets this glance up first (0 = off). */
     public int enchantOpenClearPitchDeg = 15;
+    /** 0.9.45: up to this many glances (the first included) and this long of waiting for the crosshair to clear before the use press. */
+    public int enchantOpenClearGlances = 3;
+    public int enchantOpenClearMaxMs = 2_000;
     /** Cook this long before opening the menu mid-cook (the DPS/ETA read needs a few samples). */
     public int enchantCookSettleMs = 3_000;
     /**
@@ -1173,6 +1176,8 @@ public class YCBotChallengeConfig {
     public boolean enchantOpenViaInteract = false;
     /** After this many aborted visits in a row (menu never opens, GUI keeps vanishing) stop trying until the next toggle. */
     public int enchantMaxConsecutiveAborts = 3;
+    /** 0.9.45: a suspension lifts on its own after this long (0 = until the next toggle, the 0.9.30 rule). */
+    public int enchantSuspendMs = 1_800_000;
     /**
      * A container's slot contents arrive a tick after its screen opens. Any container
      * younger than this is left alone (neither enchanter nor captcha) so a hand-opened
@@ -1584,7 +1589,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 46;
+    public static final int CURRENT_CONFIG_VERSION = 47;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1971,6 +1976,11 @@ public class YCBotChallengeConfig {
             // Rebirth GUI lore read. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 47) {
+            // v47 (0.9.45): the enchanter open-clear glances/wait and the suspension expiry.
+            // Every knob is new and takes its default.
+            changed = true;
+        }
         if (configVersion < 46) {
             // v46 (0.9.44): the boss fight stays on the boss - the reacquire wait, the stand
             // inset, the faster target cadence and the tighter stand tolerance take the new
@@ -2283,6 +2293,9 @@ public class YCBotChallengeConfig {
         if (enchantLagBias > 3) enchantLagBias = 3;
         if (enchantOpenClearPitchDeg < 0) enchantOpenClearPitchDeg = 0;
         if (enchantOpenClearPitchDeg > 60) enchantOpenClearPitchDeg = 60;
+        if (enchantOpenClearGlances < 1) enchantOpenClearGlances = 1;
+        if (enchantOpenClearMaxMs < 0) enchantOpenClearMaxMs = 0;
+        if (enchantSuspendMs < 0) enchantSuspendMs = 0;
         if (rebirthHorizonGainWindowMs < 0) rebirthHorizonGainWindowMs = 0;
         if (rebirthHorizonGainWindowMs > 0 && rebirthHorizonGainWindowMs < 30_000) rebirthHorizonGainWindowMs = 30_000;
         if (commandCooldownMs < 0) commandCooldownMs = 1100;
