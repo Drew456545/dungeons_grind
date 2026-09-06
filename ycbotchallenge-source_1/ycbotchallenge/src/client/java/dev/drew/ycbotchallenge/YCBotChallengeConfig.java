@@ -221,9 +221,9 @@ public class YCBotChallengeConfig {
      */
     public boolean rebootResumeEnabled = true;
     public List<String> rebootChatPatterns = List.of(
-        "/\bserver is (?:now )?(?:restarting|rebooting)\b/",
-        "/\bauto-?queued\b/",
-        "/\bkicked from\b[^:]*:\s*this server is now rebooting/");
+        "/\\bserver is (?:now )?(?:restarting|rebooting)\\b/",
+        "/\\bauto-?queued\\b/",
+        "/\\bkicked from\\b[^:]*:\\s*this server is now rebooting/");
     public int rebootNoticeWindowMs = 180_000;
     public int rebootWaitMaxMs = 1_200_000;
     public int rebootResumeMinMs = 45_000;
