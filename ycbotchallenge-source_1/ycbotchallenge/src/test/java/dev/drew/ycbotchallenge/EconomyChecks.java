@@ -2888,7 +2888,7 @@ public final class EconomyChecks {
         n += eq("menu plate hp", b != null ? b[1] : null, "86");
         n += eq("a mob plate is not a hero", HeroTracker.parsePlate(re, "31 Villager \u276421.38QT") == null, true);
         n += eq("a bare name is not a hero", HeroTracker.parsePlate(re, "Archer Queen") == null, true);
-        n += eq("hp with suffix parses", Amounts.parse("21.38QT") != null, true);
+        n += eq("hp with a built-in suffix parses", Amounts.parse("21.38T"), 21.38e12, 1e6);
         return n;
     }
 
