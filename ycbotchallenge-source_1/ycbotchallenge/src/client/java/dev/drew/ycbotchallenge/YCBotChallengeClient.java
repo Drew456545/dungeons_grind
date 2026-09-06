@@ -12,6 +12,7 @@ import java.util.List;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
+import net.minecraft.client.gui.screen.GameMenuScreen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -64,6 +65,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private HeroController heroSpawns;
     private final java.util.Set<String> guiSeenTitles = new java.util.HashSet<>();
     private long serverMenuSince = 0;
+    /** 0.9.54: the pause screen seen since (alt-tab opens it; with it up no swing registers). */
+    private long pauseScreenSince = 0;
+    private long pauseScreenCloseAt = 0;
     private BossEventController bossEvent;
     /** 0.9.38: the title overlay, handed over by InGameHudMixin and read on the client tick. */
     private static volatile String titleText = null;
@@ -257,6 +261,24 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
 
+        // 0.9.54: the pause screen (alt-tab with "pause on lost focus" on) blocks every swing
+        // (20:39-20:41: eleven no-connects, zero clicks). Close it after a beat, as a player
+        // coming back does; F3+P stops it opening at all.
+        if (client.currentScreen instanceof GameMenuScreen && config.pauseScreenCloseEnabled) {
+            long nowPs = System.currentTimeMillis();
+            if (pauseScreenSince == 0) {
+                pauseScreenSince = nowPs;
+                pauseScreenCloseAt = nowPs + HumanTiming.logNormalMs(config.pauseScreenCloseMinMs, Math.max(config.pauseScreenCloseMinMs + 1, config.pauseScreenCloseMaxMs));
+            }
+            combat.releaseKeys(client);
+            if (nowPs >= pauseScreenCloseAt) {
+                if (logger != null) logger.log("pause_screen_closed", "openMs", nowPs - pauseScreenSince);
+                client.setScreen(null);
+                pauseScreenSince = 0;
+            }
+            return;
+        }
+        pauseScreenSince = 0;
         // 0.9.30: our own options screen is open — hands off the keys, nothing else runs.
         if (client.currentScreen instanceof BotOptionsScreen) {
             combat.releaseKeys(client);
@@ -336,9 +358,14 @@ public class YCBotChallengeClient implements ClientModInitializer {
         // "... Enchant" items and the enchanter's content check took it for the enchanter
         // (07:18 and 07:20: stray-closed after 8 s, the dump empty because it ran before the
         // items arrived).
-        boolean serverMenu = handled && Economy.isServerMenu(screenTitle, config.serverMenuTitles);
-        boolean ownGui = handled && !serverMenu && (RebirthScreens.isRebirthGui(screenTitle) || enchants.isOurGui(client)
+        boolean knownServerMenu = handled && Economy.isServerMenu(screenTitle, config.serverMenuTitles);
+        boolean ownGui = handled && !knownServerMenu && (RebirthScreens.isRebirthGui(screenTitle) || enchants.isOurGui(client)
             || rebirthUpgrades.isOurGui(client) || companions.isOurGui(client));
+        // 0.9.54: a captcha has never come as a menu here (every real one was a map or a chat
+        // line; all 24 menu detections ever were Drew's own menus, 6 of them a pause) - with
+        // pauseOnContainerScreen off, every menu that is not ours is the server's.
+        boolean serverMenu = knownServerMenu || (handled && !ownGui && !config.pauseOnContainerScreen
+            && nowGui - guiSeenAt >= config.guiRecognizeGraceMs);
         if (ownGui && config.strayGuiCloseMs > 0 && nowGui - guiSeenAt >= config.strayGuiCloseMs) {
             // 0.9.37: name the screen's items so the log says which menu was left open, and
             // drop any aim path - one issued as the screen opened never completes and used to

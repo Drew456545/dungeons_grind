@@ -79,6 +79,11 @@ public class CompanionController {
     private long stageEnteredAt = 0;
     private long lastEggScanAt = 0;
     private long lastDecisionAt = 0;
+    /** 0.9.54: fewer, bigger trips - when the last visit ended, the farm bundle owed, the hold log's beat. */
+    private long lastVisitEndAt = 0;
+    private int farmSeqSeen = -1;
+    private boolean farmBundlePending = false;
+    private long lastGapHoldLogAt = 0;
     private long lastSkipLogAt = 0;
     private EggHit lastEgg = null;
     private long lastEggAt = 0;
@@ -902,6 +907,7 @@ public class CompanionController {
                 beginReturn(client, now);
             }
             case DONE -> {
+                lastVisitEndAt = now;
                 if (isOurGui(client)) EnchantScreens.closeGui(client);
                 boolean confirmed = hatchConfirmed || eggsOpened == 0;
                 stats.noteCompanionVisit(visitStage, eggsOpened > 0, equipChanged || fusedThisVisit, confirmed);
@@ -980,7 +986,25 @@ public class CompanionController {
         } else if (plannedAt == 0 && now - lastDecisionAt > 15_000) {
             lastDecisionAt = now;
             String via = decide(now);
+            if (stats.farmPhaseSeq != farmSeqSeen) { farmSeqSeen = stats.farmPhaseSeq; farmBundlePending = true; }
             if (via != null) {
+                // 0.9.54 (Drew: fewer, bigger trips): a floor-sized batch waits companionMinVisitGapMs
+                // since the last visit (25 of 50 visits on 2026-09-06 were the 3-egg floor, median gap
+                // 10 min); an income-sized batch and the farm-start bundle go at once.
+                Integer stage0 = stats.confirmedZoneLevel();
+                String bv = stats.companionBatchVia(stage0);
+                long since = lastVisitEndAt == 0 ? Long.MAX_VALUE : now - lastVisitEndAt;
+                if (!Economy.companionVisitAllowed(bv, since, cfg.companionMinVisitGapMs, farmBundlePending)) {
+                    if (now - lastGapHoldLogAt > 60_000) {
+                        lastGapHoldLogAt = now;
+                        log("companion_plan", "via", via, "heldForGap", true, "batchVia", bv, "sinceLastVisitMs", since == Long.MAX_VALUE ? null : since,
+                            "gapMs", cfg.companionMinVisitGapMs, "stage", stage0);
+                    }
+                    via = null;
+                }
+            }
+            if (via != null) {
+                if (farmBundlePending) { farmBundlePending = false; via = via + "+farm"; }
                 long delay = HumanTiming.logNormalMs(cfg.companionDelayMinMs, Math.max(cfg.companionDelayMinMs + 1, cfg.companionDelayMaxMs));
                 plannedAt = now + delay;
                 planVia = via;

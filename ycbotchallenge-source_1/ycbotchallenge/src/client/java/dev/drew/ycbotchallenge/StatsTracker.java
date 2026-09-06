@@ -96,6 +96,46 @@ public class StatsTracker {
         return rebirths != null && rebirths.equals(pointsCheckedAtRebirths);
     }
 
+    /** 0.9.54: rebirth count at the last /rebirth visit that found points but nothing eligible (18 of 21 enable visits on 2026-09-06). */
+    public Integer eligibleCheckedAtRebirths = null;
+
+    public void noteNothingEligible() {
+        eligibleCheckedAtRebirths = rebirths;
+        markStateDirty();
+    }
+
+    public boolean eligibleCheckedThisRebirth() {
+        return rebirths != null && rebirths.equals(eligibleCheckedAtRebirths);
+    }
+
+    // ---- 0.9.54: the farm phase - the climb has reached the stage the last cycle topped out at.
+    public volatile long farmPhaseStartedAt = 0;
+    public volatile Integer farmPhaseStage = null;
+    public volatile int farmPhaseSeq = 0;
+    /** 0.9.54: the sword level the next enchant unlocks at ("when you reach Sword Level N"). */
+    public volatile Integer nextEnchantUnlockLevel = null;
+
+    public Integer expectedTopStage() {
+        if (cycleHistory.isEmpty()) return null;
+        return cycleHistory.get(cycleHistory.size() - 1).topStage;
+    }
+
+    public boolean farmPhase() { return farmPhaseStartedAt != 0; }
+
+    /** Once a second from poll: the farm phase starts when the stage reaches the last cycle's top. */
+    private void checkFarmPhase(long now) {
+        if (farmPhaseStartedAt != 0) return;
+        Integer stage = confirmedZoneLevel();
+        Integer top = expectedTopStage();
+        if (Economy.farmPhaseStarted(stage, top)) {
+            farmPhaseStartedAt = now;
+            farmPhaseStage = stage;
+            farmPhaseSeq++;
+            log("farm_phase_start", "stage", stage, "expectedTop", top, "via", "top-stage", "seq", farmPhaseSeq,
+                "cycleMin", Math.round(cycleOnMs / 6000.0) / 10.0);
+        }
+    }
+
     // ---- 0.9.33: companion facts, persisted per user so a restart does not re-buy at the same stage
     public Integer companionLastBoughtStage = null;
     private int companionVisits = 0;
@@ -541,7 +581,7 @@ public class StatsTracker {
     private final List<Pattern> balanceRes = new ArrayList<>();
     private final List<Pattern> ascensionRes = new ArrayList<>();
     private final List<Pattern> prestigeRes = new ArrayList<>();
-    private Pattern enchantPrestigeRe, enchantPrestigeGateRe, enchantPrestigeMaxRe, swordLevelRe;
+    private Pattern enchantPrestigeRe, enchantPrestigeGateRe, enchantPrestigeMaxRe, swordLevelRe, enchantNextUnlockRe;
     private final List<Pattern> captchaRes = new ArrayList<>();
     private final List<Pattern> upgradeFailRes = new ArrayList<>();
     private final List<Pattern> upgradeMaxedRes = new ArrayList<>();
@@ -749,6 +789,7 @@ public class StatsTracker {
         enchantPrestigeGateRe = compileLoose(cfg.enchantPrestigeGatePattern);
         enchantPrestigeMaxRe = compileLoose(cfg.enchantPrestigeMaxPattern);
         swordLevelRe = compileLoose(cfg.swordLevelChatPattern);
+        enchantNextUnlockRe = compileLoose(cfg.enchantNextUnlockPattern);
         for (String p : cfg.captchaChatPatterns) captchaRes.add(compileLoose(p));
         if (cfg.captchaChatHintPatterns != null) {
             for (String p : cfg.captchaChatHintPatterns) captchaHintRes.add(compileLoose(p));
@@ -1379,6 +1420,7 @@ public class StatsTracker {
 
     /** Call every ~20 ticks. */
     public void poll(MinecraftClient client) {
+        checkFarmPhase(System.currentTimeMillis());
         if (client.world == null || client.player == null) return;
         pollSidebar(client);
         pollBossBars(client);
@@ -1627,6 +1669,10 @@ public class StatsTracker {
         Integer prev = rebirths;
         if (prev != null && prev == n) return;
         rebirths = n;
+        // 0.9.54: a new cycle - the farm phase is over.
+        if (farmPhaseStartedAt != 0) log("farm_phase_end", "stage", farmPhaseStage, "farmMs", System.currentTimeMillis() - farmPhaseStartedAt);
+        farmPhaseStartedAt = 0;
+        farmPhaseStage = null;
         if (prev == null) {
             // First read: a cycle clock persisted for another rebirth count belongs to a
             // cycle that ended while the client was off - start over, quietly.
@@ -2473,6 +2519,21 @@ public class StatsTracker {
                 swordLevelSeq++;
                 log("sword_level", "level", swordLevel, "raw", text);
                 known = true;
+            }
+            // 0.9.54: "when you reach Sword Level 175!" - the level the next enchant unlocks at
+            // (55 sword levels made 54 enchanter visits on 2026-09-06 for ~7 real unlocks).
+            if (enchantNextUnlockRe != null) {
+                Matcher um = enchantNextUnlockRe.matcher(text);
+                if (um.find()) {
+                    try {
+                        int lvl = Integer.parseInt(groupOrNull(um, "n").replace(",", ""));
+                        if (nextEnchantUnlockLevel == null || nextEnchantUnlockLevel != lvl) {
+                            nextEnchantUnlockLevel = lvl;
+                            log("enchant_next_unlock", "level", lvl, "swordLevel", swordLevel, "raw", text);
+                        }
+                    } catch (Exception ignored) { }
+                    known = true;
+                }
             }
         }
         if (enchantPrestigeLine) known = true;

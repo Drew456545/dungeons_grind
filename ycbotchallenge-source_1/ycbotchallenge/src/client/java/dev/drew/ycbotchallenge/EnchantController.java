@@ -113,6 +113,9 @@ public class EnchantController {
     private final Map<String, Set<String>> lockedByTab = new HashMap<>();
     private int swordLevelSeqSeen = -1;
     private boolean unlockHint = false;
+    /** 0.9.54: the farm phase seen last, and the one trip it owes. */
+    private int farmSeqSeen = -1;
+    private boolean farmVisitDue = false;
     private String lastPrestigeLine = null;
 
     public boolean isBusy() { return phase != Phase.IDLE; }
@@ -787,15 +790,31 @@ public class EnchantController {
         if (stats.swordLevelSeq != swordLevelSeqSeen) {
             boolean first = swordLevelSeqSeen == -1;
             swordLevelSeqSeen = stats.swordLevelSeq;
-            if (!first) { unlockHint = true; maxedTabAt.clear(); log("enchant_unlock_hint", "swordLevel", stats.swordLevel); }
+            if (!first) {
+                // 0.9.54: only the announced unlock level is an unlock (55 sword levels made 54
+                // visits on 2026-09-06 for ~7 real unlocks); the rest is bought on the cycle trip.
+                if (Economy.swordLevelUnlocks(stats.swordLevel, stats.nextEnchantUnlockLevel)) {
+                    unlockHint = true; maxedTabAt.clear();
+                    log("enchant_unlock_hint", "swordLevel", stats.swordLevel, "nextUnlock", stats.nextEnchantUnlockLevel);
+                } else {
+                    log("enchant_skip", "reason", "no-unlock", "swordLevel", stats.swordLevel, "nextUnlock", stats.nextEnchantUnlockLevel);
+                }
+            }
+        }
+        if (stats.farmPhaseSeq != farmSeqSeen) {
+            // 0.9.54: the climb ended - one trip with the whole climb's currency.
+            farmSeqSeen = stats.farmPhaseSeq;
+            farmVisitDue = true;
+            maxedTabAt.clear();
         }
         double pull = affordPull();
         double hazard = Economy.visitHazard(now - lastVisitAt, cfg.enchantHazardRampStartMs, cfg.enchantHazardRampFullMs,
             cfg.enchantHazardFullChance, pull, bonus);
+        if (farmVisitDue) { via = "farm"; hazard = 1.0; }
         if (unlockHint) { via = "unlock"; hazard = 1.0; }
         if (ThreadLocalRandom.current().nextDouble() >= hazard) return false;
         boolean curiosity = false;
-        if (!unlockHint && !balanceGrew()) {
+        if (!unlockHint && !farmVisitDue && !balanceGrew()) {
             if (ThreadLocalRandom.current().nextDouble() >= cfg.enchantCuriosityChance) {
                 log("enchant_skip", "reason", "no-growth", "via", via, "hazard", Math.round(hazard * 1000) / 1000.0);
                 return false;
@@ -843,6 +862,7 @@ public class EnchantController {
         prestigesThisVisit = 0;
         upgradeGuiLogged.clear();
         unlockHint = false;
+        farmVisitDue = false;
         log("sword_lore", "lines", EnchantScreens.mainHandLore(client));
         log("enchant_visit_start", "via", via, "etaMs", eta != null ? Math.round(eta) : null,
             "sinceLastVisitMs", now - lastVisitAt, "hazard", Math.round(hazard * 1000) / 1000.0,

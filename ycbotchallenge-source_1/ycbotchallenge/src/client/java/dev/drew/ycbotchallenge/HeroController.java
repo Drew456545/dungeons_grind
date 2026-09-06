@@ -55,6 +55,9 @@ public class HeroController {
     private long lastGateSeen;
     /** The drawn target holds for the whole cycle; a fresh draw only after a spawn (or a first plan). */
     private boolean cycleSpawned = true;
+    /** 0.9.54: the farm phase seen last, and the hold log's beat. */
+    private int farmSeqSeen = -1;
+    private long lastHoldLogAt = 0;
 
     public HeroController(YCBotChallengeConfig cfg, StatsTracker stats, UpgradeController upgrades, HeroTracker tracker) {
         this.cfg = cfg;
@@ -95,6 +98,10 @@ public class HeroController {
         if (suspended) return "hero: suspended after repeated aborts (toggle to reset)";
         if (stats.heroAlive(now)) return "hero: out " + (now - stats.heroSpawnedAt) / 1000 + "s · " + spawnsThisSession + " spawned";
         Double hp = stats.heroPredictedHp(now, cfg.heroMaxHp);
+        if (cfg.heroFarmPhaseOnly && !stats.farmPhase() && (hp == null || hp < cfg.heroMaxHp - 0.5)) {
+            return "hero: ~" + (hp != null ? Math.round(hp) : "?") + "/" + cfg.heroMaxHp + " · holding for the farm phase (stage "
+                + stats.confirmedZoneLevel() + " of ~" + stats.expectedTopStage() + ")";
+        }
         String t = targetHp > 0 ? " target " + Math.round(targetHp) : "";
         String in = nextCheckAt > now ? " · check in " + (nextCheckAt - now + 59_999) / 60_000 + " min" : " · check at next lull";
         return "hero: ~" + (hp != null ? Math.round(hp) : "?") + "/" + cfg.heroMaxHp + t + in
@@ -108,9 +115,11 @@ public class HeroController {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
         boolean redraw = targetHp <= 0 || cycleSpawned;
         if (redraw) {
-            // A re-check under the target keeps the target: redrawing on every plan (the 07:37
-            // read: 87 -> 67) would walk it down to the bottom of the range.
-            targetHp = Economy.heroPickTarget(rng.nextDouble(), cfg.heroSpawnHpMin, cfg.heroSpawnHpMax, cfg.heroMaxHp);
+            // 0.9.54: the target is the floor plus a margin when the farm phase decides the
+            // moment (heroFarmPhaseOnly); the old random draw in [heroSpawnHpMin, heroSpawnHpMax]
+            // only when it does not.
+            targetHp = cfg.heroFarmPhaseOnly ? Math.min(cfg.heroMaxHp, cfg.heroSpawnFloorHp + cfg.heroSpawnFloorMargin)
+                : Economy.heroPickTarget(rng.nextDouble(), cfg.heroSpawnHpMin, cfg.heroSpawnHpMax, cfg.heroMaxHp);
             cycleSpawned = false;
         }
         Double hp = stats.heroPredictedHp(now, cfg.heroMaxHp);
@@ -254,6 +263,15 @@ public class HeroController {
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
         if (suspended || combat.isOnBreak() || client.currentScreen != null) return false;
         if (nextCheckAt == 0) schedule(now, "start");
+        if (stats.farmPhaseSeq != farmSeqSeen) {
+            // 0.9.54: the climb just ended - the menu is due after a short beat, not at the
+            // pool model's far date (a player finishes the mob in hand, then summons).
+            farmSeqSeen = stats.farmPhaseSeq;
+            if (!stats.heroAlive(now) && !tracker.isAlive()) {
+                nextCheckAt = Math.min(nextCheckAt, now + HumanTiming.logNormalMs(20_000, 90_000));
+                nextVia = "farm";
+            }
+        }
         if (now < nextCheckAt) return false;
         if (stats.heroAlive(now) || tracker.isAlive()) {
             if (now - lastSkipLogAt > 60_000) { lastSkipLogAt = now; log("hero_skip", "reason", "alive", "plate", tracker.isAlive(), "sinceSpawnMs", now - stats.heroSpawnedAt); }
@@ -262,7 +280,20 @@ public class HeroController {
         if (upgrades != null && (upgrades.isBusy() || upgrades.hasPendingDecision())) return false;
         if (combat.isCooking()) return false; // the lull after a kill, never mid-cook
         Double hp = stats.heroPredictedHp(now, cfg.heroMaxHp);
-        if (hp != null && hp < cfg.heroSpawnFloorHp && now - stats.heroLastHpAt < 20 * 60_000L) {
+        // 0.9.54: the hero halves the time to kill at the top stage and adds nothing to the
+        // climb (stage 40: 4.3 s up vs 11.7 s down over 84 kills; the farm phase covered in
+        // 4 of 18 cycles) - the pool is held for the farm phase unless it is full.
+        String gate = Economy.heroSpawnGate(cfg.heroFarmPhaseOnly, stats.farmPhase(), hp, cfg.heroSpawnFloorHp, cfg.heroSpawnFloorMargin, cfg.heroMaxHp);
+        if ("hold-farm".equals(gate)) {
+            if (now - lastHoldLogAt > 5 * 60_000L) {
+                lastHoldLogAt = now;
+                log("hero_hold", "reason", "climb", "predictedHp", hp != null ? Math.round(hp * 10.0) / 10.0 : null,
+                    "stage", stats.confirmedZoneLevel(), "expectedTop", stats.expectedTopStage());
+            }
+            nextCheckAt = now + 30_000;
+            return false;
+        }
+        if ("hold-pool".equals(gate) && now - stats.heroLastHpAt < 20 * 60_000L) {
             // The model says the server would refuse: wait for the floor, no menu open.
             schedule(now, "under-floor");
             return false;

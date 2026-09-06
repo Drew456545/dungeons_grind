@@ -97,6 +97,7 @@ public final class EconomyChecks {
         n += checks0950();
         n += checks0951();
         n += checks0952();
+        n += checks0954();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1790,7 +1791,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 51", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 51);
+        n += eq("config version 52", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 52);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2875,6 +2876,40 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.54: the audit release - farm phase, hero gate, companion gap, unlock gate, menus. */
+    private static int checks0954() {
+        int n = 0;
+        // The farm phase starts at the last cycle's top stage (tops 27,28,29,29,30,...).
+        n += eq("stage 29 with top 29: farm", Economy.farmPhaseStarted(29, 29), true);
+        n += eq("stage 28 with top 29: climb", Economy.farmPhaseStarted(28, 29), false);
+        n += eq("stage 30 with top 29: farm", Economy.farmPhaseStarted(30, 29), true);
+        n += eq("no history: never", Economy.farmPhaseStarted(40, null), false);
+        // The hero gate.
+        n += eq("climb, pool 80/150: hold", Economy.heroSpawnGate(true, false, 80.0, 25, 10, 150), "hold-farm");
+        n += eq("climb, pool full: spawn", Economy.heroSpawnGate(true, false, 150.0, 25, 10, 150), "spawn");
+        n += eq("farm, pool 80: spawn", Economy.heroSpawnGate(true, true, 80.0, 25, 10, 150), "spawn");
+        n += eq("farm, pool 30: hold-pool", Economy.heroSpawnGate(true, true, 30.0, 25, 10, 150), "hold-pool");
+        n += eq("farm, no read: unknown", Economy.heroSpawnGate(true, true, null, 25, 10, 150), "unknown");
+        n += eq("feature off: the pool decides", Economy.heroSpawnGate(false, false, 80.0, 25, 10, 150), "spawn");
+        // Companion gap.
+        n += eq("floor batch inside the gap: wait", Economy.companionVisitAllowed("floor", 5 * 60_000, 12 * 60_000, false), false);
+        n += eq("floor batch after the gap: go", Economy.companionVisitAllowed("floor", 13 * 60_000, 12 * 60_000, false), true);
+        n += eq("income batch: go", Economy.companionVisitAllowed("income", 60_000, 12 * 60_000, false), true);
+        n += eq("farm bundle: go", Economy.companionVisitAllowed("floor", 60_000, 12 * 60_000, true), true);
+        n += eq("first visit: go", Economy.companionVisitAllowed("floor", Long.MAX_VALUE, 12 * 60_000, false), true);
+        // The unlock gate.
+        n += eq("155 with next 175: no unlock", Economy.swordLevelUnlocks(155, 175), false);
+        n += eq("175 with next 175: unlock", Economy.swordLevelUnlocks(175, 175), true);
+        n += eq("unknown next: unlock", Economy.swordLevelUnlocks(155, null), true);
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        java.util.regex.Pattern re = HeroTracker.compile(fresh.enchantNextUnlockPattern);
+        java.util.regex.Matcher m = re.matcher("when you reach Sword Level 200!");
+        n += eq("unlock line parses", m.find() ? m.group("n") : null, "200");
+        n += eq("menus are the server's by default", fresh.pauseOnContainerScreen, false);
+        n += eq("hero waits for the farm", fresh.heroFarmPhaseOnly, true);
+        return n;
+    }
+
     /** 0.9.52: the companion delete window in stages, the storage count, the answers. */
     private static int checks0952() {
         int n = 0;

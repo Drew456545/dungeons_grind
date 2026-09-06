@@ -1003,6 +1003,7 @@ public class UpgradeController {
             "target", price != null ? Amounts.format(price) : null,
             "bal", bal != null ? Amounts.format(bal) : null,
             "pct", price != null && price > 0 && bal != null ? Math.round(1000.0 * bal / price) / 10.0 : null,
+            "gain", d.gain() != null ? Math.round(gain * 100.0) / 100.0 : null,
             "incomePerMin", income != null ? Amounts.format(income) : null,
             "predictedMs", evalPredictedMs != null ? Math.round(evalPredictedMs) : null,
             "stageMaxTtkMs", stats.stageMaxTtkMs() != null ? Math.round(stats.stageMaxTtkMs()) : null,

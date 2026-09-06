@@ -255,6 +255,39 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.54: the audit release
+
+An audit of 2026-09-06 (11.7 h of bot-on time, 18 rebirths, Drew's own play excluded
+where it could be told apart). The time not swinging: enchanter visits 31.5 min (71, 54
+of them on a sword level, 16 bought nothing), companion visits 27.3 min (50, half of them
+the 3-egg floor), rebirth-upgrade visits 3.9 min (31, of which 21 on enable found nothing).
+The hero halves the time to kill at the top stage (stage 40: 4.3 s up, 11.7 s down) but
+covered the farm phase in 4 cycles of 18. Every menu captcha detection ever was Drew's
+own menu; six of them paused the bot. Nothing in the attack, approach, reaction or
+distraction model changes.
+
+- **The farm phase** (`farm_phase_start`): the climb has reached the stage the last cycle
+  topped out at (`StateStore.CycleEntry.topStage`; tops rose 0-2 a cycle). Ends at the
+  rebirth (`farm_phase_end`).
+- **The hero waits for it.** `heroFarmPhaseOnly`: the pool is held through the climb
+  (`hero_hold`) and spawned at the farm once it is over the floor plus
+  `heroSpawnFloorMargin` (10), or whenever it is full. The random target is gone.
+- **The enchanter on real unlocks and one trip per cycle.** `enchantNextUnlockPattern`
+  reads "when you reach Sword Level N"; a sword level below it is `enchant_skip
+  reason=no-unlock`. The farm phase owes one trip (`via=farm`) with the climb's currency.
+- **Companions: fewer, bigger trips.** A floor-sized batch waits `companionMinVisitGapMs`
+  (12 min) since the last visit (`companion_plan heldForGap`); income-sized batches and
+  the farm-start bundle (`via=...+farm`) go at once.
+- **Menus are the server's.** `pauseOnContainerScreen` is off (a still-on value is turned
+  off by the v52 migration): any menu that is not ours is hands-off, dumped once, closed
+  after 60 s. The map and chat captcha paths are untouched. The pause screen is closed
+  after a beat (`pause_screen_closed`) so alt-tab does not stall the swings.
+- **Rebirth-upgrade visit**: Esc on the Upgrades menu brings the Rebirth GUI back - it is
+  closed too (`rebirth_upgrade_close_return`); an enable visit is skipped when this
+  rebirth's read already found nothing eligible.
+- Evidence: `upgrade_skip` rows carry the learned `gain` (the six farms where the next
+  zone was cheaper than the rebirth waited on the payback rule). Config v52.
+
 ### 0.9.53: Esc goes back one
 
 Drew: "we don't need to close companions before equipping best: when you fuse -> esc it

@@ -289,7 +289,17 @@ public class YCBotChallengeConfig {
      */
     // Sonar's captcha prompt never says "captcha" — match its actual message.
     public List<String> captchaChatPatterns = List.of("enter the text in chat", "captcha");
-    public boolean pauseOnContainerScreen = true;
+    /**
+     * 0.9.54: off. A captcha has never come as a menu on this server (every real one was a
+     * map or a chat line); all 24 menu detections ever were Drew's own menus, six of them a
+     * pause. Off, every menu that is not ours is the server's: hands off, one dump, closed
+     * after serverMenuCloseMs. The map and chat paths are untouched.
+     */
+    public boolean pauseOnContainerScreen = false;
+    /** 0.9.54: the pause screen (alt-tab) is closed after a beat, since no swing registers under it. */
+    public boolean pauseScreenCloseEnabled = true;
+    public int pauseScreenCloseMinMs = 500;
+    public int pauseScreenCloseMaxMs = 1500;
 
     /**
      * Captcha auto-solve via QwenCloud's qwen3.6-flash since 0.9.32 (a local Qwen3-VL
@@ -878,6 +888,8 @@ public class YCBotChallengeConfig {
     /** Eggs per visit (rolled), and the click cap on open items per visit. */
     public int companionEggsMin = 3;
     public int companionEggsMax = 10;
+    /** 0.9.54 (Drew: fewer, bigger trips): a floor-sized batch waits this long since the last visit; income-sized batches do not. */
+    public int companionMinVisitGapMs = 720_000;
     public int companionMaxOpensPerVisit = 6;
     /**
      * 0.9.41: the batch waxes and wanes with how cheap eggs are against income - this many
@@ -1270,6 +1282,14 @@ public class YCBotChallengeConfig {
     public int heroConfirmMs = 3000;
     public int heroMaxConsecutiveAborts = 3;
     /**
+     * 0.9.54: the hero halves the time to kill at the top stage and adds nothing to the
+     * climb; the pool is held for the farm phase (the stage the last cycle topped out at)
+     * and spawned there once it is over the floor plus heroSpawnFloorMargin, or whenever it
+     * is full. Off, the 0.9.48 random target decides.
+     */
+    public boolean heroFarmPhaseOnly = true;
+    public double heroSpawnFloorMargin = 10;
+    /**
      * A sidebar money drop of 99%+ counts as a rebirth (money-collapse) only when the
      * new value is below this; a bigger "collapse" is a suffix read on the wrong scale
      * (T → Q → Qa on this server) and is logged suffix_scale_suspect instead.
@@ -1329,6 +1349,8 @@ public class YCBotChallengeConfig {
     public String enchantPrestigeMaxPattern = "/already at the max prestige/";
     /** "YOUR SWORD IS NOW LEVEL 127!" - enchants unlock at sword levels; the next visit scans every tab again. */
     public String swordLevelChatPattern = "/your sword is now level\\s*(?<n>[\\d,]+)/";
+    /** 0.9.54: the unlock announcement's second line, "when you reach Sword Level 175!" - the only sword level that is an unlock. */
+    public String enchantNextUnlockPattern = "/when you reach sword level\\s*(?<n>[\\d,]+)/";
     public int upgradeStopPauseMinMs = 200;
     public int upgradeStopPauseMaxMs = 800;
     public int typeKeyMinMs = 80;
@@ -1667,7 +1689,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 51;
+    public static final int CURRENT_CONFIG_VERSION = 52;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2052,6 +2074,14 @@ public class YCBotChallengeConfig {
         if (configVersion < 45) {
             // v45 (0.9.43): enchant prestige, the maxed-tab rescan, the sword-level hook, the
             // Rebirth GUI lore read. Every knob is new and takes its default.
+            changed = true;
+        }
+        if (configVersion < 52) {
+            // v52 (0.9.54): the audit release - menus are the server's (pauseOnContainerScreen
+            // off), the pause screen is closed, the hero waits for the farm phase, the
+            // enchanter goes on real unlocks and the cycle trip, floor-sized companion batches
+            // keep a gap. A container-pause still on is turned off (it never caught a captcha).
+            if (pauseOnContainerScreen) pauseOnContainerScreen = false;
             changed = true;
         }
         if (configVersion < 51) {
@@ -2515,6 +2545,11 @@ public class YCBotChallengeConfig {
         if (heroOpenTimeoutMs < 1000) heroOpenTimeoutMs = 1000;
         if (heroConfirmMs < 500) heroConfirmMs = 500;
         if (heroMaxConsecutiveAborts < 1) heroMaxConsecutiveAborts = 3;
+        if (heroSpawnFloorMargin < 0) heroSpawnFloorMargin = 0;
+        if (companionMinVisitGapMs < 0) companionMinVisitGapMs = 0;
+        if (pauseScreenCloseMinMs < 100) pauseScreenCloseMinMs = 100;
+        if (pauseScreenCloseMaxMs <= pauseScreenCloseMinMs) pauseScreenCloseMaxMs = pauseScreenCloseMinMs + 500;
+        if (enchantNextUnlockPattern == null) enchantNextUnlockPattern = fresh.enchantNextUnlockPattern;
         if (moneyCollapseMaxValue <= 0) moneyCollapseMaxValue = 1e12;
         if (expectedTeleportAfterRebirthMs < 0) expectedTeleportAfterRebirthMs = 8000;
         if (teleportExplainGraceMs < 0) teleportExplainGraceMs = 0;

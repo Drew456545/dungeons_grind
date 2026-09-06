@@ -1093,6 +1093,47 @@ public final class Economy {
         return Math.max(minMs, Math.round(minutes * 60_000.0 * f));
     }
 
+    /**
+     * 0.9.54: the farm phase begins when the climb reaches the stage the last cycle topped
+     * out at (tops rose 0-2 a cycle on 2026-09-06: 27,28,29,29,30,...,40,40,41). Unknown
+     * either way = not yet.
+     */
+    public static boolean farmPhaseStarted(Integer stage, Integer expectedTop) {
+        return stage != null && expectedTop != null && stage >= expectedTop;
+    }
+
+    /**
+     * 0.9.54: the hero spawn gate. {@code spawn} on the farm phase with the pool over the
+     * floor plus a margin (the server refuses under 25), or off it when the pool is full (a
+     * full pool regenerates nothing); {@code hold-farm} off the farm phase otherwise;
+     * {@code hold-pool} under the floor; {@code unknown} with no pool read yet (spawn on the
+     * farm phase - the menu read is the first anchor).
+     */
+    public static String heroSpawnGate(boolean farmOnly, boolean farmPhase, Double hp, double floor, double margin, double maxHp) {
+        boolean full = hp != null && hp >= maxHp - 0.5;
+        if (farmOnly && !farmPhase && !full) return "hold-farm";
+        if (hp == null) return farmPhase || !farmOnly ? "unknown" : "hold-farm";
+        if (hp < floor + margin && !full) return "hold-pool";
+        return "spawn";
+    }
+
+    /**
+     * 0.9.54: fewer, bigger companion trips (Drew). A floor-sized batch waits until
+     * {@code gapMs} has passed since the last visit; an income-sized batch, the first visit
+     * (no last visit yet) and the farm-start bundle go at once.
+     */
+    public static boolean companionVisitAllowed(String batchVia, long sinceLastVisitMs, long gapMs, boolean farmStart) {
+        if (farmStart) return true;
+        if (!"floor".equals(batchVia)) return true;
+        return sinceLastVisitMs >= gapMs;
+    }
+
+    /** 0.9.54: a sword level is an unlock only at the announced level ("when you reach Sword Level N"); unknown = unlock. */
+    public static boolean swordLevelUnlocks(Integer swordLevel, Integer nextUnlockLevel) {
+        if (nextUnlockLevel == null) return true;
+        return swordLevel != null && swordLevel >= nextUnlockLevel;
+    }
+
     /** 0.9.47: a container title the server owns (Heroes, Crafting): left open for a person, never a captcha. */
     public static boolean isServerMenu(String title, java.util.List<String> titles) {
         if (title == null || titles == null) return false;

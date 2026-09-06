@@ -24,7 +24,7 @@ import net.minecraft.screen.slot.Slot;
  * from the click is logged and closed, never clicked into blind.
  */
 public class RebirthUpgradeController {
-    private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, GUI_WAIT, LOOK, STAR_CLICK, MENU_WAIT, SCAN, CLICK, AFTER, CLOSE }
+    private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, GUI_WAIT, LOOK, STAR_CLICK, MENU_WAIT, SCAN, CLICK, AFTER, CLOSE, CLOSE_RETURN }
 
     private record Entry(int slot, String name, List<String> lore) {}
     /** Close beat (0.9.33). */
@@ -229,6 +229,7 @@ public class RebirthUpgradeController {
                 RebirthLore.Item pick = lore.choose(items, points);
                 if (pick == null) {
                     log("rebirth_upgrade_skip", "reason", "nothing-eligible", "points", points, "order", lore.order());
+                    stats.noteNothingEligible();
                     phase = Phase.CLOSE;
                     return true;
                 }
@@ -271,7 +272,30 @@ public class RebirthUpgradeController {
                 if (isOurGui(client)) {
                     if (closeAt == 0) { closeAt = now + GuiHuman.closeDelayMs(cfg); return true; }
                     if (now < closeAt) return true;
+                    boolean submenu = !rebirthGuiOpen(client);
                     GuiHuman.close(client, "rebirth-upgrade", logger);
+                    if (submenu) {
+                        // 0.9.54: Esc on the Upgrades menu brings the Rebirth GUI back (13 stray closes
+                        // of it on 2026-09-06, 8 s idle each) - wait for it and close it too.
+                        phase = Phase.CLOSE_RETURN;
+                        phaseUntil = now + 1500;
+                        closeAt = 0;
+                        return true;
+                    }
+                }
+                log("rebirth_upgrade_close", "clicks", clicks, "points", points, "visitMs", now - visitStartedAt, "via", visitVia);
+                consecutiveAborts = 0;
+                phase = Phase.IDLE;
+                return false;
+            }
+            case CLOSE_RETURN -> {
+                if (rebirthGuiOpen(client)) {
+                    if (closeAt == 0) { closeAt = now + GuiHuman.closeDelayMs(cfg); return true; }
+                    if (now < closeAt) return true;
+                    GuiHuman.close(client, "rebirth-upgrade", logger);
+                    log("rebirth_upgrade_close_return", "closed", true);
+                } else if (now < phaseUntil) {
+                    return true;
                 }
                 log("rebirth_upgrade_close", "clicks", clicks, "points", points, "visitMs", now - visitStartedAt, "via", visitVia);
                 consecutiveAborts = 0;
@@ -328,10 +352,12 @@ public class RebirthUpgradeController {
         if (plannedAt == 0 && !enableCheckDone
             && Economy.probeDue(combat.kills - killsAtEnable, enableKillsNeeded, now - enabledAt, enableDelayMs)) {
             enableCheckDone = true;
-            if (stats.pointsCheckedThisRebirth()) {
+            if (stats.pointsCheckedThisRebirth() || stats.eligibleCheckedThisRebirth()) {
                 // 0.9.30: 12 enable visits across two logs all read zero points with the
                 // rebirth counter unchanged between them — points only come with a rebirth.
-                log("rebirth_upgrade_skip", "reason", "checked-this-rebirth", "rebirths", stats.rebirths);
+                // 0.9.54: the same for a read that found nothing eligible (18 of 21 enable visits).
+                log("rebirth_upgrade_skip", "reason", "checked-this-rebirth", "rebirths", stats.rebirths,
+                    "why", stats.pointsCheckedThisRebirth() ? "no-points" : "nothing-eligible");
             } else {
                 plannedAt = now;
                 planVia = "enable";
