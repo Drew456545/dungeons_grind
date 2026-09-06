@@ -51,6 +51,8 @@ public class HeroController {
     private long lastSkipLogAt;
     private int spawnsThisSession;
     private long lastGateSeen;
+    /** The drawn target holds for the whole cycle; a fresh draw only after a spawn (or a first plan). */
+    private boolean cycleSpawned = true;
 
     public HeroController(YCBotChallengeConfig cfg, StatsTracker stats, UpgradeController upgrades, HeroTracker tracker) {
         this.cfg = cfg;
@@ -102,7 +104,13 @@ public class HeroController {
     /** The next visit: a fresh target HP and the wait the regen model implies, with leeway. */
     private void schedule(long now, String via) {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
-        targetHp = Economy.heroPickTarget(rng.nextDouble(), cfg.heroSpawnHpMin, cfg.heroSpawnHpMax, cfg.heroMaxHp);
+        boolean redraw = targetHp <= 0 || cycleSpawned;
+        if (redraw) {
+            // A re-check under the target keeps the target: redrawing on every plan (the 07:37
+            // read: 87 -> 67) would walk it down to the bottom of the range.
+            targetHp = Economy.heroPickTarget(rng.nextDouble(), cfg.heroSpawnHpMin, cfg.heroSpawnHpMax, cfg.heroMaxHp);
+            cycleSpawned = false;
+        }
         Double hp = stats.heroPredictedHp(now, cfg.heroMaxHp);
         double regen = stats.heroRegenPerMin != null ? stats.heroRegenPerMin : cfg.heroRegenPerMin;
         double minutes = hp == null ? 0 : Economy.heroMinutesToTarget(hp, targetHp, regen);
@@ -117,7 +125,7 @@ public class HeroController {
         }
         nextCheckAt = now + waitMs;
         nextVia = via;
-        log("hero_plan", "via", via, "targetHp", Math.round(targetHp), "predictedHp", hp != null ? Math.round(hp * 10.0) / 10.0 : null,
+        log("hero_plan", "via", via, "targetHp", Math.round(targetHp), "redrawn", redraw, "predictedHp", hp != null ? Math.round(hp * 10.0) / 10.0 : null,
             "regenPerMin", Math.round(regen * 100.0) / 100.0, "waitMs", waitMs, "alive", stats.heroAlive(now));
     }
 
@@ -180,6 +188,7 @@ public class HeroController {
             case CONFIRM -> {
                 if (stats.heroSpawnedAt >= clickAt) {
                     spawnsThisSession++;
+                    cycleSpawned = true;
                     stats.noteHeroSpawned(menuHp, now);
                     log("hero_spawn", "name", heroName, "hp", menuHp, "spawns", spawnsThisSession, "confirmMs", now - clickAt);
                     phase = Phase.CLOSE;
