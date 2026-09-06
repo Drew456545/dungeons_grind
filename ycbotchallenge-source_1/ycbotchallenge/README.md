@@ -255,6 +255,31 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.48: the hero spawns itself
+
+The numbers from 2026-09-06: the Archer Queen's pool is 100, it drains ~6.9/min while
+the hero is out (86 -> "Your hero despawned because it had no health left." in 12.5 min),
+refills ~1.95/min while it is down (16 at +8.3 min, 20 at +10.2 min), and the server
+refuses a spawn under 25 ("Your hero needs 25 health before you can spawn it!"). Drew: "in
+/heroes click beacon then close menu".
+
+- **`HeroController`.** Each cycle draws a target HP in `heroSpawnHpMin..heroSpawnHpMax`
+  (60-95), the pool model says when the regen gets there, the visit waits that long
+  +-`heroCheckLeewayPct` (20 %) and then for a post-kill lull with no buy pending: type
+  `/heroes`, read the hero item (`hero_menu`: name HP and the lore "Health: N/100"), click
+  it when the pool is at the target (`hero_spawn`, confirmed by the server line), close.
+  A read under the target closes and reschedules from the real number (`hero_plan`); the
+  refusal line is `hero_spawn_refused`. While the hero is out the module waits for the
+  predicted despawn plus the regen to the next target.
+- **The pool model learns.** `hero_despawned` anchors the pool at 0; every menu read is a
+  regen sample (`hero_regen`, EMA), the nameplate's drop feeds the decay; both persist in
+  the state file. `hero_needs` parses the floor line.
+- **Server menus, fixed.** The Heroes menu lists seven "... Enchant" items and the
+  enchanter's content check claimed it (07:18, 07:20: stray-closed after 8 s, the dump
+  empty because it ran before the slots arrived). A titled server menu is now decided
+  first, the dump waits for the items, and Daily Gifts joins the list.
+- Y menu: "Hero spawns" shows the pool estimate, the target and the next check. Config v50.
+
 ### 0.9.47: server menus are a person's, and the /heroes evidence net
 
 Drew opened /heroes at 00:57:33 (2026-09-06, local) and clicked the Archer Queen: "Your

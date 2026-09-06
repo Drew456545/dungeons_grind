@@ -104,6 +104,7 @@ public class HeroTracker {
             hpChanges++;
             log("hero_hp", "name", name, "hp", hp, "hpValue", v, "from", lastHp, "dropPerMin", perMin != null ? Math.round(perMin * 100.0) / 100.0 : null,
                 "sinceSeenMs", now - firstSeenAt, "dist", Math.round(best * 10.0) / 10.0);
+            if (perMin != null && perMin > 0 && perMin < 60) stats.noteHeroDecay(perMin, now);
             lastHp = hp; lastHpValue = v; lastHpAt = now;
         }
     }

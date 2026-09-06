@@ -1069,6 +1069,30 @@ public final class Economy {
         return "wait";
     }
 
+    /** 0.9.48: the pool after {@code minutes} of regen from {@code lastHp}, capped at {@code maxHp}. */
+    public static double heroPredictedHp(double lastHp, double minutes, double regenPerMin, double maxHp) {
+        return Math.min(maxHp, Math.max(0, lastHp + Math.max(0, minutes) * Math.max(0, regenPerMin)));
+    }
+
+    /** Minutes until the pool reaches {@code target} (0 when it is there already). */
+    public static double heroMinutesToTarget(double hp, double target, double regenPerMin) {
+        if (hp >= target) return 0;
+        return (target - hp) / Math.max(0.05, regenPerMin);
+    }
+
+    /** The spawn target for one cycle: uniform in [min, max], clamped to the pool's max; {@code u} in [0,1). */
+    public static double heroPickTarget(double u, double min, double max, double maxHp) {
+        double lo = Math.min(min, max), hi = Math.max(min, max);
+        double t = lo + (hi - lo) * Math.min(1, Math.max(0, u));
+        return Math.min(maxHp, Math.max(1, t));
+    }
+
+    /** The wait for {@code minutes} with +-{@code leewayPct} of jitter ({@code u} in [0,1)), never under {@code minMs}. */
+    public static long heroWaitMs(double minutes, double leewayPct, double u, long minMs) {
+        double f = 1.0 + (Math.min(1, Math.max(0, u)) * 2 - 1) * Math.max(0, leewayPct) / 100.0;
+        return Math.max(minMs, Math.round(minutes * 60_000.0 * f));
+    }
+
     /** 0.9.47: a container title the server owns (Heroes, Crafting): left open for a person, never a captcha. */
     public static boolean isServerMenu(String title, java.util.List<String> titles) {
         if (title == null || titles == null) return false;

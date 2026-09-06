@@ -562,6 +562,58 @@ public class StatsTracker {
     public volatile long heroSpawnedAt = 0;
     private Pattern heroSpawnRe;
     private Pattern heroChatRe;
+    /** 0.9.48: the hero pool model - despawn/needs lines, the last HP read and when, the learned rates. */
+    public volatile long heroDespawnedAt = 0;
+    public volatile long heroNeedsAt = 0;
+    public volatile Integer heroNeedsHp = null;
+    public volatile Double heroLastHp = null;
+    public volatile long heroLastHpAt = 0;
+    public volatile Double heroHpAtSpawn = null;
+    public volatile Double heroRegenPerMin = null;
+    public volatile Double heroDecayPerMin = null;
+    private int heroRegenSamples = 0;
+    private Pattern heroDespawnRe;
+    private Pattern heroNeedsRe;
+
+    /** The hero is out: spawned after it last despawned, and not longer ago than its pool could last. */
+    public boolean heroAlive(long now) {
+        if (heroSpawnedAt == 0 || heroSpawnedAt <= heroDespawnedAt) return false;
+        double decay = heroDecayPerMin != null ? heroDecayPerMin : 6.9;
+        double hp = heroHpAtSpawn != null ? heroHpAtSpawn : 100;
+        return now - heroSpawnedAt < hp / Math.max(0.1, decay) * 60_000.0 + 60_000;
+    }
+
+    /** The pool now, from the last read and the regen rate (null before any read); 0 while the hero is out. */
+    public Double heroPredictedHp(long now, double maxHp) {
+        if (heroAlive(now)) return 0.0;
+        if (heroLastHp == null || heroLastHpAt == 0) return null;
+        double regen = heroRegenPerMin != null ? heroRegenPerMin : 1.95;
+        return Economy.heroPredictedHp(heroLastHp, (now - heroLastHpAt) / 60_000.0, regen, maxHp);
+    }
+
+    /** A menu read of the pool while the hero is down: the model's anchor, and a regen sample against the previous anchor. */
+    public void noteHeroHp(double hp, Double max, long at, String via) {
+        if (heroLastHp != null && heroLastHpAt != 0 && heroSpawnedAt < heroLastHpAt && at - heroLastHpAt >= 60_000 && hp > heroLastHp) {
+            double rate = (hp - heroLastHp) / ((at - heroLastHpAt) / 60_000.0);
+            if (rate > 0 && rate < 30) {
+                heroRegenPerMin = heroRegenPerMin == null ? rate : 0.5 * heroRegenPerMin + 0.5 * rate;
+                heroRegenSamples++;
+                log("hero_regen", "perMin", Math.round(rate * 100.0) / 100.0, "ema", Math.round(heroRegenPerMin * 100.0) / 100.0,
+                    "samples", heroRegenSamples, "from", heroLastHp, "to", hp, "overMs", at - heroLastHpAt, "via", via);
+            }
+        }
+        heroLastHp = hp;
+        heroLastHpAt = at;
+    }
+
+    public void noteHeroSpawned(Double hp, long at) {
+        if (hp != null) heroHpAtSpawn = hp;
+        if (heroSpawnedAt < at) heroSpawnedAt = at;
+    }
+
+    public void noteHeroDecay(double perMin, long at) {
+        heroDecayPerMin = heroDecayPerMin == null ? perMin : 0.7 * heroDecayPerMin + 0.3 * perMin;
+    }
     /** 0.9.46: the last server line about a reboot (restart countdown, the reboot kick, the auto-queue promise). */
     public volatile long rebootNoticeAt = 0;
     public volatile String rebootNotice = null;
@@ -668,6 +720,8 @@ public class StatsTracker {
         if (cfg.rebootChatPatterns != null) for (String p : cfg.rebootChatPatterns) rebootRes.add(compileLoose(p));
         heroSpawnRe = compileLoose(cfg.heroSpawnPattern);
         heroChatRe = compileLoose(cfg.heroChatPattern);
+        heroDespawnRe = compileLoose(cfg.heroDespawnPattern);
+        heroNeedsRe = compileLoose(cfg.heroNeedsPattern);
         rawNet = new RawChatNet(cfg.chatRawPerMinute);
         if (cfg.giveawayAnnouncePatterns != null) for (String p : cfg.giveawayAnnouncePatterns) giveawayAnnounceRes.add(compileLoose(p));
         if (cfg.giveawayJoinedPatterns != null) for (String p : cfg.giveawayJoinedPatterns) giveawayJoinedRes.add(compileLoose(p));
@@ -977,6 +1031,9 @@ public class StatsTracker {
         if (companionRosterByZs.isEmpty() && e.companionRosterByZs != null) companionRosterByZs.putAll(e.companionRosterByZs);
         if (enchantPrestige.isEmpty() && e.enchantPrestige != null) enchantPrestige.putAll(e.enchantPrestige);
         if (rebirthMultiplier == null) { rebirthMultiplier = e.rebirthMultiplier; rebirthMultiplierNext = e.rebirthMultiplierNext; rebirthMultiplierAtRebirths = e.rebirthMultiplierAtRebirths; }
+        if (heroRegenPerMin == null) heroRegenPerMin = e.heroRegenPerMin;
+        if (heroDecayPerMin == null) heroDecayPerMin = e.heroDecayPerMin;
+        if (heroLastHp == null && e.heroLastHp != null && e.heroLastHpAt != null) { heroLastHp = e.heroLastHp; heroLastHpAt = e.heroLastHpAt; }
         if (cycleHistory.isEmpty() && e.cycleHistory != null) cycleHistory.addAll(e.cycleHistory);
         if (cycleStages.isEmpty() && e.cycleStages != null
             && (rebirths == null || e.cycleAtRebirths == null || rebirths.equals(e.cycleAtRebirths))) cycleStages.addAll(e.cycleStages);
@@ -1102,6 +1159,10 @@ public class StatsTracker {
         e.rebirthMultiplier = rebirthMultiplier;
         e.rebirthMultiplierNext = rebirthMultiplierNext;
         e.rebirthMultiplierAtRebirths = rebirthMultiplierAtRebirths;
+        e.heroRegenPerMin = heroRegenPerMin;
+        e.heroDecayPerMin = heroDecayPerMin;
+        e.heroLastHp = heroLastHp;
+        e.heroLastHpAt = heroLastHpAt != 0 ? heroLastHpAt : null;
         e.cycleStages = cycleStages.isEmpty() ? null : new ArrayList<>(cycleStages);
         e.cycleHistory = cycleHistory.isEmpty() ? null : new ArrayList<>(cycleHistory);
         stateStore.put(stateUser, e);
@@ -2233,7 +2294,22 @@ public class StatsTracker {
                 // 0.9.47: the hero lines (the spawn is the only one seen so far; the rest is the net).
                 if (heroSpawnRe != null && heroSpawnRe.matcher(text).find()) {
                     heroSpawnedAt = now;
-                    log("hero_spawned", "raw", text);
+                    log("hero_spawned", "raw", text, "sinceDespawnMs", heroDespawnedAt != 0 ? now - heroDespawnedAt : null);
+                } else if (heroDespawnRe != null && heroDespawnRe.matcher(text).find()) {
+                    // 0.9.48: the pool is empty now - the model's best anchor.
+                    heroDespawnedAt = now;
+                    heroLastHp = 0.0;
+                    heroLastHpAt = now;
+                    log("hero_despawned", "raw", text, "lifetimeMs", heroSpawnedAt != 0 ? now - heroSpawnedAt : null, "hpAtSpawn", heroHpAtSpawn);
+                } else if (heroNeedsRe != null) {
+                    Matcher hm = heroNeedsRe.matcher(text);
+                    if (hm.find()) {
+                        heroNeedsAt = now;
+                        try { heroNeedsHp = Integer.parseInt(hm.group("n").replace(",", "")); } catch (RuntimeException ignored) { }
+                        log("hero_needs", "hp", heroNeedsHp, "raw", text);
+                    } else if (heroChatRe != null && heroChatRe.matcher(text).find()) {
+                        log("hero_chat", "raw", text);
+                    }
                 } else if (heroChatRe != null && heroChatRe.matcher(text).find()) {
                     log("hero_chat", "raw", text);
                 }

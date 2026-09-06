@@ -1214,7 +1214,7 @@ public class YCBotChallengeConfig {
      * crafting). Never a captcha, dumped once with lore (gui_seen), closed only after
      * serverMenuCloseMs (0 = never) in case one was pushed at an unattended bot.
      */
-    public List<String> serverMenuTitles = List.of("Heroes", "Crafting");
+    public List<String> serverMenuTitles = List.of("Heroes", "Crafting", "Daily Gifts");
     public int serverMenuCloseMs = 60_000;
     /**
      * 0.9.47: the /heroes evidence net. A hero's nameplate ("Archer Queen \u2764 86") is found
@@ -1229,6 +1229,31 @@ public class YCBotChallengeConfig {
     public int heroScanEveryTicks = 100;
     public double heroScanRadius = 64.0;
     public int heroGoneAfterMs = 15_000;
+    /**
+     * 0.9.48: the hero spawns itself. Each cycle draws a target HP in [heroSpawnHpMin,
+     * heroSpawnHpMax] (max 100; a spawn at 25 lives ~3.6 min, at 100 ~14.5 min), the
+     * regen model (heroRegenPerMin until learned, ~1.95 measured) says when the pool gets
+     * there, the visit waits that long +-heroCheckLeewayPct, then for a post-kill lull:
+     * /heroes, read the hero item (name "Archer Queen [heart]N", lore "Health: N/100"), click
+     * it when the pool is at the target and over heroSpawnFloorHp (the server's 25), close.
+     */
+    public boolean heroSpawnEnabled = true;
+    public String heroCommand = "/heroes";
+    public String heroMenuTitle = "Heroes";
+    public String heroLorePattern = "/health:\\s*(?<hp>[\\d,]+)\\s*\\/\\s*(?<max>[\\d,]+)/";
+    public String heroDespawnPattern = "/your hero despawned/";
+    public String heroNeedsPattern = "/hero needs (?<n>[\\d,]+) health/";
+    public double heroSpawnHpMin = 60;
+    public double heroSpawnHpMax = 95;
+    public double heroSpawnFloorHp = 25;
+    public double heroMaxHp = 100;
+    public double heroRegenPerMin = 1.95;
+    public double heroDecayPerMin = 6.9;
+    public double heroCheckLeewayPct = 20;
+    public int heroMinRecheckMs = 180_000;
+    public int heroOpenTimeoutMs = 4000;
+    public int heroConfirmMs = 3000;
+    public int heroMaxConsecutiveAborts = 3;
     /**
      * A sidebar money drop of 99%+ counts as a rebirth (money-collapse) only when the
      * new value is below this; a bigger "collapse" is a suffix read on the wrong scale
@@ -1627,7 +1652,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 49;
+    public static final int CURRENT_CONFIG_VERSION = 50;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2012,6 +2037,12 @@ public class YCBotChallengeConfig {
         if (configVersion < 45) {
             // v45 (0.9.43): enchant prestige, the maxed-tab rescan, the sword-level hook, the
             // Rebirth GUI lore read. Every knob is new and takes its default.
+            changed = true;
+        }
+        if (configVersion < 50) {
+            // v50 (0.9.48): the hero spawner and its pool model; Daily Gifts joins the server
+            // menus when the list is still the 0.9.47 default.
+            if (serverMenuTitles != null && serverMenuTitles.size() == 2 && serverMenuTitles.contains("Heroes") && serverMenuTitles.contains("Crafting")) serverMenuTitles = fresh.serverMenuTitles;
             changed = true;
         }
         if (configVersion < 49) {
@@ -2440,6 +2471,24 @@ public class YCBotChallengeConfig {
         if (heroScanEveryTicks < 20) heroScanEveryTicks = 20;
         if (heroScanRadius < 8) heroScanRadius = 8;
         if (heroGoneAfterMs < 1000) heroGoneAfterMs = 1000;
+        if (heroCommand == null || heroCommand.isBlank()) heroCommand = fresh.heroCommand;
+        if (heroMenuTitle == null || heroMenuTitle.isBlank()) heroMenuTitle = fresh.heroMenuTitle;
+        if (heroLorePattern == null) heroLorePattern = fresh.heroLorePattern;
+        if (heroDespawnPattern == null) heroDespawnPattern = fresh.heroDespawnPattern;
+        if (heroNeedsPattern == null) heroNeedsPattern = fresh.heroNeedsPattern;
+        if (heroMaxHp < 1) heroMaxHp = 100;
+        if (heroSpawnFloorHp < 0) heroSpawnFloorHp = 0;
+        if (heroSpawnHpMin < heroSpawnFloorHp) heroSpawnHpMin = heroSpawnFloorHp;
+        if (heroSpawnHpMax < heroSpawnHpMin) heroSpawnHpMax = heroSpawnHpMin;
+        if (heroSpawnHpMax > heroMaxHp) heroSpawnHpMax = heroMaxHp;
+        if (heroRegenPerMin <= 0) heroRegenPerMin = fresh.heroRegenPerMin;
+        if (heroDecayPerMin <= 0) heroDecayPerMin = fresh.heroDecayPerMin;
+        if (heroCheckLeewayPct < 0) heroCheckLeewayPct = 0;
+        if (heroCheckLeewayPct > 90) heroCheckLeewayPct = 90;
+        if (heroMinRecheckMs < 30_000) heroMinRecheckMs = 30_000;
+        if (heroOpenTimeoutMs < 1000) heroOpenTimeoutMs = 1000;
+        if (heroConfirmMs < 500) heroConfirmMs = 500;
+        if (heroMaxConsecutiveAborts < 1) heroMaxConsecutiveAborts = 3;
         if (moneyCollapseMaxValue <= 0) moneyCollapseMaxValue = 1e12;
         if (expectedTeleportAfterRebirthMs < 0) expectedTeleportAfterRebirthMs = 8000;
         if (teleportExplainGraceMs < 0) teleportExplainGraceMs = 0;

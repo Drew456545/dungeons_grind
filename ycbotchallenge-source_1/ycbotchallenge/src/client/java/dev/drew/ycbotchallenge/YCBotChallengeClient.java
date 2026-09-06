@@ -61,6 +61,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private TranscendController transcend;
     /** 0.9.47: the /heroes evidence net, and the menu titles already dumped this session. */
     private HeroTracker heroes;
+    private HeroController heroSpawns;
     private final java.util.Set<String> guiSeenTitles = new java.util.HashSet<>();
     private long serverMenuSince = 0;
     private BossEventController bossEvent;
@@ -106,6 +107,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         companions.setEggStore(new EggStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-eggs.json")));
         transcend = new TranscendController(config, enchants.lore());
         heroes = new HeroTracker(config, stats);
+        heroSpawns = new HeroController(config, stats, upgrades, heroes);
         bossEvent = new BossEventController(config, stats, upgrades);
         stats.bossEventBusy = () -> bossEvent.isBusy();
         MouseDriver.INSTANCE.configure(config, null);
@@ -305,6 +307,10 @@ public class YCBotChallengeClient implements ClientModInitializer {
             rebirthUpgrades.tick(client, combat);
             return;
         }
+        if (heroSpawns.isBusy()) {
+            heroSpawns.tick(client, combat);
+            return;
+        }
         if (companions.isBusy()) {
             companions.tick(client, combat);
             if (combat.stopRequest != null) {
@@ -326,7 +332,12 @@ public class YCBotChallengeClient implements ClientModInitializer {
         else if (guiSeenAt == 0) guiSeenAt = nowGui;
         String screenTitle = client.currentScreen != null && client.currentScreen.getTitle() != null
             ? client.currentScreen.getTitle().getString() : "";
-        boolean ownGui = handled && (RebirthScreens.isRebirthGui(screenTitle) || enchants.isOurGui(client)
+        // 0.9.48: a titled server menu is decided first - the Heroes menu lists seven
+        // "... Enchant" items and the enchanter's content check took it for the enchanter
+        // (07:18 and 07:20: stray-closed after 8 s, the dump empty because it ran before the
+        // items arrived).
+        boolean serverMenu = handled && Economy.isServerMenu(screenTitle, config.serverMenuTitles);
+        boolean ownGui = handled && !serverMenu && (RebirthScreens.isRebirthGui(screenTitle) || enchants.isOurGui(client)
             || rebirthUpgrades.isOurGui(client) || companions.isOurGui(client));
         if (ownGui && config.strayGuiCloseMs > 0 && nowGui - guiSeenAt >= config.strayGuiCloseMs) {
             // 0.9.37: name the screen's items so the log says which menu was left open, and
@@ -350,7 +361,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         // opened it, then closed again as a stray). Dump it once with its lore - the hero
         // cooldown and duration live there - hands off the keys, and close it only after
         // serverMenuCloseMs, in case it was pushed at an unattended bot.
-        if (handled && Economy.isServerMenu(screenTitle, config.serverMenuTitles)) {
+        if (serverMenu) {
             noteGuiSeen(client, screenTitle, "server-menu");
             combat.releaseKeys(client);
             if (serverMenuSince == 0) serverMenuSince = nowGui;
@@ -393,6 +404,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
         if (companions.tick(client, combat)) {
+            return;
+        }
+        if (heroSpawns.tick(client, combat)) {
             return;
         }
         transcend.tick(client, combat);
@@ -445,6 +459,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("companionBulkDeleteEnabled", "Companion bulk delete", () -> config.companionBulkDeleteEnabled, v -> config.companionBulkDeleteEnabled = v));
         opts.add(new BotOptionsScreen.Option("bossEventEnabled", "Zone boss", () -> config.bossEventEnabled, v -> config.bossEventEnabled = v,
             () -> moduleStatus(bossEvent.hudLine(), bossEvent.isBusy(), bossEvent.isSuspended())));
+        opts.add(new BotOptionsScreen.Option("heroSpawnEnabled", "Hero spawns", () -> config.heroSpawnEnabled, v -> config.heroSpawnEnabled = v,
+            () -> moduleStatus(heroSpawns.hudLine(), heroSpawns.isBusy(), heroSpawns.isSuspended())));
         opts.add(new BotOptionsScreen.Option("heroTrackEnabled", "Hero tracking", () -> config.heroTrackEnabled, v -> config.heroTrackEnabled = v,
             () -> heroes.hudLine() != null ? heroes.hudLine() : "no hero plate in range (evidence only: hero_seen / hero_hp / hero_gone)"));
         opts.add(new BotOptionsScreen.Option("rebootResumeEnabled", "Reboot auto-resume", () -> config.rebootResumeEnabled, v -> config.rebootResumeEnabled = v,
@@ -642,6 +658,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         enchants.reset(client);
         rebirthUpgrades.reset(client);
         companions.reset(client);
+        heroSpawns.reset(client);
         bossEvent.reset(client);
         MouseDriver.INSTANCE.cancel();
         if ("gui".equals(source)) {
@@ -655,8 +672,10 @@ public class YCBotChallengeClient implements ClientModInitializer {
     /** 0.9.47: one dump per menu title per session - names and lore, the evidence for menus the bot does not drive. */
     private void noteGuiSeen(MinecraftClient client, String title, String via) {
         String key = title == null ? "" : title.replaceAll("\u00a7.", "").trim();
-        if (!guiSeenTitles.add(key)) return;
+        if (guiSeenTitles.contains(key)) return;
         java.util.List<GuiHuman.Item> items = GuiHuman.items(client);
+        if (items.isEmpty()) return; // the slots arrive a tick or two after the screen
+        guiSeenTitles.add(key);
         java.util.List<String> desc = GuiHuman.describe(items);
         if (desc.size() > 60) desc = new java.util.ArrayList<>(desc.subList(0, 60));
         if (logger != null) logger.log("gui_seen", "title", title, "via", via, "count", items.size(), "items", desc);
@@ -771,6 +790,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 bossEvent.setLogger(logger);
                 transcend.setLogger(logger);
                 heroes.setLogger(logger);
+                heroSpawns.setLogger(logger);
                 captchaSolver.setLogger(logger);
                 captchaDetector.setLogger(logger);
                 MouseDriver.INSTANCE.configure(config, logger);
@@ -786,6 +806,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             captchaSolver.checkHealth(System.currentTimeMillis());
             rebirthUpgrades.onEnable(System.currentTimeMillis(), combat.kills);
             companions.onEnable(System.currentTimeMillis(), combat.kills);
+            heroSpawns.onEnable(System.currentTimeMillis(), combat.kills);
             bossEvent.onEnable(System.currentTimeMillis(), combat.kills);
             transcend.onEnable(System.currentTimeMillis(), combat.kills);
             // 0.9.41: a toggle is a screen edge too (no swing in the first beat), and a saved
@@ -808,6 +829,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 enchants.reset(client);
                 rebirthUpgrades.reset(client);
                 companions.reset(client);
+                heroSpawns.reset(client);
                 bossEvent.reset(client);
             }
             MouseDriver.INSTANCE.cancel();
@@ -833,6 +855,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             bossEvent.setLogger(null);
             transcend.setLogger(null);
             heroes.setLogger(null);
+            heroSpawns.setLogger(null);
             captchaSolver.setLogger(null);
             captchaDetector.setLogger(null);
             MouseDriver.INSTANCE.configure(config, null);

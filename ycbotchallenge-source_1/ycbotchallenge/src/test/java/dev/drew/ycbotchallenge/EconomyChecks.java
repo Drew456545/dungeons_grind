@@ -93,6 +93,7 @@ public final class EconomyChecks {
         n += checks0945();
         n += checks0946();
         n += checks0947();
+        n += checks0948();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1786,7 +1787,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 49", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 49);
+        n += eq("config version 50", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 50);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2871,6 +2872,34 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.48: the hero pool model and the spawn window. */
+    private static int checks0948() {
+        int n = 0;
+        // Regen: 0 at the despawn, 1.95/min -> 25 at 12.8 min, 100 at 51.3 min, capped.
+        n += eq("pool after 12.8 min", Economy.heroPredictedHp(0, 12.8, 1.95, 100), 24.96, 0.01);
+        n += eq("pool capped", Economy.heroPredictedHp(0, 90, 1.95, 100), 100.0, 1e-9);
+        n += eq("minutes to 60 from 20", Economy.heroMinutesToTarget(20, 60, 1.95), 20.51, 0.01);
+        n += eq("already there", Economy.heroMinutesToTarget(80, 60, 1.95), 0.0, 1e-9);
+        n += eq("target at u=0", Economy.heroPickTarget(0.0, 60, 95, 100), 60.0, 1e-9);
+        n += eq("target at u=0.5", Economy.heroPickTarget(0.5, 60, 95, 100), 77.5, 1e-9);
+        n += eq("target clamped to the pool", Economy.heroPickTarget(0.99, 60, 140, 100), 100.0, 1e-9);
+        n += eq("wait, no leeway at u=0.5", Economy.heroWaitMs(10, 20, 0.5, 60_000), 600_000L);
+        n += eq("wait, -20% at u=0", Economy.heroWaitMs(10, 20, 0.0, 60_000), 480_000L);
+        n += eq("wait, +20% at u=1", Economy.heroWaitMs(10, 20, 1.0, 60_000), 720_000L);
+        n += eq("wait floor", Economy.heroWaitMs(0, 20, 0.5, 180_000), 180_000L);
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        java.util.regex.Pattern lore = HeroTracker.compile(fresh.heroLorePattern);
+        java.util.regex.Matcher m = lore.matcher("\u2731 Health: 11/100");
+        n += eq("lore health parses", m.find() ? m.group("hp") + "/" + m.group("max") : null, "11/100");
+        java.util.regex.Pattern needs = HeroTracker.compile(fresh.heroNeedsPattern);
+        java.util.regex.Matcher nm = needs.matcher("EnchantedMC \u00bb Your hero needs 25 health before you can spawn it!");
+        n += eq("needs line parses", nm.find() ? nm.group("n") : null, "25");
+        n += eq("despawn line matches", HeroTracker.compile(fresh.heroDespawnPattern).matcher("Your hero despawned because it had no health left.").find(), true);
+        n += eq("Daily Gifts is a server menu", Economy.isServerMenu("Daily Gifts", fresh.serverMenuTitles), true);
+        n += eq("spawn window floor", fresh.heroSpawnHpMin >= fresh.heroSpawnFloorHp, true);
+        return n;
+    }
+
     /** 0.9.47: server menus and the hero plate. */
     private static int checks0947() {
         int n = 0;

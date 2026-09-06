@@ -69,6 +69,11 @@ public final class StateStore {
         public Double rebirthMultiplier;
         public Double rebirthMultiplierNext;
         public Integer rebirthMultiplierAtRebirths;
+        /** 0.9.48: the hero pool model - learned regen/decay per minute, the last HP read and when. */
+        public Double heroRegenPerMin;
+        public Double heroDecayPerMin;
+        public Double heroLastHp;
+        public Long heroLastHpAt;
         /** 0.9.37: the stages of the rebirth in progress, and the last cycles, so the record survives a restart. */
         public List<StageEntry> cycleStages;
         public List<CycleEntry> cycleHistory;
