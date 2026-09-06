@@ -38,7 +38,8 @@ import net.minecraft.util.math.Vec3d;
  */
 public class CompanionController {
     private enum Phase { IDLE, WALK, AIM, OPEN_WAIT, EGG_LOOK, BUY, BUY_CLICK, BUY_SETTLE, CLOSE_EGG, TYPE_COMPANION, COMP_WAIT,
-        COMP_LOOK, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, FUSE_ALL_CLICK, FUSE_ALL_SETTLE, DELETE, DELETE_TYPE, DONE }
+        COMP_LOOK, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, FUSE_ALL_CLICK, FUSE_ALL_SETTLE, DELETE, DELETE_TYPE, DELETE_WAIT,
+        BULK_CLICK, BULK_WAIT, BULK_READ, DONE }
 
     private record Entry(int slot, String name, List<String> lore) {}
     private record EggHit(Vec3d aim, List<String> lines, Double price, double dist, String via) {}
@@ -138,12 +139,23 @@ public class CompanionController {
     // 0.9.37: fuse first, then Equip Best.
     private int fuseAllSlot = -1;
     private boolean fusedThisVisit = false;
+        bulkDumpThisVisit = false;
+        deletedThisVisit = 0;
     private boolean fuseDue = false;
     private boolean equipChanged = false;
     private List<CompanionLore.FuseGroup> fuseGroupsBefore = List.of();
     private int storageBefore = -1;
     private List<CompanionLore.ZoneStage> deletes = List.of();
     private int deleteIdx;
+    // 0.9.52: the storage count from the Information item, the Bulk Delete button, the command's fate.
+    private Integer storageCount;
+    private Integer storageMax;
+    private int bulkDeleteSlot = -1;
+    private boolean bulkCommandUnsupported;
+    private boolean bulkDumpDone;
+    private boolean bulkDumpThisVisit;
+    private long deleteSentAt;
+    private int deletedThisVisit;
     private Integer currentZone;
     private Integer visitStage;
 
@@ -588,11 +600,11 @@ public class CompanionController {
                 List<Entry> entries = containerItems(client);
                 log("companion_gui", "which", "companions", "title", title(client), "items", describe(entries));
                 // The second pass of a visit (after a fusion) must not overwrite the "before" set.
-                readCompanions(entries, !fusedThisVisit);
+                readCompanions(entries, !fusedThisVisit && !bulkDumpThisVisit);
                 // 0.9.41: did the bought companions land? Their zone/stage in storage + equipped
                 // against what was owned before plus the eggs opened. Short: close, wait, read
                 // again (the 06:04 visit ran Equip Best on a page without its Lollipop).
-                if (eggsOpened > 0 && !hatchConfirmed && !fusedThisVisit) {
+                if (eggsOpened > 0 && !hatchConfirmed && !fusedThisVisit && !bulkDumpThisVisit) {
                     List<CompanionLore.Companion> all = new ArrayList<>(storage);
                     all.addAll(equippedBefore);
                     int landed = CompanionLore.landed(all, eggZs);
@@ -616,9 +628,20 @@ public class CompanionController {
                 }
                 equipSlot = -1;
                 fuseSlot = -1;
+                bulkDeleteSlot = -1;
                 for (Entry e : entries) {
                     if (equipSlot < 0 && lore.isEquipBest(e.name(), e.lore())) equipSlot = e.slot();
                     if (fuseSlot < 0 && lore.isFuse(e.name(), e.lore())) fuseSlot = e.slot();
+                    if (bulkDeleteSlot < 0 && lore.isBulkDelete(e.name(), e.lore())) bulkDeleteSlot = e.slot();
+                }
+                // 0.9.52: the bulk-delete command answered "Unknown command" - the server's own
+                // Bulk Delete menu is the way, and its layout is unknown: open it once, record
+                // it, close it, carry on (the 0.9.17 rule: nothing in an unknown menu is clicked).
+                if (bulkCommandUnsupported && !bulkDumpDone && !bulkDumpThisVisit && bulkDeleteSlot >= 0) {
+                    bulkDumpThisVisit = true;
+                    phase = Phase.BULK_CLICK;
+                    phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                    return true;
                 }
                 // 0.9.37: fuse first. Five of the same companion in the storage page is a
                 // fusion at 100 % odds; four 0.9.36 visits opened the menu and walked past
@@ -805,10 +828,63 @@ public class CompanionController {
                 if (s != ChatTyper.State.DONE) return true;
                 CompanionLore.ZoneStage zs = deletes.get(deleteIdx);
                 log("companion_bulk_delete", "zone", zs.zone(), "stage", zs.stage(), "index", deleteIdx + 1, "of", deletes.size(),
-                    "typos", typer.typos(), "currentZone", currentZone);
-                deleteIdx++;
-                phase = Phase.DELETE;
-                phaseUntil = now + HumanTiming.logNormalMs(3000, 8000);
+                    "typos", typer.typos(), "currentStage", visitStage, "storage", storageCount);
+                deleteSentAt = now;
+                phase = Phase.DELETE_WAIT;
+                phaseUntil = now + cfg.companionDeleteResponseMs;
+            }
+            case DELETE_WAIT -> {
+                // 0.9.52: the command was never exercised before this release (every plan was
+                // empty); its answer decides. "You bulk deleted N companions!" - next pair.
+                // "Unknown command." - the command is not a thing: stop, and let the next visit
+                // record the Bulk Delete menu instead.
+                CompanionLore.ZoneStage zs = deletes.get(deleteIdx);
+                if (stats.companionBulkDeletedAt >= deleteSentAt) {
+                    Integer n = stats.companionBulkDeletedCount;
+                    if (n != null) deletedThisVisit += n;
+                    log("companion_bulk_delete_ok", "zone", zs.zone(), "stage", zs.stage(), "count", n, "afterMs", now - deleteSentAt);
+                    deleteIdx++;
+                    phase = Phase.DELETE;
+                    phaseUntil = now + HumanTiming.logNormalMs(3000, 8000);
+                } else if (stats.unknownCommandAt >= deleteSentAt) {
+                    bulkCommandUnsupported = true;
+                    log("companion_bulk_delete_unsupported", "command", cfg.companionBulkDeleteCommand, "afterMs", now - deleteSentAt);
+                    deletes = List.of();
+                    phase = Phase.DONE;
+                } else if (now >= phaseUntil) {
+                    log("companion_bulk_delete_silent", "zone", zs.zone(), "stage", zs.stage(), "waitedMs", now - deleteSentAt);
+                    deleteIdx++;
+                    phase = Phase.DELETE;
+                    phaseUntil = now + HumanTiming.logNormalMs(3000, 8000);
+                }
+            }
+            case BULK_CLICK -> {
+                if (now < phaseUntil) return true;
+                if (!companionsGuiOpen(client)) { abort(client, combat, "companions-gui-closed"); return false; }
+                GuiHuman.click(client, bulkDeleteSlot, "companion", "bulk-delete", logger);
+                phase = Phase.BULK_WAIT;
+                phaseUntil = now + cfg.companionOpenTimeoutMs;
+            }
+            case BULK_WAIT -> {
+                if (client.currentScreen != null && !companionsGuiOpen(client)) {
+                    phase = Phase.BULK_READ;
+                    phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
+                } else if (now >= phaseUntil) {
+                    log("companion_bulk_menu_skip", "reason", "timeout", "title", title(client));
+                    bulkDumpDone = true;
+                    if (isOurGui(client)) EnchantScreens.closeGui(client);
+                    phase = Phase.TYPE_COMPANION;
+                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+                }
+            }
+            case BULK_READ -> {
+                if (now < phaseUntil) return true;
+                List<Entry> items = client.currentScreen != null ? containerItems(client) : List.of();
+                log("companion_gui", "which", "bulk-delete", "title", title(client), "items", describe(items));
+                bulkDumpDone = true;
+                if (client.currentScreen != null) EnchantScreens.closeGui(client);
+                phase = Phase.TYPE_COMPANION;
+                phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
             }
             case DONE -> {
                 if (isOurGui(client)) EnchantScreens.closeGui(client);
@@ -821,7 +897,8 @@ public class CompanionController {
                     "stage", visitStage, "before", summaries(equippedBefore), "after", summaries(equippedAfter),
                     "equipChanged", equipChanged, "fused", fusedThisVisit,
                     "hatchConfirmed", confirmed, "hatchRetries", hatchRetries,
-                    "deletes", deletes.size(), "visitMs", now - visitStartedAt,
+                    "deletes", deletes.size(), "deleted", deletedThisVisit > 0 ? deletedThisVisit : null,
+                    "storage", storageCount, "visitMs", now - visitStartedAt,
                     "visitsThisRebirth", stats.companionVisitsThisRebirth(),
                     "saturatedStage", stats.companionSaturatedStage, "persisted", true);
                 consecutiveAborts = 0;
@@ -1346,6 +1423,13 @@ public class CompanionController {
         for (Entry e : entries) if (lore.isEquipped(e.lore())) { anyUnequip = true; break; }
         Integer maxZone = null;
         for (Entry e : entries) {
+            int[] sc = lore.storageCount(e.lore());
+            if (sc != null) {
+                boolean changed = storageCount == null || storageCount != sc[0];
+                storageCount = sc[0];
+                storageMax = sc[1] > 0 ? sc[1] : storageMax;
+                if (changed) log("companion_storage", "count", storageCount, "max", storageMax, "page1", entries.size());
+            }
             CompanionLore.Companion c = lore.companion(e.slot(), e.name(), e.lore());
             if (c == null) continue;
             boolean equipped = anyUnequip ? lore.isEquipped(e.lore()) : equipSlots.contains(e.slot());
@@ -1364,11 +1448,15 @@ public class CompanionController {
         for (CompanionLore.Companion c : storage) if (c.zoneStage() != null) st.add(c.zoneStage());
         List<CompanionLore.ZoneStage> eq = new ArrayList<>();
         for (CompanionLore.Companion c : equippedAfter.isEmpty() ? equippedBefore : equippedAfter) if (c.zoneStage() != null) eq.add(c.zoneStage());
-        List<CompanionLore.ZoneStage> all = CompanionLore.deletePairs(st, eq, currentZone, cfg.companionKeepZones);
+        Integer currentStage = visitStage != null ? visitStage : stats.confirmedZoneLevel();
+        List<CompanionLore.ZoneStage> all = CompanionLore.deletePairsByStage(st, eq, currentStage, cfg.companionKeepStages);
+        int planned = all.size();
+        if (bulkCommandUnsupported) all = List.of();
         if (all.size() > cfg.companionMaxBulkDeletes) all = new ArrayList<>(all.subList(0, Math.max(0, cfg.companionMaxBulkDeletes)));
         deletes = all;
-        log("companion_delete_plan", "currentZone", currentZone, "keepZones", cfg.companionKeepZones,
-            "storage", st.size(), "equipped", eq.size(), "pairs", describePairs(deletes));
+        log("companion_delete_plan", "currentStage", currentStage, "keepStages", cfg.companionKeepStages, "currentZone", currentZone,
+            "page1", st.size(), "storage", storageCount, "max", storageMax, "equipped", eq.size(),
+            "candidates", planned, "pairs", describePairs(deletes), "commandUnsupported", bulkCommandUnsupported ? true : null);
     }
 
     private static List<String> describePairs(List<CompanionLore.ZoneStage> pairs) {

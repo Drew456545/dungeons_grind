@@ -58,6 +58,8 @@ public final class CompanionLore {
     private final Pattern equipBestRe;
     private final Pattern fuseRe;
     private final Pattern fuseAllRe;
+    private final Pattern bulkDeleteRe;
+    private final Pattern storageRe;
     private final Pattern unequipRe;
     private final Pattern eggsTitleRe;
     private final Pattern companionsTitleRe;
@@ -76,6 +78,8 @@ public final class CompanionLore {
         equipBestRe = RebirthLore.compileLoose(cfg.companionEquipBestPattern);
         fuseRe = RebirthLore.compileLoose(cfg.companionFusePattern);
         fuseAllRe = RebirthLore.compileLoose(cfg.companionFuseAllPattern);
+        bulkDeleteRe = RebirthLore.compileLoose(cfg.companionBulkDeletePattern);
+        storageRe = RebirthLore.compileLoose(cfg.companionStoragePattern);
         unequipRe = RebirthLore.compileLoose(cfg.companionUnequipPattern);
         eggsTitleRe = RebirthLore.compileLoose(cfg.companionEggsTitlePattern);
         companionsTitleRe = RebirthLore.compileLoose(cfg.companionsTitlePattern);
@@ -235,6 +239,53 @@ public final class CompanionLore {
 
     public boolean isFuse(String name, List<String> lore) {
         return (name != null && fuseRe.matcher(name).find()) || any(fuseRe, lore);
+    }
+
+    /** 0.9.52: the "Bulk Delete" button of the companions menu (slot 53 in the 2026-09-06 dumps). */
+    public boolean isBulkDelete(String name, List<String> lore) {
+        return (name != null && bulkDeleteRe.matcher(name).find()) || any(bulkDeleteRe, lore);
+    }
+
+    /** 0.9.52: "Storage: 216 / 600" from the Information item's lore: {count, max}, or null. */
+    public int[] storageCount(List<String> lore) {
+        if (lore == null) return null;
+        for (String l : lore) {
+            if (l == null) continue;
+            Matcher m = storageRe.matcher(l);
+            if (!m.find()) continue;
+            Integer c = parseInt(group(m, "count")), x = parseInt(group(m, "max"));
+            if (c != null) return new int[] { c, x != null ? x : -1 };
+        }
+        return null;
+    }
+
+    /** 0.9.52: the stage ladder is ten stages a zone: zone 4 stage 8 is stage 38 (the log's own numbering). */
+    public static int globalStage(int zone, int stage) {
+        return (zone - 1) * 10 + stage;
+    }
+
+    /**
+     * 0.9.52: the sliding window in stages. The old window was in zones and the whole
+     * roster sat in zone 4 for a day (2026-09-06: 216 companions, 36 on page 1, every
+     * plan empty). A pair is deleted when it is more than {@code keepStages} stages
+     * behind the current one (x1.81 a stage, a fusion x2: two stages back is the most a
+     * fused group could still beat the equipped set), never a pair an equipped companion
+     * holds. Unknown current stage = delete nothing.
+     */
+    public static List<ZoneStage> deletePairsByStage(Collection<ZoneStage> storage, Collection<ZoneStage> equipped,
+                                                     Integer currentStage, int keepStages) {
+        List<ZoneStage> out = new ArrayList<>();
+        if (storage == null || currentStage == null) return out;
+        int floor = currentStage - Math.max(0, keepStages);
+        Set<ZoneStage> seen = new LinkedHashSet<>();
+        for (ZoneStage zs : storage) {
+            if (zs == null || globalStage(zs.zone(), zs.stage()) >= floor) continue;
+            if (equipped != null && equipped.contains(zs)) continue;
+            seen.add(zs);
+        }
+        out.addAll(seen);
+        out.sort((a, b) -> Integer.compare(globalStage(a.zone(), a.stage()), globalStage(b.zone(), b.stage())));
+        return out;
     }
 
     /** 0.9.37: the "Fuse All" item of the fusion menu (slot 53 in every 2026-09-04 dump). */

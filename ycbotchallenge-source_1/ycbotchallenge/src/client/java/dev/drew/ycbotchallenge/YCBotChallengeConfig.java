@@ -833,6 +833,19 @@ public class YCBotChallengeConfig {
      */
     public boolean companionBulkDeleteEnabled = true;
     public int companionKeepZones = 2;
+    /**
+     * 0.9.52: the window is in stages, not zones (the roster sat in zone 4 for a day: 216
+     * companions, every plan empty). Pairs more than companionKeepStages behind the current
+     * stage go (x1.81 a stage, a fusion x2: two stages back is the most a fused group could
+     * still beat the equipped set). The command's answer is read: "You bulk deleted N
+     * companions!" or "Unknown command." (then the Bulk Delete menu is recorded once).
+     */
+    public int companionKeepStages = 2;
+    public int companionDeleteResponseMs = 3500;
+    public String companionBulkDeletePattern = "/bulk delete/";
+    public String companionStoragePattern = "/storage:\\s*(?<count>[\\d,]+)\\s*\\/\\s*(?<max>[\\d,]+)/";
+    public String companionBulkDeletedPattern = "/bulk deleted (?<n>[\\d,]+) companions/";
+    public String unknownCommandPattern = "/^unknown command\\b/";
     public int companionMaxBulkDeletes = 5;
     public String companionBulkDeleteCommand = "/companion bulkdelete {zone} {stage}";
     /**
@@ -1652,7 +1665,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 50;
+    public static final int CURRENT_CONFIG_VERSION = 51;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2039,6 +2052,10 @@ public class YCBotChallengeConfig {
             // Rebirth GUI lore read. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 51) {
+            // v51 (0.9.52): the companion delete window in stages, the storage/answer patterns.
+            changed = true;
+        }
         if (configVersion < 50) {
             // v50 (0.9.48): the hero spawner and its pool model; Daily Gifts joins the server
             // menus when the list is still the 0.9.47 default.
@@ -2236,6 +2253,12 @@ public class YCBotChallengeConfig {
         if (companionEquipSlots == null) companionEquipSlots = fresh.companionEquipSlots;
         if (companionBulkDeleteCommand == null || !companionBulkDeleteCommand.contains("{zone}")) companionBulkDeleteCommand = fresh.companionBulkDeleteCommand;
         if (companionKeepZones < 1) companionKeepZones = 1;
+        if (companionKeepStages < 0) companionKeepStages = 0;
+        if (companionDeleteResponseMs < 1000) companionDeleteResponseMs = 1000;
+        if (companionBulkDeletePattern == null || companionBulkDeletePattern.isBlank()) companionBulkDeletePattern = fresh.companionBulkDeletePattern;
+        if (companionStoragePattern == null || companionStoragePattern.isBlank()) companionStoragePattern = fresh.companionStoragePattern;
+        if (companionBulkDeletedPattern == null || companionBulkDeletedPattern.isBlank()) companionBulkDeletedPattern = fresh.companionBulkDeletedPattern;
+        if (unknownCommandPattern == null || unknownCommandPattern.isBlank()) unknownCommandPattern = fresh.unknownCommandPattern;
         if (companionMaxBulkDeletes < 0) companionMaxBulkDeletes = 0;
         if (companionEggSearchRadius < 5) companionEggSearchRadius = 80.0;
         if (companionEggScanRadius < 4) companionEggScanRadius = 4;

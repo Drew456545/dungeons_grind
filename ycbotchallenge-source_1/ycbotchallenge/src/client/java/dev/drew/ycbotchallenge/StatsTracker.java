@@ -563,6 +563,12 @@ public class StatsTracker {
     private Pattern heroSpawnRe;
     private Pattern heroChatRe;
     /** 0.9.48: the hero pool model - despawn/needs lines, the last HP read and when, the learned rates. */
+    /** 0.9.52: "You bulk deleted 250 companions!" and "Unknown command." - the two answers a bulk-delete command can get. */
+    public volatile long companionBulkDeletedAt = 0;
+    public volatile Integer companionBulkDeletedCount = null;
+    public volatile long unknownCommandAt = 0;
+    private Pattern companionBulkDeletedRe;
+    private Pattern unknownCommandRe;
     public volatile long heroDespawnedAt = 0;
     public volatile long heroNeedsAt = 0;
     public volatile Integer heroNeedsHp = null;
@@ -752,6 +758,8 @@ public class StatsTracker {
         heroSpawnRe = compileLoose(cfg.heroSpawnPattern);
         heroChatRe = compileLoose(cfg.heroChatPattern);
         heroDespawnRe = compileLoose(cfg.heroDespawnPattern);
+        companionBulkDeletedRe = compileLoose(cfg.companionBulkDeletedPattern);
+        unknownCommandRe = compileLoose(cfg.unknownCommandPattern);
         heroNeedsRe = compileLoose(cfg.heroNeedsPattern);
         rawNet = new RawChatNet(cfg.chatRawPerMinute);
         if (cfg.giveawayAnnouncePatterns != null) for (String p : cfg.giveawayAnnouncePatterns) giveawayAnnounceRes.add(compileLoose(p));
@@ -2310,6 +2318,19 @@ public class StatsTracker {
             // the server's own prefixed lines get their own pass.
             String serverText = ChatClassifier.serverLine(text);
             if (serverText != null) heroLine(serverText, now);
+            // 0.9.52: the bulk-delete answers.
+            if (companionBulkDeletedRe != null) {
+                Matcher bm = companionBulkDeletedRe.matcher(text);
+                if (bm.find()) {
+                    companionBulkDeletedAt = now;
+                    try { companionBulkDeletedCount = Integer.parseInt(bm.group("n").replace(",", "")); } catch (RuntimeException ignored) { companionBulkDeletedCount = null; }
+                    log("companion_bulk_deleted", "count", companionBulkDeletedCount, "raw", text);
+                }
+            }
+            if (unknownCommandRe != null && unknownCommandRe.matcher(text).find()) {
+                unknownCommandAt = now;
+                log("unknown_command", "raw", text);
+            }
             if (!ChatClassifier.isPlayerOrBroadcast(text)) {
                 for (Pattern p : captchaHintRes) {
                     if (p.matcher(text).find()) {

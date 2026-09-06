@@ -96,6 +96,7 @@ public final class EconomyChecks {
         n += checks0948();
         n += checks0950();
         n += checks0951();
+        n += checks0952();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1789,7 +1790,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 50", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 50);
+        n += eq("config version 51", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 51);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2874,6 +2875,36 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.52: the companion delete window in stages, the storage count, the answers. */
+    private static int checks0952() {
+        int n = 0;
+        n += eq("z4s8 is stage 38", CompanionLore.globalStage(4, 8), 38);
+        n += eq("z4s1 is stage 31", CompanionLore.globalStage(4, 1), 31);
+        java.util.List<CompanionLore.ZoneStage> st = java.util.List.of(new CompanionLore.ZoneStage(4, 9), new CompanionLore.ZoneStage(4, 8),
+            new CompanionLore.ZoneStage(4, 7), new CompanionLore.ZoneStage(4, 6), new CompanionLore.ZoneStage(4, 5), new CompanionLore.ZoneStage(4, 4),
+            new CompanionLore.ZoneStage(3, 9), new CompanionLore.ZoneStage(4, 4));
+        java.util.List<CompanionLore.ZoneStage> eq = java.util.List.of(new CompanionLore.ZoneStage(4, 8));
+        java.util.List<CompanionLore.ZoneStage> del = CompanionLore.deletePairsByStage(st, eq, 38, 2);
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (CompanionLore.ZoneStage zs : del) names.add(zs.zone() + ":" + zs.stage());
+        n += eq("page-1 roster at stage 38: s5 and below go, oldest first", String.join(",", names), "3:9,4:4,4:5");
+        n += eq("unknown stage deletes nothing", CompanionLore.deletePairsByStage(st, eq, null, 2).size(), 0);
+        n += eq("the old zone window found nothing", CompanionLore.deletePairs(st, eq, 4, 2).size(), 0);
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        CompanionLore lore = new CompanionLore(fresh);
+        int[] sc = lore.storageCount(java.util.List.of("This is your Companion Backpack/Storage, companions", "Storage: 216 / 600", "INCREASE STORAGE"));
+        n += eq("storage count", sc != null ? sc[0] : -1, 216);
+        n += eq("storage max", sc != null ? sc[1] : -1, 600);
+        n += eq("bulk delete button", lore.isBulkDelete("Bulk Delete", java.util.List.of("The Bulk Delete option will open a GUI")), true);
+        n += eq("fusion is not the button", lore.isBulkDelete("Companions Fusion", java.util.List.of("combine companions together")), false);
+        java.util.regex.Pattern bd = HeroTracker.compile(fresh.companionBulkDeletedPattern);
+        java.util.regex.Matcher bm = bd.matcher("You bulk deleted 250 companions!");
+        n += eq("bulk deleted line", bm.find() ? bm.group("n") : null, "250");
+        n += eq("unknown command line", HeroTracker.compile(fresh.unknownCommandPattern).matcher("Unknown command. Type \"/help\" for help.").find(), true);
+        n += eq("a player saying unknown command is not it", HeroTracker.compile(fresh.unknownCommandPattern).matcher("lol unknown command").find(), false);
+        return n;
+    }
+
     /** 0.9.51: the hero's plate keeps it off the target list. */
     private static int checks0951() {
         int n = 0;

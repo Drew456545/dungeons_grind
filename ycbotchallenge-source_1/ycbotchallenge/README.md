@@ -255,6 +255,29 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.52: companion deletes that happen
+
+Drew: "not sure companion deleting is working optimally, we are slowly increasing
+companion numbers, around 216 rn". The log: the Companions menu is paginated ("Information
+[Page #1]", "Storage: 216 / 600"), the bot reads page 1 (36 slots) and took that for the
+whole storage; the delete window was in zones ("keep the newest two zones") and the roster
+sat in zone 4 all day, so every `companion_delete_plan` was empty and the bulk-delete
+command was never sent once since it was written in 0.9.37.
+
+- **The window is in stages.** `companionKeepStages` (2): a zone/stage pair more than two
+  stages behind the current one goes (x1.81 a stage, a fusion x2: two stages back is the
+  most a fused group could still beat the equipped set), never a pair an equipped companion
+  holds, oldest first, `companionMaxBulkDeletes` (5) commands a visit. Zone 4 stage 8 is
+  stage 38 in the log's own numbering (ten stages a zone).
+- **The command's answer is read.** "You bulk deleted N companions!" is
+  `companion_bulk_delete_ok` and the next pair follows; "Unknown command." is
+  `companion_bulk_delete_unsupported`, the command is dropped for the session, and the next
+  visit opens the server's Bulk Delete menu once, records it (`companion_gui
+  which=bulk-delete`) and closes it without a click - the fixture for automating it.
+- **The storage count is read** from the Information item (`companion_storage count max`),
+  and `companion_visit_done` carries `deleted` and `storage`.
+- Config v51.
+
 ### 0.9.51: the hero is not a target
 
 Drew's screenshot: the crosshair on the Archer Queen. The hero is a named baby zombie, and
