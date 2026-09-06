@@ -2702,7 +2702,7 @@ public final class EconomyChecks {
 
         // Config and wiring.
         n += eq("fresh boss on", CFG.bossEventEnabled, true);
-        n += eq("fresh boss cps", CFG.bossClickCpsMin + "-" + CFG.bossClickCpsMax, "2.5-3.5");
+        n += eq("fresh boss cps", CFG.bossClickCpsMin + "-" + CFG.bossClickCpsMax, "4.0-5.5");
         n += eq("fresh boss cooldown off", CFG.bossRespectVanillaCooldown, false);
         n += eq("fresh boss window", CFG.bossEventMaxMs, 300_000);
         try {
