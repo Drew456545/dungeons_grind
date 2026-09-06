@@ -95,6 +95,7 @@ public final class EconomyChecks {
         n += checks0947();
         n += checks0948();
         n += checks0950();
+        n += checks0951();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -2873,6 +2874,18 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.51: the hero's plate keeps it off the target list. */
+    private static int checks0951() {
+        int n = 0;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        java.util.List<java.util.regex.Pattern> heroRes = java.util.List.of(HeroTracker.compile(fresh.heroPlatePattern));
+        n += eq("hero plate ignored", Economy.ignoredByLines(java.util.List.of("Archer Queen \u276470"), heroRes), true);
+        n += eq("hero plate with a space", Economy.ignoredMob("Archer Queen \u2764 70", heroRes), true);
+        n += eq("stage zombie still fair game", Economy.ignoredByLines(java.util.List.of("LVL33 Zombie \u276445.01T"), heroRes), false);
+        n += eq("afk mob unaffected", Economy.ignoredMob("[AFKMOB] LVL9 Mooshroom", heroRes), false);
+        return n;
+    }
+
     /** 0.9.50: the server's prefixed lines reach the hero matchers. */
     private static int checks0950() {
         int n = 0;

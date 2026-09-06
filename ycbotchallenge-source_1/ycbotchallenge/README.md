@@ -255,6 +255,13 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.51: the hero is not a target
+
+Drew's screenshot: the crosshair on the Archer Queen. The hero is a named baby zombie, and
+on a Zombie stage it passes the mob-name check like any other zombie. An entity whose
+custom name or nameplate matches `heroPlatePattern` is now ignored the way an AFK mob is
+(`target_ignored via=hero`), whatever the stage mob.
+
 ### 0.9.50: a rebirth that lands mid-visit, the enchanter's second Esc, the hero lines heard
 
 2026-09-06 08:03:33: the rebirth chat line arrived one tick after an enchant visit opened

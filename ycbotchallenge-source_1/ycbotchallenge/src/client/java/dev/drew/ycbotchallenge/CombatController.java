@@ -169,6 +169,8 @@ public class CombatController {
 
     /** Nameplates never targeted (ignoreMobPatterns); entity ids already logged as ignored. */
     private final java.util.List<Pattern> ignoreRes = new java.util.ArrayList<>();
+    /** 0.9.51: our own hero's nameplate ("Archer Queen [heart]70") - a named baby zombie on a Zombie stage passed the mob check. */
+    private final java.util.List<Pattern> heroRes = new java.util.ArrayList<>();
     private final java.util.Set<Integer> ignoredLogged = new java.util.HashSet<>();
     /** Entity ids ignored for the session by evidence that arrives after the pick (its boss bar) or by hand (Ctrl+toggle). */
     private final java.util.Set<Integer> ignoredIds = new java.util.HashSet<>();
@@ -196,6 +198,8 @@ public class CombatController {
                 ignoreRes.add(Pattern.compile(re ? p.substring(1, p.length() - 1) : Pattern.quote(p), Pattern.CASE_INSENSITIVE));
             }
         }
+        Pattern hero = HeroTracker.compile(cfg.heroPlatePattern);
+        if (hero != null) heroRes.add(hero);
     }
 
     public void setLogger(EventLogger logger) { this.logger = logger; }
@@ -1618,6 +1622,13 @@ public class CombatController {
             Text custom = le.getCustomName();
             if (custom != null && Economy.ignoredMob(custom.getString(), ignoreRes)) return "name";
             if (Economy.ignoredByLines(plateLines(client, le), ignoreRes)) return "hologram";
+        }
+        // 0.9.51: the hero is ours (Drew's screenshot: the crosshair on the Archer Queen, a
+        // baby zombie with its plate, on the Zombie stage). Its plate or name is the tell.
+        if (!heroRes.isEmpty()) {
+            Text custom = le.getCustomName();
+            if (custom != null && Economy.ignoredMob(custom.getString(), heroRes)) return "hero";
+            if (Economy.ignoredByLines(plateLines(client, le), heroRes)) return "hero";
         }
         if (ignoreStore != null && ignoreStore.size() > 0) {
             Vec3d p = le.getEntityPos();
