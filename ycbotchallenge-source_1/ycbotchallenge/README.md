@@ -255,6 +255,29 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.50: a rebirth that lands mid-visit, the enchanter's second Esc, the hero lines heard
+
+2026-09-06 08:03:33: the rebirth chat line arrived one tick after an enchant visit opened
+the enchanter; the visit ran 27 s with combat off, the 8 s teleport arm expired, and when
+combat sampled the position again at 08:04:00 the 1053-block jump had no explanation:
+`stop_protocol teleport`, the bot off until 13:15. The other rebirths of the session (33,
+34, 35) were explained at once because combat was ticking when they landed.
+
+- **A rebirth since the last position sample explains the jump.** Combat remembers when it
+  last sampled the position; a rebirth after that (chat or sidebar) is the reason for the
+  next jump, however long the menu visit in between (`teleport_explained via=rebirth-signal
+  rebirthSinceSampleMs`).
+- **The enchanter's second Esc.** Esc on the skins submenu (or an upgrade submenu) brings
+  the enchanter back; the visit used to finish there and the enchanter lingered 8 s to the
+  stray close, 21 times in one session. `CLOSE_RETURN` waits for it and closes it too
+  (`enchant_close_return`).
+- **"EnchantedMC » ..." lines reach the hero matchers.** The server's prefixed lines carry
+  the » of a player line and every hero matcher skipped them: no `hero_spawned`, no
+  `hero_despawned` anchor, four `hero_spawn_unconfirmed`, and menu reads of a live hero's
+  draining HP (2, 7) taken for the pool. `ChatClassifier.serverLine` strips the prefix for
+  a second pass; the spawner also treats a hero plate in range as alive and never anchors
+  the pool on a live hero's HP.
+
 ### 0.9.49: one menu per hero cycle
 
 Drew, after the 07:37 look-only visit (read 57/100 against a target of 87, closed): "too

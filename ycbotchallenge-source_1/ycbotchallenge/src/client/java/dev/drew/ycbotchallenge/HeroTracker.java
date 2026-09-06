@@ -59,6 +59,9 @@ public class HeroTracker {
         return new String[] { m.group("name").trim(), m.group("hp").trim() };
     }
 
+    /** 0.9.50: a hero plate is in range right now (the spawner must not open the menu on a live hero). */
+    public boolean isAlive() { return seenName != null; }
+
     public String hudLine() {
         if (seenName == null) return null;
         return "hero " + seenName + " \u2764" + lastHp + " · " + (System.currentTimeMillis() - firstSeenAt) / 1000 + "s";

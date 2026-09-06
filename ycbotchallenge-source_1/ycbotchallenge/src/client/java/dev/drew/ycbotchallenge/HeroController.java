@@ -175,7 +175,7 @@ public class HeroController {
                 // 0.9.49 (Drew: "too many menus too often, just off our estimate spawn it in"): the
                 // menu is opened once per cycle, when the model says the pool is at the target,
                 // and the click goes whenever the server would take it. The read only feeds the model.
-                boolean go = menuHp != null && menuHp >= cfg.heroSpawnFloorHp;
+                boolean go = menuHp != null && menuHp >= cfg.heroSpawnFloorHp && !tracker.isAlive();
                 log("hero_menu", "name", heroName, "slot", heroSlot, "hp", menuHp, "max", menuMax, "targetHp", Math.round(targetHp),
                     "spawn", go, "underTarget", menuHp != null && menuHp < targetHp,
                     "sinceDespawnMs", stats.heroDespawnedAt != 0 ? now - stats.heroDespawnedAt : null);
@@ -247,15 +247,16 @@ public class HeroController {
             }
             break;
         }
-        if (menuHp != null) stats.noteHeroHp(menuHp, menuMax, now, "menu");
+        // A live hero shows its draining HP in the menu too (13:30: read 2, 14:52: read 7) - not a pool anchor.
+        if (menuHp != null && !tracker.isAlive() && !stats.heroAlive(now)) stats.noteHeroHp(menuHp, menuMax, now, "menu");
     }
 
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
         if (suspended || combat.isOnBreak() || client.currentScreen != null) return false;
         if (nextCheckAt == 0) schedule(now, "start");
         if (now < nextCheckAt) return false;
-        if (stats.heroAlive(now)) {
-            if (now - lastSkipLogAt > 60_000) { lastSkipLogAt = now; log("hero_skip", "reason", "alive", "sinceSpawnMs", now - stats.heroSpawnedAt); }
+        if (stats.heroAlive(now) || tracker.isAlive()) {
+            if (now - lastSkipLogAt > 60_000) { lastSkipLogAt = now; log("hero_skip", "reason", "alive", "plate", tracker.isAlive(), "sinceSpawnMs", now - stats.heroSpawnedAt); }
             return false;
         }
         if (upgrades != null && (upgrades.isBusy() || upgrades.hasPendingDecision())) return false;

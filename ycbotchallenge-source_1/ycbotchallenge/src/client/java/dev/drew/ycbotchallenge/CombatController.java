@@ -100,6 +100,8 @@ public class CombatController {
     /** Set to request the client stop the bot (teleport / player radar); consumed by the main tick. */
     public String stopRequest = null;
     private Vec3d lastTickPos = null;
+    /** 0.9.50: when lastTickPos was sampled - a rebirth after it explains the jump seen on the next sample. */
+    private long lastTickPosAt = 0;
     private long lastRadarAt = 0;
     /** Once a teleport happens, the player radar arms for the rest of the session. */
     private boolean teleportSeen = false;
@@ -424,13 +426,19 @@ public class CombatController {
             // already fired). A rebirth signal inside the grace explains it; nothing does not.
             releaseKeys(client);
             boolean armed = stats.isTeleportExpected(now);
-            boolean rebirthSignal = stats.lastRebirthAt != 0 && stats.lastRebirthAt >= pendingTeleportAt - 3000;
+            // 0.9.50: the rebirth may have landed while a menu visit held combat off (08:03:33
+            // rebirth chat mid enchant visit, the 1053-block jump only sampled at 08:04:00 when
+            // the visit ended, the 8 s arm long expired - stop_protocol, five hours off). A
+            // rebirth since the last position sample is the explanation.
+            boolean rebirthSignal = stats.lastRebirthAt != 0 && (stats.lastRebirthAt >= pendingTeleportAt - 3000
+                || (lastTickPosAt != 0 && stats.lastRebirthAt >= lastTickPosAt - 3000));
             if (armed || rebirthSignal) {
                 String why = armed ? stats.consumeTeleportReason() : "rebirth";
                 stats.clearTeleportExpected();
                 if (logger != null) {
                     logger.log("teleport_explained", "blocks", Math.round(pendingTeleportBlocks), "reason", why,
-                        "afterMs", now - pendingTeleportAt, "via", armed ? "armed" : "rebirth-signal");
+                        "afterMs", now - pendingTeleportAt, "via", armed ? "armed" : "rebirth-signal",
+                        "rebirthSinceSampleMs", stats.lastRebirthAt != 0 && lastTickPosAt != 0 ? stats.lastRebirthAt - lastTickPosAt : null);
                 }
                 pendingTeleportAt = 0;
                 stats.onZoneAdvance("teleport");
@@ -482,6 +490,7 @@ public class CombatController {
                 }
             }
             lastTickPos = pos;
+            lastTickPosAt = now;
             if ((!cfg.playerRadarArmAfterTeleport || teleportSeen) && now - lastRadarAt >= 200) {
                 lastRadarAt = now;
                 java.util.Set<Integer> seenNow = new java.util.HashSet<>();

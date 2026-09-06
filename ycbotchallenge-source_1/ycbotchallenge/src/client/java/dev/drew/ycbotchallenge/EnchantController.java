@@ -30,7 +30,7 @@ import net.minecraft.util.hit.HitResult;
 public class EnchantController {
     private enum Phase {
         IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_PRESS, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
-        MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, PRESTIGE_CLICK, PRESTIGE_SETTLE,
+        MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, PRESTIGE_CLICK, PRESTIGE_SETTLE, CLOSE_RETURN,
         SWORDS_CLICK, SWORDS_PRESS, SWORDS_WAIT, SWORDS_READ, CLOSE
     }
 
@@ -689,10 +689,33 @@ public class EnchantController {
                 if (isOurGui(client)) {
                     if (closeAt == 0) { closeAt = now + GuiHuman.closeDelayMs(cfg); return true; }
                     if (now < closeAt) return true;
+                    boolean submenu = skinsOpen(client) || EnchantScreens.classify(client, lore) == EnchantScreens.Kind.UPGRADE;
                     GuiHuman.close(client, "enchant", logger);
+                    if (submenu) {
+                        // 0.9.50: Esc on a submenu brings the enchanter back (14:12:35: the skins
+                        // menu closed, the enchanter lingered 8 s to the stray close, 21 times in
+                        // one session). Wait for it and close it too.
+                        phase = Phase.CLOSE_RETURN;
+                        phaseUntil = now + 1500;
+                        closeAt = 0;
+                        return true;
+                    }
                 }
                 finish(client, now, "done");
                 return false;
+            }
+            case CLOSE_RETURN -> {
+                if (EnchantScreens.classify(client, lore) == EnchantScreens.Kind.ENCHANTER) {
+                    if (closeAt == 0) { closeAt = now + GuiHuman.closeDelayMs(cfg); return true; }
+                    if (now < closeAt) return true;
+                    GuiHuman.close(client, "enchant", logger);
+                    log("enchant_close_return", "afterMs", now - (phaseUntil - 1500));
+                    finish(client, now, "done");
+                    return false;
+                }
+                if (client.currentScreen == null && now >= phaseUntil) { finish(client, now, "done"); return false; }
+                if (now >= phaseUntil + 1500) { finish(client, now, "done"); return false; }
+                return true;
             }
             default -> { }
         }

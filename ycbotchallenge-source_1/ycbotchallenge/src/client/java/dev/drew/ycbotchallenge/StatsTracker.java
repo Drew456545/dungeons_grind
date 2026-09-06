@@ -606,6 +606,37 @@ public class StatsTracker {
         heroLastHpAt = at;
     }
 
+    /** The hero lines: spawn, despawn (the pool at 0), the needs-N refusal, anything else with "hero". */
+    private boolean heroLine(String text, long now) {
+        if (heroSpawnRe != null && heroSpawnRe.matcher(text).find()) {
+            heroSpawnedAt = now;
+            log("hero_spawned", "raw", text, "sinceDespawnMs", heroDespawnedAt != 0 ? now - heroDespawnedAt : null);
+            return true;
+        }
+        if (heroDespawnRe != null && heroDespawnRe.matcher(text).find()) {
+            // 0.9.48: the pool is empty now - the model's best anchor.
+            heroDespawnedAt = now;
+            heroLastHp = 0.0;
+            heroLastHpAt = now;
+            log("hero_despawned", "raw", text, "lifetimeMs", heroSpawnedAt != 0 ? now - heroSpawnedAt : null, "hpAtSpawn", heroHpAtSpawn);
+            return true;
+        }
+        if (heroNeedsRe != null) {
+            Matcher hm = heroNeedsRe.matcher(text);
+            if (hm.find()) {
+                heroNeedsAt = now;
+                try { heroNeedsHp = Integer.parseInt(hm.group("n").replace(",", "")); } catch (RuntimeException ignored) { }
+                log("hero_needs", "hp", heroNeedsHp, "raw", text);
+                return true;
+            }
+        }
+        if (heroChatRe != null && heroChatRe.matcher(text).find()) {
+            log("hero_chat", "raw", text);
+            return true;
+        }
+        return false;
+    }
+
     public void noteHeroSpawned(Double hp, long at) {
         if (hp != null) heroHpAtSpawn = hp;
         if (heroSpawnedAt < at) heroSpawnedAt = at;
@@ -2275,6 +2306,10 @@ public class StatsTracker {
                     break;
                 }
             }
+            // 0.9.50: "EnchantedMC » Your hero has been spawned." carries the » of a player line -
+            // the server's own prefixed lines get their own pass.
+            String serverText = ChatClassifier.serverLine(text);
+            if (serverText != null) heroLine(serverText, now);
             if (!ChatClassifier.isPlayerOrBroadcast(text)) {
                 for (Pattern p : captchaHintRes) {
                     if (p.matcher(text).find()) {
@@ -2291,28 +2326,8 @@ public class StatsTracker {
                         break;
                     }
                 }
-                // 0.9.47: the hero lines (the spawn is the only one seen so far; the rest is the net).
-                if (heroSpawnRe != null && heroSpawnRe.matcher(text).find()) {
-                    heroSpawnedAt = now;
-                    log("hero_spawned", "raw", text, "sinceDespawnMs", heroDespawnedAt != 0 ? now - heroDespawnedAt : null);
-                } else if (heroDespawnRe != null && heroDespawnRe.matcher(text).find()) {
-                    // 0.9.48: the pool is empty now - the model's best anchor.
-                    heroDespawnedAt = now;
-                    heroLastHp = 0.0;
-                    heroLastHpAt = now;
-                    log("hero_despawned", "raw", text, "lifetimeMs", heroSpawnedAt != 0 ? now - heroSpawnedAt : null, "hpAtSpawn", heroHpAtSpawn);
-                } else if (heroNeedsRe != null) {
-                    Matcher hm = heroNeedsRe.matcher(text);
-                    if (hm.find()) {
-                        heroNeedsAt = now;
-                        try { heroNeedsHp = Integer.parseInt(hm.group("n").replace(",", "")); } catch (RuntimeException ignored) { }
-                        log("hero_needs", "hp", heroNeedsHp, "raw", text);
-                    } else if (heroChatRe != null && heroChatRe.matcher(text).find()) {
-                        log("hero_chat", "raw", text);
-                    }
-                } else if (heroChatRe != null && heroChatRe.matcher(text).find()) {
-                    log("hero_chat", "raw", text);
-                }
+                // 0.9.47: the hero lines on a bare server line (the prefixed form is handled above).
+                heroLine(text, now);
                 // 0.9.46: a reboot notice - the hub arrival that follows it is the auto-queue, not a /hub.
                 for (Pattern p : rebootRes) {
                     if (p.matcher(text).find()) {

@@ -94,6 +94,7 @@ public final class EconomyChecks {
         n += checks0946();
         n += checks0947();
         n += checks0948();
+        n += checks0950();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -2872,6 +2873,19 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.50: the server's prefixed lines reach the hero matchers. */
+    private static int checks0950() {
+        int n = 0;
+        n += eq("server prefix stripped", ChatClassifier.serverLine("EnchantedMC \u00bb Your hero has been spawned."), "Your hero has been spawned.");
+        n += eq("upper-case prefix too", ChatClassifier.serverLine("ENCHANTEDMC \u00bb elwood24 has voted"), "elwood24 has voted");
+        n += eq("a player line is not the server", ChatClassifier.serverLine("[\u2727R36\u2727]     QueenRose_  \u00bb gg"), null);
+        n += eq("a bare line is not prefixed", ChatClassifier.serverLine("Your hero despawned because it had no health left."), null);
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        java.util.regex.Pattern spawn = HeroTracker.compile(fresh.heroSpawnPattern);
+        n += eq("spawn line after the prefix", spawn.matcher(ChatClassifier.serverLine("EnchantedMC \u00bb Your hero has been spawned.")).find(), true);
+        return n;
+    }
+
     /** 0.9.48: the hero pool model and the spawn window. */
     private static int checks0948() {
         int n = 0;

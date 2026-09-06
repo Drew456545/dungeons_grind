@@ -20,6 +20,20 @@ public final class ChatClassifier {
      * Our own command replies never do ("You don't have enough money...",
      * " - Money: (1.09T)").
      */
+    private static final Pattern SERVER_PREFIX = Pattern.compile("^\\s*enchantedmc\\s*\u00BB\\s*(.+)$", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * 0.9.50: the text after the server's own "EnchantedMC » " prefix, or null. Such lines
+     * carry the » of a player line and were skipped by every server-line matcher: "Your hero
+     * has been spawned.", "Your hero despawned because it had no health left.", "Your hero
+     * needs 25 health before you can spawn it!" all went unmatched on 2026-09-06.
+     */
+    public static String serverLine(String stripped) {
+        if (stripped == null) return null;
+        Matcher m = SERVER_PREFIX.matcher(stripped);
+        return m.find() ? m.group(1).trim() : null;
+    }
+
     public static boolean isPlayerOrBroadcast(String stripped) {
         if (stripped == null || stripped.isEmpty()) return true;
         return stripped.indexOf('\u00BB') >= 0 || stripped.charAt(0) == '[';
