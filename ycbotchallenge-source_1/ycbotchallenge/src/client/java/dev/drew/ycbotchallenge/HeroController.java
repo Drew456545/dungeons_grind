@@ -19,9 +19,11 @@ import net.minecraft.client.MinecraftClient;
  * <p>Timing is a distribution, not a clock: each cycle draws a target HP in
  * [heroSpawnHpMin, heroSpawnHpMax], the regen model says when the pool reaches it, and
  * the visit waits that long with +-heroCheckLeewayPct of jitter, then for a post-kill lull.
- * The menu is the truth: the HP read there feeds the model (hero_regen), and a read under
- * the target closes the menu and reschedules from the real number. The nameplate tracker
- * ({@link HeroTracker}) supplies the decay rate and the alive/gone state.
+ * The menu opens once per cycle, at the estimate, and the click goes whenever the pool
+ * is over the server's floor (0.9.49, Drew: "too many menus too often, just off our
+ * estimate spawn it in, learn over time and vary"); the HP read there feeds the model
+ * (hero_regen) for the next estimate. The nameplate tracker ({@link HeroTracker})
+ * supplies the decay rate and the alive/gone state.
  */
 public class HeroController {
     private enum Phase { IDLE, TYPE, MENU_WAIT, LOOK, CLICK, CONFIRM, CLOSE, DONE }
@@ -170,9 +172,13 @@ public class HeroController {
                     abort(client, "no-hero-item");
                     return false;
                 }
-                boolean go = menuHp != null && menuHp >= targetHp && menuHp >= cfg.heroSpawnFloorHp;
+                // 0.9.49 (Drew: "too many menus too often, just off our estimate spawn it in"): the
+                // menu is opened once per cycle, when the model says the pool is at the target,
+                // and the click goes whenever the server would take it. The read only feeds the model.
+                boolean go = menuHp != null && menuHp >= cfg.heroSpawnFloorHp;
                 log("hero_menu", "name", heroName, "slot", heroSlot, "hp", menuHp, "max", menuMax, "targetHp", Math.round(targetHp),
-                    "spawn", go, "sinceDespawnMs", stats.heroDespawnedAt != 0 ? now - stats.heroDespawnedAt : null);
+                    "spawn", go, "underTarget", menuHp != null && menuHp < targetHp,
+                    "sinceDespawnMs", stats.heroDespawnedAt != 0 ? now - stats.heroDespawnedAt : null);
                 if (!go) { phase = Phase.CLOSE; phaseUntil = now + GuiHuman.closeDelayMs(cfg); return true; }
                 phase = Phase.CLICK;
                 phaseUntil = now + GuiHuman.clickDelayMs(cfg);

@@ -255,6 +255,15 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.49: one menu per hero cycle
+
+Drew, after the 07:37 look-only visit (read 57/100 against a target of 87, closed): "too
+many menus too often, just off our estimate spawn it in, learn over time and vary". The
+menu now opens once per cycle, when the pool model says the drawn target is reached, and
+the click goes whenever the pool is over the server's floor of 25; the read only feeds the
+regen estimate for the next cycle. The drawn target holds until a spawn (a re-check used
+to redraw it, 87 -> 67).
+
 ### 0.9.48: the hero spawns itself
 
 The numbers from 2026-09-06: the Archer Queen's pool is 100, it drains ~6.9/min while
