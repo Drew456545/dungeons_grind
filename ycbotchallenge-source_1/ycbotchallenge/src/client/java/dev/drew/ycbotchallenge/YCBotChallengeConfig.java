@@ -1036,7 +1036,7 @@ public class YCBotChallengeConfig {
     public int bossRescanMs = 5000;
     /** Retries inside one bar window (each one a fresh scan dump), then the window is given up. */
     public int bossMaxWindowRetries = 12;
-    public double bossStandTolerance = 0.8;
+    public double bossStandTolerance = 0.6;
     public int bossWalkTimeoutMs = 30_000;
     /** A cook in progress is finished first, unless the boss has been waiting this long. */
     public int bossEventStartGraceMs = 8_000;
@@ -1046,9 +1046,18 @@ public class YCBotChallengeConfig {
     public int bossMaxRescans = 40;
     public int bossMarkerMoveHits = 10;
     public double bossMarkerMoveBlocks = 1.5;
-    /** Drew's own pace on the 2026-09-04 kill: 293 hits in 99 s. The server counts hits, not damage. */
-    public double bossClickCpsMin = 2.5;
-    public double bossClickCpsMax = 3.5;
+    /**
+     * Drew's own pace on the 2026-09-04 kill: 293 hits in 99 s including the target moves.
+     * The server counts hits, not damage. 0.9.44: 4-5.5 cps on the target ("u can click
+     * faster while attacking boss"); the 2.5-3.5 of 0.9.42 was the whole-kill average.
+     */
+    public double bossClickCpsMin = 4.0;
+    public double bossClickCpsMax = 5.5;
+    /** 0.9.44: how long a gone marker is waited out on the spot before the abort/retry path, and the rescan beat. */
+    public int bossReacquireMs = 6_000;
+    public int bossReacquireEveryMs = 300;
+    /** 0.9.44: the stand point sits this far inside reach (was 0.5), so a marker that slides stays hittable. */
+    public double bossStandInset = 0.8;
     public boolean bossRespectVanillaCooldown = false;
     public int bossHitLogEvery = 10;
     public int bossMaxConsecutiveAborts = 3;
@@ -1575,7 +1584,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 45;
+    public static final int CURRENT_CONFIG_VERSION = 46;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1962,6 +1971,14 @@ public class YCBotChallengeConfig {
             // Rebirth GUI lore read. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 46) {
+            // v46 (0.9.44): the boss fight stays on the boss - the reacquire wait, the stand
+            // inset, the faster target cadence and the tighter stand tolerance take the new
+            // defaults when the old ones are still in place.
+            if (bossClickCpsMin == 2.5 && bossClickCpsMax == 3.5) { bossClickCpsMin = fresh.bossClickCpsMin; bossClickCpsMax = fresh.bossClickCpsMax; }
+            if (bossStandTolerance == 0.8) bossStandTolerance = fresh.bossStandTolerance;
+            changed = true;
+        }
         if (configVersion < 44) {
             // v44 (0.9.42): the reader moves from qwen3.6-flash to qwen3.8-flash (a config
             // still on the 3.6 default follows; a hand-set model is left alone), the second
@@ -2220,6 +2237,10 @@ public class YCBotChallengeConfig {
         if (bossRescanMs < 1000) bossRescanMs = 1000;
         if (bossMaxWindowRetries < 0) bossMaxWindowRetries = 0;
         if (bossStandTolerance < 0.3) bossStandTolerance = 0.3;
+        if (bossReacquireMs < 0) bossReacquireMs = 0;
+        if (bossReacquireEveryMs < 100) bossReacquireEveryMs = 100;
+        if (bossStandInset < 0.2) bossStandInset = 0.2;
+        if (bossStandInset > 1.5) bossStandInset = 1.5;
         if (bossWalkTimeoutMs < 5000) bossWalkTimeoutMs = 5000;
         if (bossEventStartGraceMs < 0) bossEventStartGraceMs = 0;
         if (bossEventMaxMs < 30_000) bossEventMaxMs = 30_000;

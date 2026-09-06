@@ -42,9 +42,18 @@ import net.minecraft.util.math.Vec3d;
  * facing the marker (recomputed every tick, so the marker moving re-plans the walk), the
  * offset aim sweep, the combat tap loop, one {@code finish} that resets combat so the walk
  * is never read as a teleport by the stop protocol.
+ *
+ * <p>0.9.44: the module owns the whole bar window. The 00:42 log had a kill split into
+ * twelve engagements: every ten hits the target entity went, the next scan (33-67 ms
+ * later) saw nothing hittable, the module aborted, combat walked off to a Glow Squid, and
+ * the retry came 10-20 s later after the cooking grace - a boss killed in stutters that
+ * looks like nothing a player does. Now a gone marker is a {@code WAIT} on the spot with
+ * a rescan every {@code bossReacquireEveryMs} (the next target shows within ~100 ms), an
+ * abort with time left waits {@code bossRescanMs} on the spot, and the bot leaves only
+ * when the window is spent, the bar is gone or the boss is dead.
  */
 public class BossEventController {
-    private enum Phase { IDLE, SCAN, WALK, AIM, HIT, DONE }
+    private enum Phase { IDLE, SCAN, WALK, AIM, HIT, WAIT, DONE }
 
     private record Candidate(Entity e, String type, int rank, double dBody, double volume, String plate) {}
 
@@ -99,8 +108,16 @@ public class BossEventController {
     private int consecutiveAborts;
     private boolean suspended;
     // 0.9.42: retries inside one bar window, the walk to the body when no marker is in reach.
-    private boolean retryPending = false;
-    private long retryAt = 0;
+    // 0.9.44: the retries happen inside the module (phase WAIT), so the window is never handed
+    // back to combat and the visits between two targets: a gone marker is waited out on the
+    // spot (reacquire), a real abort waits bossRescanMs on the spot, and only a spent window
+    // returns the bot to the grind.
+    private long waitUntil = 0;
+    private String waitReason = null;
+    private long reacquireSince = 0;
+    private int reacquireScans = 0;
+    private int scanDumps = 0;
+    private long lastBodyLookAt = 0;
     private long windowStartedAt = 0;
     private int windowHits = 0;
     private int windowRetries = 0;
@@ -134,7 +151,6 @@ public class BossEventController {
     public void onEnable(long now, int kills) {
         suspended = false;
         consecutiveAborts = 0;
-        retryPending = false;
         seqSeen = stats.bossEventSeq;
         killedSeqSeen = stats.bossKilledUsSeq;
         startPendingSince = 0;
@@ -186,7 +202,8 @@ public class BossEventController {
             case SCAN -> {
                 if (now - lastScanAt < 500) return true;
                 if (!scan(client, combat, now)) return false;
-                if (!approaching) beginWalk(now);
+                // scan() moved the phase itself on an approach (WALK) or a reacquire (WAIT).
+                if (phase == Phase.SCAN) beginWalk(now);
             }
             case WALK -> {
                 if (approaching) {
@@ -198,7 +215,7 @@ public class BossEventController {
                 double dist = Math.sqrt(dx * dx + dz * dz);
                 if (dist <= cfg.bossStandTolerance) {
                     releaseWalkKeys(client);
-                    log("boss_walk", "blocks", Math.round((bestDist - dist) * 10.0) / 10.0, "ms", now - walkStartAt,
+                    log("boss_walk", "blocks", bestDist == Double.MAX_VALUE ? 0.0 : Math.round((bestDist - dist) * 10.0) / 10.0, "ms", now - walkStartAt,
                         "left", Math.round(dist * 10.0) / 10.0, "target", targets, "approach", approaching);
                     if (approaching) {
                         // 0.9.42: at the body now - the marker only shows at close range.
@@ -283,10 +300,25 @@ public class BossEventController {
                 aimIssuedAt = 0;
                 return true;
             }
+            case WAIT -> {
+                releaseWalkKeys(client);
+                if ("reacquire".equals(waitReason)) {
+                    // 0.9.44: the next target shows within ~100 ms of the last one going (the
+                    // 00:42:55 log: the walk-and-rescan found it 34 ms after arriving) - look
+                    // at the body and scan again every few hundred ms instead of leaving.
+                    lookAtBody(client, now);
+                    if (now >= waitUntil) { phase = Phase.SCAN; lastScanAt = 0; }
+                    return true;
+                }
+                lookAtBody(client, now);
+                if (now >= waitUntil) restartAttempt(now);
+                return true;
+            }
             case HIT -> {
                 if (marker == null || marker.isRemoved()) {
                     log("boss_marker_gone", "hits", hits, "target", targets);
                     phase = Phase.SCAN;
+                    lastScanAt = 0;
                     return true;
                 }
                 Vec3d mp = marker.getEntityPos();
@@ -327,7 +359,8 @@ public class BossEventController {
                     windowHits++;
                     if (hits == 1 || hits % Math.max(1, cfg.bossHitLogEvery) == 0) {
                         log("boss_hit", "n", hits, "count", count, "targetsHit", th, "target", targets,
-                            "sinceTargetMs", now - targetAt, "dist", Math.round(client.player.distanceTo(marker) * 100.0) / 100.0);
+                            "sinceTargetMs", now - targetAt, "dist", Math.round(eyeToBox(client, marker) * 100.0) / 100.0,
+                            "feet", Math.round(client.player.distanceTo(marker) * 100.0) / 100.0);
                     }
                 }
                 return true;
@@ -346,13 +379,10 @@ public class BossEventController {
         boolean fresh = seq != seqSeen;
         boolean live = stats.bossEventBarPresent || (stats.bossTitleStartAt != 0 && now - stats.bossTitleStartAt < 15_000);
         if (!live) {
-            // 0.9.42: the bar went away with a retry pending - that window is over.
-            if (retryPending) endWindow("bar-gone");
             seqSeen = seq;
             return false;
         }
-        boolean retry = retryPending && now >= retryAt;
-        if (!fresh && !retry) return false;
+        if (!fresh) return false;
         if (startPendingSince == 0) startPendingSince = now;
         String blocked = null;
         if (combat.isOnBreak()) blocked = "break";
@@ -369,15 +399,24 @@ public class BossEventController {
         seqSeen = seq;
         startPendingSince = 0;
         startVia = stats.bossEventBarPresent ? "bar" : "title";
-        if (retry) {
-            retryPending = false;
-            eventStartedAt = windowStartedAt; // the five minutes bound the whole window
-        } else {
-            windowStartedAt = now;
-            windowHits = 0;
-            windowRetries = 0;
-            eventStartedAt = now;
-        }
+        windowStartedAt = now;
+        windowHits = 0;
+        windowRetries = 0;
+        scanDumps = 0;
+        eventStartedAt = now;
+        resetAttempt(now);
+        log("boss_seen", "via", startVia, "barTitle", stats.bossEventBarTitle, "count", stats.bossEventCount,
+            "targetsHit", stats.bossTargetsHit, "cooking", combat.isCooking(), "kills", combat.kills,
+            "sinceBarMs", stats.bossEventSeenAt != 0 ? now - stats.bossEventSeenAt : null);
+        combat.releaseKeys(client);
+        MouseDriver.INSTANCE.cancel();
+        phase = Phase.SCAN;
+        lastScanAt = 0;
+        return true;
+    }
+
+    /** The per-attempt counters: a fresh start and every in-window retry begin here. */
+    private void resetAttempt(long now) {
         approaching = false;
         approachTried = false;
         hits = 0; targets = 0; rescans = 0; rescansWithoutProgress = 0; walkTimeouts = 0; aimSweeps = 0;
@@ -389,14 +428,42 @@ public class BossEventController {
         killedSeqSeen = stats.bossKilledUsSeq;
         body = null; bodyPos = null; marker = null; markerType = null; markerPosAtTarget = null;
         screenOpenSince = 0;
-        log("boss_seen", "via", startVia, "barTitle", stats.bossEventBarTitle, "count", stats.bossEventCount,
-            "targetsHit", stats.bossTargetsHit, "cooking", combat.isCooking(), "kills", combat.kills,
-            "sinceBarMs", stats.bossEventSeenAt != 0 ? now - stats.bossEventSeenAt : null,
-            "retry", retry ? windowRetries : null, "windowMs", retry ? now - windowStartedAt : null);
-        combat.releaseKeys(client);
+        reacquireSince = 0;
+        reacquireScans = 0;
+        waitReason = null;
+    }
+
+    /** 0.9.44: a retry inside the window, from where we stand (no hand-back to combat). */
+    private void restartAttempt(long now) {
+        Vec3d keepBody = bodyPos;
+        resetAttempt(now);
+        bodyPos = keepBody;
+        log("boss_retry", "retry", windowRetries, "windowMs", now - windowStartedAt, "count", stats.bossEventCount,
+            "barTitle", stats.bossEventBarTitle, "windowHits", windowHits);
         MouseDriver.INSTANCE.cancel();
         phase = Phase.SCAN;
-        return true;
+        lastScanAt = 0;
+    }
+
+    /** While waiting for a target: face the body once, the way a player watches the boss for the next marker. */
+    private void lookAtBody(MinecraftClient client, long now) {
+        if (bodyPos == null || MouseDriver.INSTANCE.isBusy() || now - lastBodyLookAt < 1500) return;
+        float[] yp = anglesTo(client, bodyPos);
+        float err = Math.abs(MathHelper.wrapDegrees(yp[0] - client.player.getYaw()));
+        if (err < 35f) return;
+        lastBodyLookAt = now;
+        MouseDriver.INSTANCE.lookTo(client, yp[0], MathHelper.clamp(yp[1], -60f, 60f), "boss-look");
+    }
+
+    /** Vanilla ranges on the eye-to-hitbox distance, not feet to feet. */
+    private static double eyeToBox(MinecraftClient client, Entity e) {
+        Box b = e.getBoundingBox();
+        if (b == null) return client.player.getEyePos().distanceTo(e.getEntityPos());
+        Vec3d eye = client.player.getEyePos();
+        double dx = eye.x - MathHelper.clamp(eye.x, b.minX, b.maxX);
+        double dy = eye.y - MathHelper.clamp(eye.y, b.minY, b.maxY);
+        double dz = eye.z - MathHelper.clamp(eye.z, b.minZ, b.maxZ);
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     // ------------------------------------------------------------------ scan
@@ -495,21 +562,48 @@ public class BossEventController {
         // only shows once we stand at the body (a 48-block scan lists what the client has
         // loaded, not what it can hit). Walk there once, then look again.
         double bodyDist = bodyKnown ? bodyPos.distanceTo(me) : -1;
-        if (chosen == null && bodyKnown && !approachTried && bodyDist > cfg.reach + 1.5) {
-            log("boss_scan", "count", near.size(), "radius", cfg.bossScanRadius, "entities", rows,
-                "bodyPos", fmt(bodyPos), "bodyType", typeId(body), "bodyDist", Math.round(bodyDist * 10.0) / 10.0,
-                "chosen", null, "chosenVia", "approach", "candidates", cands.size());
+        boolean canApproach = bodyKnown && !approachTried && bodyDist > cfg.reach + 1.5;
+        String action = Economy.bossNoMarkerAction(chosen != null, canApproach, stats.bossEventBarPresent,
+            reacquireSince == 0 ? 0 : now - reacquireSince, cfg.bossReacquireMs);
+        // 0.9.44: the 60-row entity dump goes out once per window and when the target hunt gives
+        // up (the evidence), not on each of the ~30 target moves of a kill.
+        boolean dump = scanDumps == 0 || "abort".equals(action);
+        if (dump) scanDumps++;
+        boolean quiet = "reacquire".equals(action) && reacquireScans > 0;
+        if (!quiet) {
+            log("boss_scan", "count", near.size(), "radius", cfg.bossScanRadius, "entities", dump ? rows : null,
+                "bodyPos", fmt(bodyPos), "bodyType", body != null ? typeId(body) : null,
+                "bodyDist", bodyKnown ? Math.round(bodyDist * 10.0) / 10.0 : null,
+                "chosen", chosen != null ? chosen.type() : null,
+                "chosenVia", chosen == null ? action : approachTried ? via + "/near-body" : via,
+                "candidates", cands.size(), "reacquireScans", reacquireScans > 0 ? reacquireScans : null);
+        }
+        if ("approach".equals(action)) {
             marker = null;
             approaching = true;
             beginWalk(now);
             return true;
         }
-        log("boss_scan", "count", near.size(), "radius", cfg.bossScanRadius, "entities", rows,
-            "bodyPos", fmt(bodyPos), "bodyType", body != null ? typeId(body) : null,
-            "bodyDist", bodyKnown ? Math.round(bodyDist * 10.0) / 10.0 : null,
-            "chosen", chosen != null ? chosen.type() : null, "chosenVia", approachTried ? via + "/near-body" : via,
-            "candidates", cands.size());
+        if ("reacquire".equals(action)) {
+            if (reacquireSince == 0) {
+                reacquireSince = now;
+                log("boss_reacquire", "hits", hits, "target", targets, "bodyDist", bodyKnown ? Math.round(bodyDist * 10.0) / 10.0 : null,
+                    "waitMs", cfg.bossReacquireMs);
+            }
+            reacquireScans++;
+            approaching = false;
+            marker = null;
+            waitReason = "reacquire";
+            waitUntil = now + cfg.bossReacquireEveryMs;
+            phase = Phase.WAIT;
+            return true;
+        }
         if (chosen == null) { abort(client, combat, bodyKnown ? "marker-not-hittable" : "no-marker"); return false; }
+        if (reacquireSince != 0) {
+            log("boss_reacquired", "afterMs", now - reacquireSince, "scans", reacquireScans, "target", targets + 1);
+            reacquireSince = 0;
+            reacquireScans = 0;
+        }
         approachTried = false;
         boolean same = marker != null && marker.getId() == chosen.e().getId();
         marker = chosen.e();
@@ -551,7 +645,7 @@ public class BossEventController {
         Vec3d m = markerAim();
         Vec3d p = client.player.getEntityPos();
         double[] out = Economy.bossStandPoint(new double[]{bodyPos.x, bodyPos.y, bodyPos.z},
-            new double[]{m.x, m.y, m.z}, cfg.reach, new double[]{p.x, p.y, p.z});
+            new double[]{m.x, m.y, m.z}, cfg.reach, new double[]{p.x, p.y, p.z}, cfg.bossStandInset);
         faceDesc = out[3] == 0 ? "side" : out[3] == 1 ? "top" : "degenerate";
         return new Vec3d(out[0], out[1], out[2]);
     }
@@ -642,9 +736,9 @@ public class BossEventController {
         boolean complete = "killed".equals(via) || (count != null && count <= 5);
         log("boss_done", "via", via, "hits", hits, "count", count, "targetsHit", stats.bossTargetsHit,
             "targets", targets, "rescans", rescans, "eventMs", now - eventStartedAt, "complete", complete,
-            "markerType", markerType);
-        consecutiveAborts = 0;
-        retryPending = false;
+            "markerType", markerType, "windowHits", windowHits, "retries", windowRetries);
+        if ("killed".equals(via) || windowHits > 0) consecutiveAborts = 0;
+        else endWindow(via);
         finish(client, combat);
     }
 
@@ -660,20 +754,28 @@ public class BossEventController {
             "count", stats.bossEventCount, "targetsHit", stats.bossTargetsHit, "targets", targets, "rescans", rescans,
             "eventMs", now - eventStartedAt, "windowMs", windowMs, "markerType", markerType,
             "crosshair", client != null ? crosshairDesc(client) : null,
-            "retryInMs", canRetry ? cfg.bossRescanMs : null, "windowHits", windowHits);
+            "retryInMs", canRetry ? cfg.bossRescanMs : null, "windowHits", windowHits,
+            "reacquireMs", reacquireSince != 0 ? now - reacquireSince : null);
         if (canRetry) {
-            retryPending = true;
-            retryAt = now + cfg.bossRescanMs;
+            // 0.9.44: wait it out here - the window stays ours, combat and the visits stay off.
             windowRetries++;
-        } else {
-            endWindow(why);
+            if (client != null) releaseWalkKeys(client);
+            MouseDriver.INSTANCE.cancel();
+            reacquireSince = 0;
+            reacquireScans = 0;
+            marker = null;
+            approaching = false;
+            waitReason = why;
+            waitUntil = now + cfg.bossRescanMs;
+            phase = Phase.WAIT;
+            return;
         }
+        endWindow(why);
         finish(client, combat);
     }
 
     /** 0.9.42: a bar window is over without a kill: one abort when nothing in it landed a hit. */
     private void endWindow(String why) {
-        retryPending = false;
         boolean counted = windowHits == 0;
         if (counted && ++consecutiveAborts >= Math.max(1, cfg.bossMaxConsecutiveAborts)) {
             suspended = true;

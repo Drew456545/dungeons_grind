@@ -1018,6 +1018,26 @@ public final class Economy {
      * Reach minus half a block is the same margin combat falls back to after a no-connect run.
      */
     public static double[] bossStandPoint(double[] body, double[] marker, double reach, double[] player) {
+        return bossStandPoint(body, marker, reach, player, 0.5);
+    }
+
+    /**
+     * 0.9.44: what a scan with no hittable marker does. {@code approach} walks to the body
+     * (the target only shows at close range), {@code reacquire} waits on the spot while the
+     * bar is up and the wait is younger than {@code reacquireMs} (the next target spawns
+     * within ~100 ms of the last one going), {@code abort} is the retry/end path; a chosen
+     * marker is {@code target}.
+     */
+    public static String bossNoMarkerAction(boolean chosen, boolean canApproach, boolean barPresent,
+                                            long reacquireAgeMs, int reacquireMs) {
+        if (chosen) return "target";
+        if (canApproach) return "approach";
+        if (barPresent && reacquireMs > 0 && reacquireAgeMs < reacquireMs) return "reacquire";
+        return "abort";
+    }
+
+    /** The stand point {@code inset} blocks inside reach (0.9.44: 0.8, so a slid marker stays in the ray). */
+    public static double[] bossStandPoint(double[] body, double[] marker, double reach, double[] player, double inset) {
         double ox = marker[0] - body[0], oz = marker[2] - body[2];
         double h = Math.sqrt(ox * ox + oz * oz);
         int face = 0;
@@ -1028,7 +1048,7 @@ public final class Economy {
             h = Math.sqrt(ox * ox + oz * oz);
             if (h < 1e-6) { ox = 1; oz = 0; h = 1; }
         }
-        double stand = Math.max(1.2, reach - 0.5);
+        double stand = Math.max(1.2, reach - inset);
         return new double[]{marker[0] + ox / h * stand, marker[1], marker[2] + oz / h * stand, face};
     }
 

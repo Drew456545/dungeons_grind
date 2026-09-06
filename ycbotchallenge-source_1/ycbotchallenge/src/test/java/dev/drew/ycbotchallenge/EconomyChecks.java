@@ -89,6 +89,7 @@ public final class EconomyChecks {
         n += checks0941();
         n += checks0942();
         n += checks0943();
+        n += checks0944();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1782,7 +1783,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 45", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 45);
+        n += eq("config version 46", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 46);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2867,6 +2868,32 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.44: the boss fight stays on the boss. */
+    private static int checks0944() {
+        int n = 0;
+        // A gone marker: wait on the spot while the bar is up, approach when far, abort when spent.
+        n += eq("chosen wins", Economy.bossNoMarkerAction(true, true, true, 0, 6000), "target");
+        n += eq("far from the body: walk", Economy.bossNoMarkerAction(false, true, true, 0, 6000), "approach");
+        n += eq("gone marker, bar up: reacquire", Economy.bossNoMarkerAction(false, false, true, 0, 6000), "reacquire");
+        n += eq("still young: reacquire", Economy.bossNoMarkerAction(false, false, true, 5999, 6000), "reacquire");
+        n += eq("wait spent: abort", Economy.bossNoMarkerAction(false, false, true, 6000, 6000), "abort");
+        n += eq("bar gone: abort", Economy.bossNoMarkerAction(false, false, false, 0, 6000), "abort");
+        n += eq("reacquire off: abort", Economy.bossNoMarkerAction(false, false, true, 0, 0), "abort");
+        // The stand point inset: 0.8 inside reach by default, the old 0.5 through the old overload.
+        double[] in = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{3, 65, 0}, 3.0, new double[]{10, 64, 10}, 0.8);
+        n += eq("inset 0.8 x", in[0], 5.2, 1e-9);
+        double[] old = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{3, 65, 0}, 3.0, new double[]{10, 64, 10});
+        n += eq("old overload x", old[0], 5.5, 1e-9);
+        double[] floor = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{3, 65, 0}, 1.5, new double[]{10, 64, 10}, 0.8);
+        n += eq("stand floor 1.2", floor[0], 4.2, 1e-9);
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        n += eq("boss cps min", fresh.bossClickCpsMin, 4.0, 1e-9);
+        n += eq("boss cps max", fresh.bossClickCpsMax, 5.5, 1e-9);
+        n += eq("reacquire wait", fresh.bossReacquireMs, 6000);
+        n += eq("stand tolerance", fresh.bossStandTolerance, 0.6, 1e-9);
+        return n;
+    }
+
     private static int checks0943() {
         int n = 0;
         EnchantLore el = new EnchantLore(CFG);

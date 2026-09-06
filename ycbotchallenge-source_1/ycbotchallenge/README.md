@@ -255,6 +255,34 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.44: the boss fight stays on the boss
+
+The 2026-09-06 00:42 log is the first boss the bot killed on its own, and it did it in
+twelve engagements: every ten hits the target entity vanished, the next scan (33-67 ms
+later) saw nothing hittable, the module aborted with the retry pending, combat walked off
+to a Glow Squid (`tag_intent` a tick after `boss_abort`), and the retry came 10-20 s later
+once the cooking grace let it - a kill in stutters. When the scan happened to be ~100 ms
+after the marker went (the walk-and-rescan path) it found the next target at once.
+
+- **Reacquire on the spot.** A scan with no hittable marker while the bar is up is a `WAIT`
+  phase: face the body, scan again every `bossReacquireEveryMs` (300) up to
+  `bossReacquireMs` (6 s), then the old abort path. `boss_reacquire` / `boss_reacquired`
+  bracket the wait; the 60-row entity dump goes out once per window and on a give-up.
+- **The window is the module's.** An abort with time left waits `bossRescanMs` on the spot
+  (`boss_retry` when it resumes) instead of handing the bot back to combat; the boss module
+  stays busy for the whole bar window, so no companion/enchant/upgrade visit and no mob tag
+  starts between two targets. The bot leaves the boss only on a kill, a gone bar, or a
+  spent window. A boss that appears mid-visit still waits for that visit (unchanged).
+- **Cadence on the target.** `bossClickCpsMin/Max` 4-5.5 (was 2.5-3.5, the whole-kill
+  average of Drew's hand kill); log-normal beats as before, still only while the crosshair
+  ray is on the marker (vanilla's own 3-block entity pick, so every click is in range).
+- **Closer stand.** The stand point sits `bossStandInset` (0.8) inside reach and the arrival
+  tolerance is 0.6 (was 0.5 / 0.8), so a marker that slides along the face stays in the
+  ray. `boss_hit dist` is now the eye-to-hitbox distance vanilla ranges on (`feet` keeps
+  the old number).
+- Config v46: the two cadence knobs and the tolerance move to the new defaults only when
+  still on the old ones.
+
 ### 0.9.43: enchant prestige, newly unlocked enchants, the Rebirth GUI read for real
 
 **Enchant prestige.** Every "<Name> Upgrade" menu - the one the bot already buys levels in - carries a beacon "Enchant Prestige" (slot 26 in Drew's screenshot): `Prestige: 6 [★] / 10`, `Multiplier: 13.30x DMG`, `Cost: 2.5T Souls`, `Rebirth: 21`, `CLICK HERE`. One click prestiges when the souls cover the cost and the rebirth count meets the floor. Drew's hand prestiges in the 05:30 and 07:00 chat fixed the rules: the cost climbs x1.93 a prestige (Critical 2.6B -> 967B over ten), ten is the max ("This enchantment is already at the max prestige!"), the floor rises with the level ("You need to be at least 21 rebirths to prestige this enchantment!"), and the level is not reset (Critical still 1000/1000 MAX afterwards). Every unlocked soul enchant was MAX with 156T souls idle. Now, on each tab, after the level buys are done (Drew: levels first, no reserve), the visit opens the Upgrade menu of a maxed enchant - cheapest remembered next prestige first, never-read ones before that - dumps it once (`enchant_upgrade_gui`, the first evidence of that menu in any log), reads the beacon (`enchant_prestige_read … eligible why`), clicks it when eligible (`enchant_prestige_click`), settles, reads it again and repeats while the counter keeps rising and the next cost is covered (`enchant_prestige from to cost`, up to `enchantPrestigeMaxPerVisit` a beacon, `enchantPrestigeOpensPerVisit` menus a visit; `enchant_prestige_stop` when a click changed nothing). What each beacon said is remembered per enchant (`enchantPrestige` in the state file) so a menu is never opened for a beacon that is at max, above the rebirth count or above the balance. The server's own lines are the confirmation and are no longer counted as account prestiges (`enchant_prestige_chat kind=success|rebirth-gate|max`). Y screen: "Enchant prestige" with the session count and the next cheapest.
