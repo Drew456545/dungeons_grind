@@ -91,6 +91,7 @@ public final class EconomyChecks {
         n += checks0943();
         n += checks0944();
         n += checks0945();
+        n += checks0946();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1784,7 +1785,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 47", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 47);
+        n += eq("config version 48", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 48);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2869,6 +2870,36 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.46: the reboot case of the hub stop. */
+    private static int checks0946() {
+        int n = 0;
+        n += eq("hub after a notice: wait", Economy.hubArrivalAction(true, 70_000, 180_000), "reboot-wait");
+        n += eq("hub, notice too old: stop", Economy.hubArrivalAction(true, 180_001, 180_000), "stop");
+        n += eq("hub, no notice: stop", Economy.hubArrivalAction(true, -1, 180_000), "stop");
+        n += eq("feature off: stop", Economy.hubArrivalAction(false, 1000, 180_000), "stop");
+        n += eq("money line back: resume", Economy.rebootWaitAction(10_000 + 3001, 10_000, 3000, 60_000, 1_200_000), "resume");
+        n += eq("stale money line: wait", Economy.rebootWaitAction(9_000, 10_000, 3000, 60_000, 1_200_000), "wait");
+        n += eq("money line at the edge: wait", Economy.rebootWaitAction(13_000, 10_000, 3000, 60_000, 1_200_000), "wait");
+        n += eq("wait spent: timeout", Economy.rebootWaitAction(9_000, 10_000, 3000, 1_200_001, 1_200_000), "timeout");
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        java.util.List<java.util.regex.Pattern> res = new java.util.ArrayList<>();
+        for (String p : fresh.rebootChatPatterns) {
+            String body = p.startsWith("/") && p.endsWith("/") ? p.substring(1, p.length() - 1) : p;
+            res.add(java.util.regex.Pattern.compile(body, java.util.regex.Pattern.CASE_INSENSITIVE));
+        }
+        String[] lines = {"THE SERVER IS RESTARTING IN 60 SECONDS", "You will be auto-queued and connected automatically.",
+            "You were kicked from Dungeons: This server is now rebooting."};
+        for (String line : lines) {
+            boolean hit = false;
+            for (java.util.regex.Pattern re : res) if (re.matcher(line).find()) hit = true;
+            n += eq("reboot line: " + line, hit, true);
+        }
+        boolean stray = false;
+        for (java.util.regex.Pattern re : res) if (re.matcher("Player Warp #2 - Autofighter shop #1").find()) stray = true;
+        n += eq("warp ad is not a reboot", stray, false);
+        return n;
+    }
+
     /** 0.9.45: the enchanter opens into a clear crosshair. */
     private static int checks0945() {
         int n = 0;

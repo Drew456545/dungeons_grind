@@ -558,6 +558,10 @@ public class StatsTracker {
     /** 0.9.41: a server line that says we were sent to the hub/lobby (consumed by the client tick). */
     public volatile String hubMessage = null;
     private final List<Pattern> hubRes = new ArrayList<>();
+    /** 0.9.46: the last server line about a reboot (restart countdown, the reboot kick, the auto-queue promise). */
+    public volatile long rebootNoticeAt = 0;
+    public volatile String rebootNotice = null;
+    private final List<Pattern> rebootRes = new ArrayList<>();
     /** 0.9.41: when the sidebar last carried the money line - the hub sidebar has none. */
     private volatile long lastMoneyLineAt = 0;
 
@@ -657,6 +661,7 @@ public class StatsTracker {
             for (String p : cfg.captchaChatHintPatterns) captchaHintRes.add(compileLoose(p));
         }
         if (cfg.hubChatPatterns != null) for (String p : cfg.hubChatPatterns) hubRes.add(compileLoose(p));
+        if (cfg.rebootChatPatterns != null) for (String p : cfg.rebootChatPatterns) rebootRes.add(compileLoose(p));
         rawNet = new RawChatNet(cfg.chatRawPerMinute);
         if (cfg.giveawayAnnouncePatterns != null) for (String p : cfg.giveawayAnnouncePatterns) giveawayAnnounceRes.add(compileLoose(p));
         if (cfg.giveawayJoinedPatterns != null) for (String p : cfg.giveawayJoinedPatterns) giveawayJoinedRes.add(compileLoose(p));
@@ -2216,6 +2221,15 @@ public class StatsTracker {
                     if (p.matcher(text).find()) {
                         hubMessage = text;
                         log("hub_chat", "raw", text);
+                        break;
+                    }
+                }
+                // 0.9.46: a reboot notice - the hub arrival that follows it is the auto-queue, not a /hub.
+                for (Pattern p : rebootRes) {
+                    if (p.matcher(text).find()) {
+                        rebootNoticeAt = now;
+                        rebootNotice = text;
+                        log("reboot_notice", "raw", text);
                         break;
                     }
                 }

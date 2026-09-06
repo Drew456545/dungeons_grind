@@ -96,6 +96,9 @@ public class HudOverlay {
         if (!on && "stopped".equals(YCBotChallengeClient.pausedReason)) {
             rows.add(new Row("", "§cSTOPPED · press G to resume§r"));
         }
+        if (!on && "reboot".equals(YCBotChallengeClient.pausedReason)) {
+            rows.add(new Row("", "§eREBOOT · waiting for the auto-queue, resumes on its own§r"));
+        }
         if (on && captcha != null && captcha.vlmHudLine() != null) rows.add(new Row("", captcha.vlmHudLine()));
 
         if (on) {

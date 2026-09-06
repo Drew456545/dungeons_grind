@@ -33,6 +33,10 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private Object lastWorld = null;
     private long worldChangedAt = 0;
     private boolean moneySeenSinceOn = false;
+    /** 0.9.46: the reboot wait - when it began, the hub world it began in, and when the resume is due (0 = not yet). */
+    private long rebootWaitSince = 0;
+    private Object rebootWorld = null;
+    private long rebootResumeAt = 0;
     /** 0.9.41: when the auto-disconnect timer fires (0 = not armed), and whether this launch armed it already. */
     private static long autoDisconnectAt = 0;
     private static boolean autoDcArmedThisLaunch = false;
@@ -226,10 +230,24 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
 
+        if (!enabled && "reboot".equals(pausedReason)) { tickRebootWait(client, System.currentTimeMillis()); return; }
         if (!enabled) return;
         noteScreenEdge(client);
-        String hub = hubSignal(client, System.currentTimeMillis());
-        if (hub != null) { emergencyStop(client, "hub (" + hub + ")"); return; }
+        long nowHub = System.currentTimeMillis();
+        String hub = hubSignal(client, nowHub);
+        if (hub != null) {
+            // 0.9.46: a hub arrival inside rebootNoticeWindowMs of a reboot notice is the
+            // scheduled restart (2026-09-06 02:26: "THE SERVER IS RESTARTING IN 60 SECONDS",
+            // the kick, the auto-queue back six minutes later, the bot off for the rest of
+            // the night). Wait for the way back instead of stopping for good.
+            long noticeAge = stats.rebootNoticeAt != 0 ? nowHub - stats.rebootNoticeAt : -1;
+            if ("reboot-wait".equals(Economy.hubArrivalAction(config.rebootResumeEnabled, noticeAge, config.rebootNoticeWindowMs))) {
+                beginRebootWait(client, hub, noticeAge, nowHub);
+            } else {
+                emergencyStop(client, "hub (" + hub + ")");
+            }
+            return;
+        }
 
         // 0.9.30: our own options screen is open — hands off the keys, nothing else runs.
         if (client.currentScreen instanceof BotOptionsScreen) {
@@ -401,6 +419,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
         opts.add(new BotOptionsScreen.Option("companionBulkDeleteEnabled", "Companion bulk delete", () -> config.companionBulkDeleteEnabled, v -> config.companionBulkDeleteEnabled = v));
         opts.add(new BotOptionsScreen.Option("bossEventEnabled", "Zone boss", () -> config.bossEventEnabled, v -> config.bossEventEnabled = v,
             () -> moduleStatus(bossEvent.hudLine(), bossEvent.isBusy(), bossEvent.isSuspended())));
+        opts.add(new BotOptionsScreen.Option("rebootResumeEnabled", "Reboot auto-resume", () -> config.rebootResumeEnabled, v -> config.rebootResumeEnabled = v,
+            () -> "reboot".equals(pausedReason) ? (rebootResumeAt != 0 ? "back in Dungeons, resuming shortly" : "waiting for the auto-queue") : "a reboot kick waits for the way back, a /hub still stops"));
         opts.add(new BotOptionsScreen.Option("transcendEnabled", "Transcend (Q)", () -> config.transcendEnabled, v -> config.transcendEnabled = v,
             () -> { String t = transcend.hudState(); return t != null ? t : "idle"; }));
         opts.add(new BotOptionsScreen.Option("giveawaysEnabled", "Join giveaways", () -> config.giveawaysEnabled, v -> config.giveawaysEnabled = v,
@@ -602,6 +622,49 @@ public class YCBotChallengeClient implements ClientModInitializer {
             guiRetryBlockUntil = System.currentTimeMillis() + 20_000;
         }
         captchaSolver.begin(client, source, detail);
+    }
+
+    /** 0.9.46: the hub after a reboot notice - off, quiet, waiting for the auto-queue to bring Dungeons back. */
+    private void beginRebootWait(MinecraftClient client, String hubSignal, long noticeAgeMs, long now) {
+        if (logger != null) logger.log("reboot_pause", "hub", hubSignal, "noticeAgeMs", noticeAgeMs, "notice", stats.rebootNotice,
+            "waitMaxMs", config.rebootWaitMaxMs);
+        setEnabled(client, false, true);
+        pausedReason = "reboot";
+        rebootWaitSince = now;
+        rebootWorld = client.world;
+        rebootResumeAt = 0;
+        if (client.player != null) {
+            client.player.sendMessage(Text.literal(
+                "§e[YCBotChallenge] paused — server reboot (" + hubSignal + "). Waiting for the auto-queue back into Dungeons; resumes on its own."), false);
+        }
+        LOGGER.info("reboot wait: {}", hubSignal);
+    }
+
+    /** 0.9.46: the reboot wait, ticked while the bot is off: Dungeons is back when the sidebar's money line is. */
+    private void tickRebootWait(MinecraftClient client, long now) {
+        if (rebootResumeAt != 0) {
+            if (now < rebootResumeAt) return;
+            if (logger != null) logger.log("reboot_resume", "waitedMs", now - rebootWaitSince);
+            rebootResumeAt = 0;
+            rebootWaitSince = 0;
+            setEnabled(client, true, false);
+            if (client.player != null) client.player.sendMessage(Text.literal("§a[YCBotChallenge] back in Dungeons after the reboot — resumed."), false);
+            return;
+        }
+        String action = Economy.rebootWaitAction(stats.lastMoneyLineAt(), rebootWaitSince, config.hubWorldConfirmMs,
+            now - rebootWaitSince, config.rebootWaitMaxMs);
+        if ("resume".equals(action)) {
+            long delay = HumanTiming.logNormalMs(config.rebootResumeMinMs, config.rebootResumeMaxMs);
+            rebootResumeAt = now + delay;
+            if (logger != null) logger.log("reboot_back", "afterMs", now - rebootWaitSince, "worldChanged", client.world != rebootWorld,
+                "resumeInMs", delay);
+        } else if ("timeout".equals(action)) {
+            if (logger != null) logger.log("reboot_wait_timeout", "waitedMs", now - rebootWaitSince);
+            rebootWaitSince = 0;
+            pausedReason = "stopped";
+            if (client.player != null) client.player.sendMessage(Text.literal(
+                "§c[YCBotChallenge] STOPPED — no way back into Dungeons " + (config.rebootWaitMaxMs / 60000) + " min after the reboot. Press the toggle key to resume."), false);
+        }
     }
 
     /** Teleport or nearby player while grinding: full stop, right now, human takes over. */

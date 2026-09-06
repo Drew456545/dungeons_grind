@@ -210,6 +210,24 @@ public class YCBotChallengeConfig {
     public int hubSidebarLostMs = 10_000;
     /** A replaced world is the hub only when no money line follows it within this long (a dungeon world hop shows one at once). */
     public int hubWorldConfirmMs = 3000;
+    /**
+     * 0.9.46: a scheduled reboot is its own case (Drew). A hub arrival within
+     * rebootNoticeWindowMs of a line matching rebootChatPatterns ("THE SERVER IS RESTARTING
+     * IN 60 SECONDS", "You were kicked from Dungeons: This server is now rebooting.", "You
+     * will be auto-queued and connected automatically.") pauses (paused:reboot) instead of
+     * stopping, waits up to rebootWaitMaxMs for the money line to come back (the auto-queue
+     * took six minutes on 2026-09-06), then resumes after a rebootResumeMin/MaxMs beat. A
+     * hub arrival with no notice still stops for good.
+     */
+    public boolean rebootResumeEnabled = true;
+    public List<String> rebootChatPatterns = List.of(
+        "/\bserver is (?:now )?(?:restarting|rebooting)\b/",
+        "/\bauto-?queued\b/",
+        "/\bkicked from\b[^:]*:\s*this server is now rebooting/");
+    public int rebootNoticeWindowMs = 180_000;
+    public int rebootWaitMaxMs = 1_200_000;
+    public int rebootResumeMinMs = 45_000;
+    public int rebootResumeMaxMs = 120_000;
 
     /**
      * Ghost filter. Real dungeon mobs are ALWAYS stationary; client-side ghost
@@ -1589,7 +1607,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 47;
+    public static final int CURRENT_CONFIG_VERSION = 48;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1976,6 +1994,10 @@ public class YCBotChallengeConfig {
             // Rebirth GUI lore read. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 48) {
+            // v48 (0.9.46): the reboot case of the hub stop. Every knob is new and takes its default.
+            changed = true;
+        }
         if (configVersion < 47) {
             // v47 (0.9.45): the enchanter open-clear glances/wait and the suspension expiry.
             // Every knob is new and takes its default.
@@ -2195,6 +2217,11 @@ public class YCBotChallengeConfig {
         if (hubChatPatterns == null) hubChatPatterns = fresh.hubChatPatterns;
         if (hubSidebarLostMs < 1000) hubSidebarLostMs = 1000;
         if (hubWorldConfirmMs < 500) hubWorldConfirmMs = 500;
+        if (rebootChatPatterns == null) rebootChatPatterns = fresh.rebootChatPatterns;
+        if (rebootNoticeWindowMs < 10_000) rebootNoticeWindowMs = 10_000;
+        if (rebootWaitMaxMs < 60_000) rebootWaitMaxMs = 60_000;
+        if (rebootResumeMinMs < 1000) rebootResumeMinMs = 1000;
+        if (rebootResumeMaxMs <= rebootResumeMinMs) rebootResumeMaxMs = rebootResumeMinMs + 1000;
         if (companionMaxBalancePct < 0) companionMaxBalancePct = 0;
         if (companionMaxBalancePct > 100) companionMaxBalancePct = 100;
         if (companionMinStageGain < 0) companionMinStageGain = 0;

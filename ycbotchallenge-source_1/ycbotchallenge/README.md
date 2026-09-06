@@ -255,6 +255,26 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.46: a reboot is its own case
+
+2026-09-06 02:25:20: "THE SERVER IS RESTARTING IN 60 SECONDS / You will be auto-queued and
+connected automatically." 02:26:28: "You were kicked from Dungeons: This server is now
+rebooting." - the hub. 02:26:31: the 0.9.41 hub stop fired, as designed for a server-side
+/hub. 02:32: the auto-queue put the account back in its zone. The bot stayed off until Drew
+looked, an hour and forty minutes later.
+
+- **A hub arrival after a reboot notice waits instead of stopping.** `rebootChatPatterns`
+  (the countdown, the reboot kick, the auto-queue promise) stamp `reboot_notice`; a hub
+  signal within `rebootNoticeWindowMs` (3 min) of one is `reboot_pause` (HUD: REBOOT,
+  `paused:reboot`), the bot off and quiet. A hub arrival with no notice still stops for
+  good.
+- **Back when the money line is back.** The hub sidebar has none, so a money line seen after
+  the pause is Dungeons: `reboot_back`, then a `rebootResumeMin/MaxMs` (45-120 s) beat -
+  someone tabbing back - and `reboot_resume` turns the bot on through the usual enable (a
+  fresh zone measure, the swing hold, the captcha detector's map baseline). No way back in
+  `rebootWaitMaxMs` (20 min) becomes the ordinary STOPPED.
+- Y menu: "Reboot auto-resume". Config v48.
+
 ### 0.9.45: the enchanter opens into a clear crosshair, and a suspension that lifts
 
 Drew saw "enchant: suspended after repeated aborts" on the HUD at 01:43. The log: three

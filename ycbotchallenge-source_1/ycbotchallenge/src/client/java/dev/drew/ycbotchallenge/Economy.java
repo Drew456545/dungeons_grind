@@ -1048,6 +1048,27 @@ public final class Economy {
         return "wait";
     }
 
+    /**
+     * 0.9.46: a hub arrival. {@code reboot-wait} when the feature is on and a reboot notice
+     * (restart countdown, reboot kick, auto-queue promise) is younger than {@code windowMs};
+     * {@code stop} otherwise - the 0.9.41 rule for a real /hub. {@code noticeAgeMs} < 0 = none.
+     */
+    public static String hubArrivalAction(boolean rebootResumeEnabled, long noticeAgeMs, int windowMs) {
+        if (rebootResumeEnabled && noticeAgeMs >= 0 && noticeAgeMs <= windowMs) return "reboot-wait";
+        return "stop";
+    }
+
+    /**
+     * 0.9.46: the reboot wait. {@code resume} once the sidebar's money line has been seen
+     * {@code confirmMs} after the wait began (the hub sidebar has none, so a money line is
+     * Dungeons), {@code timeout} when the wait is older than {@code maxMs}, else {@code wait}.
+     */
+    public static String rebootWaitAction(long moneyLineAt, long waitSince, int confirmMs, long waitedMs, int maxMs) {
+        if (moneyLineAt > waitSince + confirmMs) return "resume";
+        if (waitedMs > maxMs) return "timeout";
+        return "wait";
+    }
+
     /** The stand point {@code inset} blocks inside reach (0.9.44: 0.8, so a slid marker stays in the ray). */
     public static double[] bossStandPoint(double[] body, double[] marker, double reach, double[] player, double inset) {
         double ox = marker[0] - body[0], oz = marker[2] - body[2];
