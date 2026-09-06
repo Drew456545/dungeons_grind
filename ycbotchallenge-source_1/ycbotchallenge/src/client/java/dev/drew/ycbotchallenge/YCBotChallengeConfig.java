@@ -842,6 +842,8 @@ public class YCBotChallengeConfig {
      */
     public int companionKeepStages = 2;
     public int companionDeleteResponseMs = 3500;
+    /** 0.9.53: after Esc on a submenu, how long the companions menu gets to come back before the command is re-typed. */
+    public int companionReturnMs = 2500;
     public String companionBulkDeletePattern = "/bulk delete/";
     public String companionStoragePattern = "/storage:\\s*(?<count>[\\d,]+)\\s*\\/\\s*(?<max>[\\d,]+)/";
     public String companionBulkDeletedPattern = "/bulk deleted (?<n>[\\d,]+) companions/";
@@ -2255,6 +2257,7 @@ public class YCBotChallengeConfig {
         if (companionKeepZones < 1) companionKeepZones = 1;
         if (companionKeepStages < 0) companionKeepStages = 0;
         if (companionDeleteResponseMs < 1000) companionDeleteResponseMs = 1000;
+        if (companionReturnMs < 500) companionReturnMs = 500;
         if (companionBulkDeletePattern == null || companionBulkDeletePattern.isBlank()) companionBulkDeletePattern = fresh.companionBulkDeletePattern;
         if (companionStoragePattern == null || companionStoragePattern.isBlank()) companionStoragePattern = fresh.companionStoragePattern;
         if (companionBulkDeletedPattern == null || companionBulkDeletedPattern.isBlank()) companionBulkDeletedPattern = fresh.companionBulkDeletedPattern;

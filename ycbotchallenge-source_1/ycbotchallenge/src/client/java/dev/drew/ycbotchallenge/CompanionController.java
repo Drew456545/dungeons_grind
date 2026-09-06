@@ -38,7 +38,7 @@ import net.minecraft.util.math.Vec3d;
  */
 public class CompanionController {
     private enum Phase { IDLE, WALK, AIM, OPEN_WAIT, EGG_LOOK, BUY, BUY_CLICK, BUY_SETTLE, CLOSE_EGG, TYPE_COMPANION, COMP_WAIT,
-        COMP_LOOK, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, FUSE_ALL_CLICK, FUSE_ALL_SETTLE, DELETE, DELETE_TYPE, DELETE_WAIT,
+        COMP_LOOK, COMP_RETURN, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, FUSE_ALL_CLICK, FUSE_ALL_SETTLE, DELETE, DELETE_TYPE, DELETE_WAIT,
         BULK_CLICK, BULK_WAIT, BULK_READ, DONE }
 
     private record Entry(int slot, String name, List<String> lore) {}
@@ -154,6 +154,8 @@ public class CompanionController {
     private boolean bulkDumpThisVisit;
     private long deleteSentAt;
     private int deletedThisVisit;
+    /** 0.9.53: when the Esc on a submenu went out - the companions menu comes back on its own. */
+    private long returnSince;
     private Integer currentZone;
     private Integer visitStage;
 
@@ -713,8 +715,8 @@ public class CompanionController {
                 if (now < phaseUntil) return true;
                 if (!companionsGuiOpen(client) || fuseSlot < 0) {
                     if (fuseSlot < 0) log("companion_skip", "reason", "no-fuse-item");
+                    if (fuseDue) { fusedThisVisit = true; beginReturn(client, now); return true; }
                     if (isOurGui(client)) EnchantScreens.closeGui(client);
-                    if (fuseDue) { fusedThisVisit = true; phase = Phase.TYPE_COMPANION; phaseUntil = now + GuiHuman.betweenDelayMs(cfg); return true; }
                     prepareDeletes();
                     phase = Phase.DELETE;
                     deleteIdx = 0;
@@ -732,8 +734,8 @@ public class CompanionController {
                     phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
                 } else if (now >= phaseUntil) {
                     log("companion_skip", "reason", "no-fuse-gui", "title", title(client));
+                    if (fuseDue) { fusedThisVisit = true; beginReturn(client, now); return true; }
                     if (isOurGui(client)) EnchantScreens.closeGui(client);
-                    if (fuseDue) { fusedThisVisit = true; phase = Phase.TYPE_COMPANION; phaseUntil = now + GuiHuman.betweenDelayMs(cfg); return true; }
                     prepareDeletes();
                     phase = Phase.DELETE;
                     deleteIdx = 0;
@@ -752,14 +754,14 @@ public class CompanionController {
                     return true;
                 }
                 if (fuseDue) log("companion_skip", "reason", "no-fuse-all-item");
-                if (isOurGui(client)) EnchantScreens.closeGui(client);
                 if (fuseDue) {
-                    // The companions menu was left for the fusion menu before Equip Best: reopen it.
+                    // 0.9.53 (Drew): Esc on the fusion menu goes back one, to the companions menu -
+                    // straight on to Equip Best, no re-typed command.
                     fusedThisVisit = true;
-                    phase = Phase.TYPE_COMPANION;
-                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+                    beginReturn(client, now);
                     return true;
                 }
+                if (isOurGui(client)) EnchantScreens.closeGui(client);
                 prepareDeletes();
                 phase = Phase.DELETE;
                 deleteIdx = 0;
@@ -808,9 +810,27 @@ public class CompanionController {
                     "storageAfter", storageAfter, "fuseGuiStillOpen", fuseGuiOpen(client),
                     "fused", verdict == null, "verdict", verdict);
                 fusedThisVisit = true;
-                if (client.currentScreen != null) EnchantScreens.closeGui(client);
-                phase = Phase.TYPE_COMPANION;
-                phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+                beginReturn(client, now);
+            }
+            case COMP_RETURN -> {
+                if (companionsGuiOpen(client)) {
+                    log("companion_return", "via", "esc", "afterMs", now - returnSince);
+                    phase = Phase.COMP_LOOK;
+                    phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
+                    return true;
+                }
+                // The re-rendered fusion menu (0.9.39): Esc again, on a beat.
+                if (client.currentScreen != null && isOurGui(client) && now - lastLookAt > 400) {
+                    lastLookAt = now;
+                    EnchantScreens.closeGui(client);
+                    return true;
+                }
+                if (now >= phaseUntil) {
+                    log("companion_return", "via", "retype", "afterMs", now - returnSince, "title", title(client));
+                    phase = Phase.TYPE_COMPANION;
+                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+                }
+                return true;
             }
             case DELETE -> {
                 if (now < phaseUntil) return true;
@@ -870,9 +890,8 @@ public class CompanionController {
                 } else if (now >= phaseUntil) {
                     log("companion_bulk_menu_skip", "reason", "timeout", "title", title(client));
                     bulkDumpDone = true;
-                    if (isOurGui(client)) EnchantScreens.closeGui(client);
-                    phase = Phase.TYPE_COMPANION;
-                    phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+                    if (companionsGuiOpen(client)) { phase = Phase.COMP_LOOK; phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion"); }
+                    else beginReturn(client, now);
                 }
             }
             case BULK_READ -> {
@@ -880,9 +899,7 @@ public class CompanionController {
                 List<Entry> items = client.currentScreen != null ? containerItems(client) : List.of();
                 log("companion_gui", "which", "bulk-delete", "title", title(client), "items", describe(items));
                 bulkDumpDone = true;
-                if (client.currentScreen != null) EnchantScreens.closeGui(client);
-                phase = Phase.TYPE_COMPANION;
-                phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
+                beginReturn(client, now);
             }
             case DONE -> {
                 if (isOurGui(client)) EnchantScreens.closeGui(client);
@@ -1439,6 +1456,15 @@ public class CompanionController {
         if (before) equippedBefore = eq; else equippedAfter = eq;
         storage = st;
         if (currentZone == null) currentZone = maxZone;
+    }
+
+    /** 0.9.53: Esc on a submenu (fusion, bulk delete) and wait for the companions menu to come back. */
+    private void beginReturn(MinecraftClient client, long now) {
+        if (client.currentScreen != null && !companionsGuiOpen(client)) EnchantScreens.closeGui(client);
+        returnSince = now;
+        lastLookAt = now;
+        phase = Phase.COMP_RETURN;
+        phaseUntil = now + cfg.companionReturnMs;
     }
 
     private void prepareDeletes() {
