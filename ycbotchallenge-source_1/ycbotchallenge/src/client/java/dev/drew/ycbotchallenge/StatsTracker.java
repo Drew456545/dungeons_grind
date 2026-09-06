@@ -558,6 +558,10 @@ public class StatsTracker {
     /** 0.9.41: a server line that says we were sent to the hub/lobby (consumed by the client tick). */
     public volatile String hubMessage = null;
     private final List<Pattern> hubRes = new ArrayList<>();
+    /** 0.9.47: "Your hero has been spawned." and any other server line about a hero (evidence). */
+    public volatile long heroSpawnedAt = 0;
+    private Pattern heroSpawnRe;
+    private Pattern heroChatRe;
     /** 0.9.46: the last server line about a reboot (restart countdown, the reboot kick, the auto-queue promise). */
     public volatile long rebootNoticeAt = 0;
     public volatile String rebootNotice = null;
@@ -662,6 +666,8 @@ public class StatsTracker {
         }
         if (cfg.hubChatPatterns != null) for (String p : cfg.hubChatPatterns) hubRes.add(compileLoose(p));
         if (cfg.rebootChatPatterns != null) for (String p : cfg.rebootChatPatterns) rebootRes.add(compileLoose(p));
+        heroSpawnRe = compileLoose(cfg.heroSpawnPattern);
+        heroChatRe = compileLoose(cfg.heroChatPattern);
         rawNet = new RawChatNet(cfg.chatRawPerMinute);
         if (cfg.giveawayAnnouncePatterns != null) for (String p : cfg.giveawayAnnouncePatterns) giveawayAnnounceRes.add(compileLoose(p));
         if (cfg.giveawayJoinedPatterns != null) for (String p : cfg.giveawayJoinedPatterns) giveawayJoinedRes.add(compileLoose(p));
@@ -2223,6 +2229,13 @@ public class StatsTracker {
                         log("hub_chat", "raw", text);
                         break;
                     }
+                }
+                // 0.9.47: the hero lines (the spawn is the only one seen so far; the rest is the net).
+                if (heroSpawnRe != null && heroSpawnRe.matcher(text).find()) {
+                    heroSpawnedAt = now;
+                    log("hero_spawned", "raw", text);
+                } else if (heroChatRe != null && heroChatRe.matcher(text).find()) {
+                    log("hero_chat", "raw", text);
                 }
                 // 0.9.46: a reboot notice - the hub arrival that follows it is the auto-queue, not a /hub.
                 for (Pattern p : rebootRes) {

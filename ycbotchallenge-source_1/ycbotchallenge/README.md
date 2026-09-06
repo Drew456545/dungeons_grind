@@ -255,6 +255,26 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.47: server menus are a person's, and the /heroes evidence net
+
+Drew opened /heroes at 00:57:33 (2026-09-06, local) and clicked the Archer Queen: "Your
+hero has been spawned." The bot took the menu for a captcha and closed it a second later,
+then closed it again as a stray when he reopened it. The hero is a summoned ally that
+kills mobs for money; its nameplate read ❤86 in the menu and ❤23 in the zone a few
+minutes later, so it lives on a decaying HP pool. Nothing is automated yet: this release
+gathers the numbers.
+
+- **Server menus.** `serverMenuTitles` (Heroes, Crafting) are never a captcha: hands off
+  the keys, one `gui_seen` dump with names and lore per title per session, closed only
+  after `serverMenuCloseMs` (60 s) in case one was pushed at an unattended bot. Any other
+  menu that reaches the captcha path is dumped the same way first.
+- **The hero plate.** `HeroTracker` scans for `heroPlatePattern` every `heroScanEveryTicks`
+  (5 s): `hero_seen` (name, HP, distance, entity type, time since the spawn line),
+  `hero_hp` on every change with the drop per minute, `hero_gone` with the lifetime.
+  `hero_spawned` is the server line; `hero_chat` catches any other server line with
+  "hero" in it (a despawn or a cooldown message, once the server shows one).
+- Y menu: "Hero tracking" shows the live plate. Config v49.
+
 ### 0.9.46: a reboot is its own case
 
 2026-09-06 02:25:20: "THE SERVER IS RESTARTING IN 60 SECONDS / You will be auto-queued and

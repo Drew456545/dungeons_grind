@@ -1210,6 +1210,26 @@ public class YCBotChallengeConfig {
      */
     public int strayGuiCloseMs = 8000;
     /**
+     * 0.9.47: container titles the server owns and a person opens by hand (/heroes,
+     * crafting). Never a captcha, dumped once with lore (gui_seen), closed only after
+     * serverMenuCloseMs (0 = never) in case one was pushed at an unattended bot.
+     */
+    public List<String> serverMenuTitles = List.of("Heroes", "Crafting");
+    public int serverMenuCloseMs = 60_000;
+    /**
+     * 0.9.47: the /heroes evidence net. A hero's nameplate ("Archer Queen \u2764 86") is found
+     * every heroScanEveryTicks within heroScanRadius; hero_seen / hero_hp / hero_gone tell
+     * the decay and the lifetime, hero_spawned is the server line, hero_chat any other
+     * server line with "hero" in it.
+     */
+    public boolean heroTrackEnabled = true;
+    public String heroPlatePattern = "/^(?<name>archer queen|barbarian king|war medic|royal champion|grand warden)\\s*\\u2764\\s*(?<hp>[\\d.,]+\\s*[a-z]{0,4})/";
+    public String heroSpawnPattern = "/your hero has been spawned/";
+    public String heroChatPattern = "/\\bhero(?:es)?\\b/";
+    public int heroScanEveryTicks = 100;
+    public double heroScanRadius = 64.0;
+    public int heroGoneAfterMs = 15_000;
+    /**
      * A sidebar money drop of 99%+ counts as a rebirth (money-collapse) only when the
      * new value is below this; a bigger "collapse" is a suffix read on the wrong scale
      * (T → Q → Qa on this server) and is logged suffix_scale_suspect instead.
@@ -1607,7 +1627,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 48;
+    public static final int CURRENT_CONFIG_VERSION = 49;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1992,6 +2012,10 @@ public class YCBotChallengeConfig {
         if (configVersion < 45) {
             // v45 (0.9.43): enchant prestige, the maxed-tab rescan, the sword-level hook, the
             // Rebirth GUI lore read. Every knob is new and takes its default.
+            changed = true;
+        }
+        if (configVersion < 49) {
+            // v49 (0.9.47): server menus, the hero evidence net. Every knob is new and takes its default.
             changed = true;
         }
         if (configVersion < 48) {
@@ -2407,6 +2431,15 @@ public class YCBotChallengeConfig {
         if (guiRecognizeGraceMs < 0) guiRecognizeGraceMs = 300;
         if (strayGuiCloseMs < 0) strayGuiCloseMs = 0;
         if (strayGuiCloseMs > 0 && strayGuiCloseMs < 1000) strayGuiCloseMs = 1000;
+        if (serverMenuTitles == null) serverMenuTitles = fresh.serverMenuTitles;
+        if (serverMenuCloseMs < 0) serverMenuCloseMs = 0;
+        if (serverMenuCloseMs > 0 && serverMenuCloseMs < 5000) serverMenuCloseMs = 5000;
+        if (heroPlatePattern == null) heroPlatePattern = fresh.heroPlatePattern;
+        if (heroSpawnPattern == null) heroSpawnPattern = fresh.heroSpawnPattern;
+        if (heroChatPattern == null) heroChatPattern = fresh.heroChatPattern;
+        if (heroScanEveryTicks < 20) heroScanEveryTicks = 20;
+        if (heroScanRadius < 8) heroScanRadius = 8;
+        if (heroGoneAfterMs < 1000) heroGoneAfterMs = 1000;
         if (moneyCollapseMaxValue <= 0) moneyCollapseMaxValue = 1e12;
         if (expectedTeleportAfterRebirthMs < 0) expectedTeleportAfterRebirthMs = 8000;
         if (teleportExplainGraceMs < 0) teleportExplainGraceMs = 0;

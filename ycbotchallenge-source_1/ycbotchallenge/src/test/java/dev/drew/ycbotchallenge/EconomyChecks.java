@@ -92,6 +92,7 @@ public final class EconomyChecks {
         n += checks0944();
         n += checks0945();
         n += checks0946();
+        n += checks0947();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1785,7 +1786,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 48", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 48);
+        n += eq("config version 49", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 49);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2870,6 +2871,27 @@ public final class EconomyChecks {
     }
 
     /** 0.9.43: the prestige beacon (Drew's Thor screenshot), the gate, the pick order, the diamond's lore, the chat lines. */
+    /** 0.9.47: server menus and the hero plate. */
+    private static int checks0947() {
+        int n = 0;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        n += eq("Heroes is a server menu", Economy.isServerMenu("Heroes", fresh.serverMenuTitles), true);
+        n += eq("coloured title too", Economy.isServerMenu("\u00a76Crafting", fresh.serverMenuTitles), true);
+        n += eq("enchanter is not", Economy.isServerMenu("\u00a7f\u00a7r\u00a7f\u00a7r", fresh.serverMenuTitles), false);
+        n += eq("null title", Economy.isServerMenu(null, fresh.serverMenuTitles), false);
+        java.util.regex.Pattern re = HeroTracker.compile(fresh.heroPlatePattern);
+        n += eq("plate pattern compiles", re != null, true);
+        String[] a = HeroTracker.parsePlate(re, "Archer Queen \u276423");
+        n += eq("plate name", a != null ? a[0] : null, "Archer Queen");
+        n += eq("plate hp", a != null ? a[1] : null, "23");
+        String[] b = HeroTracker.parsePlate(re, "\u00a7dArcher Queen \u00a7c\u2764\u00a7f86".replaceAll("\u00a7.", ""));
+        n += eq("menu plate hp", b != null ? b[1] : null, "86");
+        n += eq("a mob plate is not a hero", HeroTracker.parsePlate(re, "31 Villager \u276421.38QT") == null, true);
+        n += eq("a bare name is not a hero", HeroTracker.parsePlate(re, "Archer Queen") == null, true);
+        n += eq("hp with suffix parses", Amounts.parse("21.38QT") != null, true);
+        return n;
+    }
+
     /** 0.9.46: the reboot case of the hub stop. */
     private static int checks0946() {
         int n = 0;

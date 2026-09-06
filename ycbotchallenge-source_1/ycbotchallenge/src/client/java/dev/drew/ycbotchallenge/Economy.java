@@ -1069,6 +1069,15 @@ public final class Economy {
         return "wait";
     }
 
+    /** 0.9.47: a container title the server owns (Heroes, Crafting): left open for a person, never a captcha. */
+    public static boolean isServerMenu(String title, java.util.List<String> titles) {
+        if (title == null || titles == null) return false;
+        String t = title.replaceAll("\u00a7.", "").trim();
+        if (t.isEmpty()) return false;
+        for (String want : titles) if (want != null && !want.isBlank() && t.equalsIgnoreCase(want.trim())) return true;
+        return false;
+    }
+
     /** The stand point {@code inset} blocks inside reach (0.9.44: 0.8, so a slid marker stays in the ray). */
     public static double[] bossStandPoint(double[] body, double[] marker, double reach, double[] player, double inset) {
         double ox = marker[0] - body[0], oz = marker[2] - body[2];
