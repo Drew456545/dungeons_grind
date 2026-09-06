@@ -139,8 +139,6 @@ public class CompanionController {
     // 0.9.37: fuse first, then Equip Best.
     private int fuseAllSlot = -1;
     private boolean fusedThisVisit = false;
-        bulkDumpThisVisit = false;
-        deletedThisVisit = 0;
     private boolean fuseDue = false;
     private boolean equipChanged = false;
     private List<CompanionLore.FuseGroup> fuseGroupsBefore = List.of();
@@ -1024,6 +1022,8 @@ public class CompanionController {
         equippedAfter = List.of();
         storage = List.of();
         fusedThisVisit = false;
+        bulkDumpThisVisit = false;
+        deletedThisVisit = 0;
         fuseDue = false;
         equipChanged = false;
         fuseAllSlot = -1;
