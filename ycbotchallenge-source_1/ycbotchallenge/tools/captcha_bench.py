@@ -30,7 +30,7 @@ FIX = os.path.join(HERE, "captcha-fixtures")
 #   YCBOT_VLM_MODEL=Qwen/Qwen3-VL-4B-Instruct-FP8
 URL = os.environ.get("YCBOT_VLM_URL",
                      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions")
-MODEL = os.environ.get("YCBOT_VLM_MODEL", "qwen3.6-flash")
+MODEL = os.environ.get("YCBOT_VLM_MODEL", "qwen3.8-max")
 # Cloud endpoints (0.9.32): the same env the mod reads; never written to a file.
 KEY = os.environ.get("YCBOT_VLM_KEY")
 if not KEY:

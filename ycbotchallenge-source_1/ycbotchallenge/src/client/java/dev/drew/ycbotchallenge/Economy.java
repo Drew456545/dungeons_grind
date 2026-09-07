@@ -1189,6 +1189,20 @@ public final class Economy {
         return afterTicks > 0 && zoneLevel != null && plateLevel == null && platelessTicks >= afterTicks;
     }
 
+    /**
+     * 0.9.58 (Drew): what a held-map rejection leads to. {@code stop} at the answer cap or
+     * with nothing left; {@code reread} - a fresh read of the same map with the rejected
+     * reading in the prompt - whenever a PNG is on hand and the budget mark has not passed
+     * (the budget gates starting the re-read, never finishing it); {@code variant} - the
+     * second-model read or the look-alike - only when there is no time to re-read.
+     */
+    public static String rejectionAction(int answersSent, int maxAnswers, boolean hasPng, long now, long budgetDeadline, boolean variantLeft) {
+        if (answersSent >= Math.max(1, maxAnswers)) return "stop";
+        if (hasPng && (budgetDeadline <= 0 || now < budgetDeadline)) return "reread";
+        if (variantLeft) return "variant";
+        return "stop";
+    }
+
     /** 0.9.47: a container title the server owns (Heroes, Crafting): left open for a person, never a captcha. */
     public static boolean isServerMenu(String title, java.util.List<String> titles) {
         if (title == null || titles == null) return false;

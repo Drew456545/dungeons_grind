@@ -354,14 +354,14 @@ public class YCBotChallengeConfig {
      * 11-13 completion): qwen3.6-flash 5/5, qwen3.8-flash 4/5 (udWn -> uaWn), qwen3.8-max
      * 4/5 (p8b -> p8h); all three read the 08:37 map as ER7. The reader stays 3.6-flash.
      */
-    public String captchaVlmModel = "qwen3.6-flash";
+    public String captchaVlmModel = "qwen3.8-max"; // 0.9.58 (Drew): the 08:12 map read 2VhD on 3.6-flash and 3.8-flash; 3.8-max read 2VnD, the answer
     /**
      * 0.9.42: the second read of a map captcha comes from this model (blank = the same
      * model) - a different model fails on different maps, so a disagreement is a real
      * second guess. Before this the second answer was a case / look-alike variant of the
      * first read (the 08:37 retry "eR7"), so one misread cost both answers.
      */
-    public String captchaVlmModelSecond = "qwen3.8-flash";
+    public String captchaVlmModelSecond = ""; // 0.9.58: one model (Drew); blank = the reader itself at captchaVoteTemperature
     /** Thinking models (qwen3.8-*) spend reasoning tokens on a four-letter read unless told not to; false sends enable_thinking=false. */
     public boolean captchaVlmThinking = false;
     public String captchaPrompt =
@@ -525,7 +525,7 @@ public class YCBotChallengeConfig {
      * letters and digits (17:38: read "pBb", answer "p8b"). First matching character is
      * swapped for its partner; with none, the case flip (captchaCaseAmbiguous).
      */
-    public String captchaLookalikes = "B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
+    public String captchaLookalikes = "hn,ad,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9"; // 0.9.58: h/n (2VhD for 2VnD) and a/d (uaWn for udWn) first - the map font's own confusions
     /** The screenshot fallback is downscaled to this width first (the native 1605 px shot hallucinated a letter). */
     public int captchaScreenMaxPx = 1024;
     /** Hide the HUD (hotbar, boss bar, our overlay) for the screenshot fallback. */
@@ -548,7 +548,10 @@ public class YCBotChallengeConfig {
     /** Appended to captchaMapPrompt after a rejection; {rejected} = the rejected readings. */
     public String captchaMapRetryPrompt =
         "\nIMPORTANT: these readings were already REJECTED as wrong: {rejected}. Look again, "
-        + "check the case of every letter and whether two letters touch, and give a different reading.";
+        + "check the case of every letter and whether two letters touch, and give a different reading. "
+        + "The rejected reading usually differs from the truth by a single character - most often "
+        + "h/n, a/d, or the case of one letter. Re-read every character and give a reading that "
+        + "differs from the rejected ones.";
     /** Keep the model's letter case for map captchas (the server is case-sensitive). */
     public boolean captchaPreserveCase = true;
     /** Letters whose upper and lower glyphs look alike: the second guess flips the first of these (else the first letter). */
@@ -1717,7 +1720,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 55;
+    public static final int CURRENT_CONFIG_VERSION = 56;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2102,6 +2105,14 @@ public class YCBotChallengeConfig {
         if (configVersion < 45) {
             // v45 (0.9.43): enchant prestige, the maxed-tab rescan, the sword-level hook, the
             // Rebirth GUI lore read. Every knob is new and takes its default.
+            changed = true;
+        }
+        if (configVersion < 56) {
+            // v56 (0.9.58): the reader is qwen3.8-max alone (Drew); h/n and a/d lead the look-alikes.
+            if ("qwen3.6-flash".equals(captchaVlmModel)) captchaVlmModel = "qwen3.8-max";
+            if ("qwen3.8-flash".equals(captchaVlmModelSecond)) captchaVlmModelSecond = "";
+            if ("\nIMPORTANT: these readings were already REJECTED as wrong: {rejected}. Look again, check the case of every letter and whether two letters touch, and give a different reading.".equals(captchaMapRetryPrompt)) captchaMapRetryPrompt = fresh.captchaMapRetryPrompt;
+            if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "hn,ad,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
             changed = true;
         }
         if (configVersion < 55) {

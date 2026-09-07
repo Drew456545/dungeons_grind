@@ -101,6 +101,7 @@ public final class EconomyChecks {
         n += checks0955();
         n += checks0956();
         n += checks0957();
+        n += checks0958();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1794,7 +1795,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 55", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 55);
+        n += eq("config version 56", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 56);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2978,6 +2979,44 @@ public final class EconomyChecks {
             System.err.println("FAIL v55 migration: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /** 0.9.58: qwen3.8-max alone reads the map; h/n and a/d lead the look-alikes; spaces are never characters. */
+    private static int checks0958() {
+        int n = 0;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        n += eq("reader is 3.8-max", fresh.captchaVlmModel, "qwen3.8-max");
+        n += eq("no second model", fresh.captchaVlmModelSecond, "");
+        n += eq("2VhD's second guess is 2VnD", ChatClassifier.lookalikeAlt("2VhD", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous), "2VnD");
+        n += eq("uaWn's second guess is udWn", ChatClassifier.lookalikeAlt("uaWn", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous), "udWn");
+        n += eq("pBb's second guess is still p8b", ChatClassifier.lookalikeAlt("pBb", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous), "p8b");
+        n += eq("a space in the array is dropped", ChatClassifier.parseAnswerArray("ANSWER: [\"2\", \" \", \"V\", \"n\", \"D\"]", true), "2VnD");
+        n += eq("a dash is dropped", ChatClassifier.parseAnswerArray("ANSWER: [\"2\",\"V\",\"-\",\"n\",\"D\"]", true), "2VnD");
+        n += eq("a spaced item is joined", ChatClassifier.parseAnswerArray("ANSWER: [\"2 V\",\"nD\"]", true), "2VnD");
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg55", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":55,\"captchaVlmModel\":\"qwen3.6-flash\",\"captchaVlmModelSecond\":\"qwen3.8-flash\"}");
+            YCBotChallengeConfig c55 = YCBotChallengeConfig.load(tmp);
+            n += eq("v56 moves the reader to 3.8-max", c55.captchaVlmModel, "qwen3.8-max");
+            n += eq("v56 drops the second model", c55.captchaVlmModelSecond, "");
+            n += eq("v56 leads with h/n", c55.captchaLookalikes.startsWith("hn,ad,"), true);
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":55,\"captchaVlmModel\":\"qwen3.7-plus\"}");
+            YCBotChallengeConfig c55b = YCBotChallengeConfig.load(tmp);
+            n += eq("v56 keeps a hand-set reader", c55b.captchaVlmModel, "qwen3.7-plus");
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v56 migration: " + ex);
+            n++;
+        }
+        // The rejection verdict (Drew: retry up to the 45 s mark; never cut a started attempt).
+        n += eq("cap reached: stop", Economy.rejectionAction(2, 2, true, 30_000, 45_000, true), "stop");
+        n += eq("inside the budget with a png: re-read", Economy.rejectionAction(1, 2, true, 32_000, 45_000, true), "reread");
+        n += eq("at the mark: variant", Economy.rejectionAction(1, 2, true, 45_000, 45_000, true), "variant");
+        n += eq("past the mark, nothing left: stop", Economy.rejectionAction(1, 2, true, 50_000, 45_000, false), "stop");
+        n += eq("no png, variant left: variant", Economy.rejectionAction(1, 2, false, 10_000, 45_000, true), "variant");
+        n += eq("no budget set: re-read", Economy.rejectionAction(1, 2, true, 10_000, 0, false), "reread");
+        n += eq("retry prompt names h/n", fresh.captchaMapRetryPrompt.contains("h/n"), true);
         return n;
     }
 

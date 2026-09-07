@@ -160,6 +160,8 @@ public class CaptchaSolver {
     private String pendingOut = null;
     /** The server re-uses the same image across tries: remember rejects and feed them back. */
     private final List<String> wrongAnswers = new ArrayList<>();
+    /** 0.9.58: the variants set aside while the re-read runs - typed if the re-read repeats a rejected reading. */
+    private final List<String> fallbackCandidates = new ArrayList<>();
 
     // Reader health (informational since 0.9.34 — a solve is never gated on it)
     private volatile boolean vlmOnline = true;
@@ -306,6 +308,7 @@ public class CaptchaSolver {
         captureWhere = null;
         mapPromptUsed = false;
         wrongAnswers.clear();
+        fallbackCandidates.clear();
         candidates.clear();
         lastPng = null;
         pendingAnswer = null;
@@ -509,14 +512,16 @@ public class CaptchaSolver {
         // millisecond later. And once a guess is out the budget is no hand-over: the server
         // says nothing on a right answer, a wrong one is a kick within 60 s either way, and a
         // paused bot missed the next captcha (08:26) and took the kick (08:27).
-        if (budgetDeadline > 0 && now >= budgetDeadline
+        // 0.9.58 (Drew): once a guess is out the budget is over - it only gated starting the
+        // re-read (Economy.rejectionAction); a re-read in flight, a queued guess and a typing
+        // run all finish. The answer cap and the verify deadline end the solve.
+        if (budgetDeadline > 0 && now >= budgetDeadline && answersSent == 0
             && phase != Phase.IDLE && phase != Phase.TYPING && phase != Phase.TYPING_RUN && phase != Phase.AWAITING_RESULT) {
             cancelInFlight();
             log("captcha_budget_spent", "budgetMs", cfg.captchaBudgetMs, "phase", phase.name(),
                 "hedges", hedgesLaunched, "reads", ballot.reads(), "failures", hedgeFailures.get(),
                 "answersSent", answersSent);
-            if (answersSent > 0) unverified(client, "budget", answersSent + " guess(es) out, budget spent - nothing more typed");
-            else fail(client, "budget", "no answer within " + cfg.captchaBudgetMs + "ms — handing over");
+            fail(client, "budget", "no answer within " + cfg.captchaBudgetMs + "ms — handing over");
             return;
         }
         switch (phase) {
@@ -595,6 +600,13 @@ public class CaptchaSolver {
                 if (got != null) {
                     candidates.clear();
                     candidates.addAll(got); // ranked, de-duped, best first
+                    // 0.9.58: a re-read that only repeats rejected readings falls back to the
+                    // variants set aside at the rejection, so the second guess still differs.
+                    if (attempt > 1 && !fallbackCandidates.isEmpty()
+                        && candidates.stream().noneMatch(c -> !wrongAnswers.contains(c))) {
+                        log("captcha_reread_repeat", "got", got, "wrong", wrongAnswers, "fallback", fallbackCandidates);
+                        for (String c : fallbackCandidates) if (!candidates.contains(c)) candidates.add(c);
+                    }
                     log("captcha_candidates", "candidates", candidates, "raw", vlmRaw.getAndSet(null),
                         "second", vlmSecond.getAndSet(null), "secondScale", secondPng != null ? cfg.captchaSecondScale : null,
                         "model", cfg.captchaVlmModel, "secondModel", secondPng != null ? secondModel() : null,
@@ -689,24 +701,30 @@ public class CaptchaSolver {
                     }
                     candidates.remove(lastSentAnswer);
                     boolean altLeft = candidates.stream().anyMatch(c -> !wrongAnswers.contains(c));
-                    if (answersSent >= cfg.captchaMaxAnswers) {
-                        // Hard cap: nothing more is typed. 0.9.42: but the bot runs on - a wrong
-                        // answer is a kick to the hub within 60 s whatever we do, and a paused
-                        // bot misses the NEXT captcha (08:38 pause, 08:52 kick).
-                        unverified(client, "answers-exhausted", answersSent + " guess(es) unconfirmed - nothing more typed");
-                    } else if (mapPromptUsed && altLeft) {
-                        // The map read is unchanged; the case-flipped second guess goes next.
-                        submitNextCandidate(client, now);
-                    } else if (lastPng != null) {
-                        // Re-prompt the model on the same image with the rejection as
-                        // feedback. Prefill is cached, so this is fast.
-                        attempt++;
-                        log("captcha_reprompt", "rejected", wrongAnswers, "attempt", attempt);
-                        startSolve(lastPng);
-                    } else if (altLeft) {
-                        submitNextCandidate(client, now);
-                    } else {
-                        unverified(client, "server", "rejected with nothing left to try");
+                    // 0.9.58 (Drew): the second attempt is a fresh read of the same map with the
+                    // rejected reading in the prompt, started any time before the budget mark
+                    // (08:12: both flash reads had the h for an n, the variant flipped the V).
+                    // The variants wait as the fallback for a re-read that repeats itself.
+                    // 0.9.42 still holds at the cap: the bot runs on, a wrong answer is a kick
+                    // within 60 s whatever we do, and a paused bot misses the next captcha.
+                    String action = Economy.rejectionAction(answersSent, cfg.captchaMaxAnswers, lastPng != null, now, budgetDeadline, altLeft);
+                    switch (action) {
+                        case "reread" -> {
+                            fallbackCandidates.clear();
+                            for (String c : candidates) if (!wrongAnswers.contains(c)) fallbackCandidates.add(c);
+                            attempt++;
+                            log("captcha_reprompt", "rejected", wrongAnswers, "attempt", attempt,
+                                "fallback", fallbackCandidates, "atMs", elapsedMs(now), "budgetLeftMs", budgetDeadline - now);
+                            startSolve(lastPng);
+                        }
+                        case "variant" -> submitNextCandidate(client, now);
+                        default -> {
+                            if (answersSent >= cfg.captchaMaxAnswers) {
+                                unverified(client, "answers-exhausted", answersSent + " guess(es) unconfirmed - nothing more typed");
+                            } else {
+                                unverified(client, "server", "rejected with nothing left to try");
+                            }
+                        }
                     }
                 } else if ("solved".equals(fb) || now >= phaseDeadline) {
                     stopVoting();

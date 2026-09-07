@@ -282,7 +282,8 @@ public final class ChatClassifier {
             String s = it.group(1) != null ? it.group(1) : it.group(2) != null ? it.group(2) : it.group(3);
             if (s == null) continue;
             for (char c : s.toCharArray()) {
-                if (!Character.isWhitespace(c)) sb.append(c);
+                // 0.9.58: the alphabet is letters and digits; a space or a dash the model adds is never a character
+                if (Character.isLetterOrDigit(c)) sb.append(c);
             }
         }
         if (sb.length() == 0) return null;

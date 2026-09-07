@@ -34,5 +34,11 @@
     "answer": "3PS",
     "kind": "map",
     "source": "bot capture 2026-09-05 03:41 (native 128 px map render, the image the model read); bot read 3PS at x1 and x3, typed 3PS, server accepted (map gone 12 s later)"
+  },
+  {
+    "file": "2VnD-map128.png",
+    "answer": "2VnD",
+    "kind": "map",
+    "source": "bot capture 2026-09-07 08:12 UTC (native 128 px map render); qwen3.6-flash read 2VhD, qwen3.8-flash read 2WhD, both rejected (map still held, kick); Drew: the answer was 2VnD (h/n)"
   }
 ]
