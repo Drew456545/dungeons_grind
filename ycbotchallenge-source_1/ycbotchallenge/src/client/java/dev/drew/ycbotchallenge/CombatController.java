@@ -1597,8 +1597,9 @@ public class CombatController {
     /** 0.9.55: a plate-only type (the Slime Bunny enchant's slimes) with no LVL plate - not a stage mob, not a ghost. */
     private boolean unplatedListedType(MinecraftClient client, LivingEntity le) {
         if (cfg.plateOnlyTypes == null || cfg.plateOnlyTypes.isEmpty()) return false;
-        if (!Economy.typeListed(EntityType.getId(le.getType()).toString(), cfg.plateOnlyTypes)) return false;
-        return Economy.unplatedListedType(EntityType.getId(le.getType()).toString(), plateLevel(client, le), cfg.plateOnlyTypes);
+        String typeId = net.minecraft.registry.Registries.ENTITY_TYPE.getId(le.getType()).toString();
+        if (!Economy.typeListed(typeId, cfg.plateOnlyTypes)) return false;
+        return Economy.unplatedListedType(typeId, plateLevel(client, le), cfg.plateOnlyTypes);
     }
 
     /** The stage printed on the mob's plate ("LVL7 Donkey" → 7), or null. */
