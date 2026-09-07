@@ -40,5 +40,23 @@
     "answer": "2VnD",
     "kind": "map",
     "source": "bot capture 2026-09-07 08:12 UTC (native 128 px map render); qwen3.6-flash read 2VhD, qwen3.8-flash read 2WhD, both rejected (map still held, kick); Drew: the answer was 2VnD (h/n)"
+  },
+  {
+    "file": "SyQQ-map128.png",
+    "answer": "SyQQ",
+    "kind": "map",
+    "source": "bot capture 2026-09-05T05:27:40.537Z (native 128 px map render, the image the model read); typed SyQQ, server accepted (auto-imported)"
+  },
+  {
+    "file": "uf9E-map128.png",
+    "answer": "uf9E",
+    "kind": "map",
+    "source": "bot capture 2026-09-07T14:58:49.212Z (native 128 px map render, the image the model read); typed uf9E, server accepted (auto-imported)"
+  },
+  {
+    "file": "ERL7-map128.png",
+    "answer": "ERL7",
+    "kind": "map",
+    "source": "hard: bot capture 2026-09-05 08:37 UTC (native 128 px map render); the green L overlaps the pink R and 3.6-flash, 3.8-flash and 3.8-max all read ER7 (10/10 in the 2026-09-07 duo bench); ER7 and eR7 rejected; Drew: the answer was ERL7. Kept out of --real (the single-read gate) on purpose."
   }
 ]

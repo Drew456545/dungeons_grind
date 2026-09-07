@@ -354,14 +354,14 @@ public class YCBotChallengeConfig {
      * 11-13 completion): qwen3.6-flash 5/5, qwen3.8-flash 4/5 (udWn -> uaWn), qwen3.8-max
      * 4/5 (p8b -> p8h); all three read the 08:37 map as ER7. The reader stays 3.6-flash.
      */
-    public String captchaVlmModel = "qwen3.8-max"; // 0.9.58 (Drew): the 08:12 map read 2VhD on 3.6-flash and 3.8-flash; 3.8-max read 2VnD, the answer
+    public String captchaVlmModel = "qwen3.6-flash"; // 0.9.59 (Drew, duo bench 2026-09-07): flash 35/40, max 30/40, either 39/40 - flash reads first, max is the second guess
     /**
      * 0.9.42: the second read of a map captcha comes from this model (blank = the same
      * model) - a different model fails on different maps, so a disagreement is a real
      * second guess. Before this the second answer was a case / look-alike variant of the
      * first read (the 08:37 retry "eR7"), so one misread cost both answers.
      */
-    public String captchaVlmModelSecond = ""; // 0.9.58: one model (Drew); blank = the reader itself at captchaVoteTemperature
+    public String captchaVlmModelSecond = "qwen3.8-max"; // 0.9.59: fired WITH read A (no stagger); its reading is the second guess. Blank = the reader itself at captchaVoteTemperature
     /** Thinking models (qwen3.8-*) spend reasoning tokens on a four-letter read unless told not to; false sends enable_thinking=false. */
     public boolean captchaVlmThinking = false;
     public String captchaPrompt =
@@ -552,6 +552,13 @@ public class YCBotChallengeConfig {
         + "The rejected reading usually differs from the truth by a single character - most often "
         + "h/n, a/d, or the case of one letter. Re-read every character and give a reading that "
         + "differs from the rejected ones.";
+    /**
+     * 0.9.59: completion budget of the re-read (the map re-prompt above). 64 tokens is the
+     * first read's; with the rejected readings in the prompt the model narrates character by
+     * character first, and at 64 tokens it never reaches the ANSWER line (3.8-max 0/9 parseable
+     * in the 2026-09-07 bench). 256 leaves room for the narration and the line after it.
+     */
+    public int captchaRetryMaxTokens = 256;
     /** Keep the model's letter case for map captchas (the server is case-sensitive). */
     public boolean captchaPreserveCase = true;
     /** Letters whose upper and lower glyphs look alike: the second guess flips the first of these (else the first letter). */
@@ -1720,7 +1727,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 56;
+    public static final int CURRENT_CONFIG_VERSION = 57;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2115,6 +2122,15 @@ public class YCBotChallengeConfig {
             if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "ad,hn,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
             changed = true;
         }
+        if (configVersion < 57) {
+            // v57 (0.9.59): 3.6-flash reads first, 3.8-max is the second guess (Drew; the duo bench).
+            // Only the 0.9.58 pair (3.8-max alone) moves; a hand-set reader or second model stays.
+            if ("qwen3.8-max".equals(captchaVlmModel) && (captchaVlmModelSecond == null || captchaVlmModelSecond.isBlank())) {
+                captchaVlmModel = "qwen3.6-flash";
+                captchaVlmModelSecond = "qwen3.8-max";
+            }
+            changed = true;
+        }
         if (configVersion < 55) {
             // v55 (0.9.57): the captcha budget is 45 s of the server's 60 s window (was 25 s,
             // which killed the second guess the moment the held map called the first one wrong).
@@ -2255,6 +2271,8 @@ public class YCBotChallengeConfig {
         if (captchaHedgeMs > 15_000) captchaHedgeMs = 15_000;
         if (captchaHedgeMax < 1) captchaHedgeMax = 1;
         if (captchaHedgeMax > 5) captchaHedgeMax = 5;
+        if (captchaRetryMaxTokens < 64) captchaRetryMaxTokens = 64;
+        if (captchaRetryMaxTokens > 2048) captchaRetryMaxTokens = 2048;
         if (captchaMaxAttempts < 1) captchaMaxAttempts = fresh.captchaMaxAttempts;
         if (captchaMaxAnswers < 1) captchaMaxAnswers = fresh.captchaMaxAnswers;
         if (captchaAnswerDelayMaxMs < captchaAnswerDelayMinMs) captchaAnswerDelayMaxMs = captchaAnswerDelayMinMs;

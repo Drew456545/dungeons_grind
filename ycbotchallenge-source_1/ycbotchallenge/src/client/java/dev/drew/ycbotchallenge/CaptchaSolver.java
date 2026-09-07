@@ -55,6 +55,18 @@ import net.minecraft.text.Text;
  * is bounded by captchaBudgetMs; past it the bot hands over rather than typing
  * an answer that would land after the server's window shuts.
  *
+ * 0.9.59 (Drew, from the 2026-09-07 duo bench): read A is captchaVlmModel
+ * (qwen3.6-flash) and read B is captchaVlmModelSecond (qwen3.8-max), BOTH fired
+ * the moment the map is captured - no stagger, the second model is a real second
+ * opinion and there is 45 s of budget. The reader's reading is typed first on a
+ * 1:1 split (the ballot ranks ties by launch order); a rejection of it types the
+ * other model's reading at once (captcha_second_read) rather than re-reading -
+ * the two models miss different maps (flash 35/40, max 30/40, either 39/40).
+ * The re-read with the rejected readings in the prompt is kept for the case
+ * where both models agreed and were wrong, and it runs on the reader with
+ * captchaRetryMaxTokens: 3.8-max narrates past a 64-token budget and never
+ * reaches the ANSWER line (0/9 parseable), flash re-reads 7/12.
+ *
  * All Minecraft state is touched on the client tick thread; only the HTTP
  * round-trips and PNG encoding happen off-thread.
  */
@@ -609,7 +621,7 @@ public class CaptchaSolver {
                     }
                     log("captcha_candidates", "candidates", candidates, "raw", vlmRaw.getAndSet(null),
                         "second", vlmSecond.getAndSet(null), "secondScale", secondPng != null ? cfg.captchaSecondScale : null,
-                        "model", cfg.captchaVlmModel, "secondModel", secondPng != null ? secondModel() : null,
+                        "model", cfg.captchaVlmModel, "secondModel", secondPng != null || hasSecondModel() ? secondModel() : null,
                         "prompt", mapPromptUsed ? "map" : "sonar",
                         "preserveCase", mapPromptUsed && cfg.captchaPreserveCase, "attempt", attempt);
                     if ("map".equals(captureMode) && captureMapId >= 0) {
@@ -701,14 +713,23 @@ public class CaptchaSolver {
                     }
                     candidates.remove(lastSentAnswer);
                     boolean altLeft = candidates.stream().anyMatch(c -> !wrongAnswers.contains(c));
+                    // 0.9.59: a reading the other model produced (not a look-alike variant) is the
+                    // second guess, typed at once - no re-read while a real second opinion waits.
+                    boolean readingLeft = ballotActive && !ballot.ranked(wrongAnswers).isEmpty();
                     // 0.9.58 (Drew): the second attempt is a fresh read of the same map with the
                     // rejected reading in the prompt, started any time before the budget mark
                     // (08:12: both flash reads had the h for an n, the variant flipped the V).
                     // The variants wait as the fallback for a re-read that repeats itself.
                     // 0.9.42 still holds at the cap: the bot runs on, a wrong answer is a kick
                     // within 60 s whatever we do, and a paused bot misses the next captcha.
-                    String action = Economy.rejectionAction(answersSent, cfg.captchaMaxAnswers, lastPng != null, now, budgetDeadline, altLeft);
+                    String action = Economy.rejectionAction(answersSent, cfg.captchaMaxAnswers, lastPng != null, now, budgetDeadline, altLeft, readingLeft);
                     switch (action) {
+                        case "second-read" -> {
+                            String next = ballot.leader(wrongAnswers);
+                            log("captcha_second_read", "answer", next, "model", ballot.modelOf(next), "rejected", wrongAnswers,
+                                "tallies", ballot.tallies(), "atMs", elapsedMs(now), "budgetLeftMs", budgetDeadline - now);
+                            submitNextCandidate(client, now);
+                        }
                         case "reread" -> {
                             fallbackCandidates.clear();
                             for (String c : candidates) if (!wrongAnswers.contains(c)) fallbackCandidates.add(c);
@@ -1039,6 +1060,9 @@ public class CaptchaSolver {
         long now = System.currentTimeMillis();
         phaseDeadline = now + cfg.captchaTimeoutMs + 2000;
         fireHedge(now);
+        // 0.9.59: a distinct second model is fired with read A, not captchaHedgeMs later -
+        // it is the second guess, and both replies land inside the reading pause anyway.
+        if (hasSecondModel()) fireHedge(now);
     }
 
     /** One hedged read, async. Cycles the render list; the first read is greedy. */
@@ -1087,7 +1111,7 @@ public class CaptchaSolver {
                     voteError.set("no answer on " + r.name() + ": " + truncate(content, 120));
                     return;
                 }
-                ballot.cast(reading, r.name(), temp);
+                ballot.cast(reading, r.name(), temp, idx, model);
                 lastReadMs.set(dt);
             } finally {
                 // Counted only AFTER the vote is cast, and only for the live captcha: the
@@ -1195,6 +1219,12 @@ public class CaptchaSolver {
         return m == null || m.isBlank() ? cfg.captchaVlmModel : m;
     }
 
+    /** 0.9.59: a second model that is not the reader - read B goes out with read A and is the second guess. */
+    private boolean hasSecondModel() {
+        String m = cfg.captchaVlmModelSecond;
+        return m != null && !m.isBlank() && !m.equals(cfg.captchaVlmModel);
+    }
+
     /**
      * 0.9.42: the two guesses a map captcha gets. Two reads that disagree are the two
      * guesses; two that agree keep the look-alike / case variant as the fallback (the
@@ -1262,7 +1292,8 @@ public class CaptchaSolver {
         final String promptText = prompt;
         // deterministic first try; a little heat on retries so the same image
         // doesn't produce the same rejected guess again
-        HttpRequest req = buildRequest(png, promptText, attempt <= 1 ? 0.0 : 0.5, mapPrompt ? 64 : 256);
+        // 0.9.59: the re-read gets room to narrate before its ANSWER line (captchaRetryMaxTokens).
+        HttpRequest req = buildRequest(png, promptText, attempt <= 1 ? 0.0 : 0.5, mapPrompt ? (attempt <= 1 ? 64 : cfg.captchaRetryMaxTokens) : 256);
         final byte[] second = mapPrompt && attempt <= 1 ? secondPng : null;
         http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((resp, err) -> {
             if (err != null) {

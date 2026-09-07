@@ -255,6 +255,33 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.59: two models at once - flash first, max second
+
+Drew: test 3.6-flash as the reader with 3.8-max as the second guess, both requests fired the
+moment the map is captured, before shipping. `tools/captcha_bench.py --duo` does exactly that on
+the certified maps (nine now: SyQQ and uf9E imported from accepted solves, ERL7 added by hand
+as a "hard:" fixture the single-read gate skips). Forty scored reads: 3.6-flash alone 35/40 -
+its only miss is the h/n of `2VnD`, read `2VhD` about two reads in three; 3.8-max alone
+30/40 - it reads `p8b` as `p8h` and `SyQQ` as `SQQ` every single time; truth in one of the
+two readings 39/40 (the miss was one narrated flash reply with no ANSWER line). Both models
+answer in ~3 s at the median, under 11 s at worst. The two fail on different maps, which is
+what a second guess needs, so: `captchaVlmModel` is `qwen3.6-flash`, `captchaVlmModelSecond`
+is `qwen3.8-max`, and a second model that differs from the reader is fired WITH read A
+(`captcha_hedge n=1` and `n=2` at the same `atMs`), not `captchaHedgeMs` later. The ballot
+ranks a 1:1 split by launch order, so flash's reading is typed first whichever reply lands
+first; on a held-map rejection the other model's reading goes out at once
+(`captcha_second_read answer model tallies`, `Economy.rejectionAction` -> `second-read`)
+instead of a re-read. Config v57 (the 0.9.58 pair, 3.8-max alone, moves; hand-set values stay).
+
+**The re-read is not for 3.8-max.** With the rejected readings in the prompt it narrates
+character by character and, at the 64-token budget, never reaches the ANSWER line (0/9
+parseable; the mod's parser needs the array too, so the 0.9.58 held-map re-read was returning
+nothing). Even at 512 tokens it stays blind to the b of `p8b` and the y of `SyQQ`. The re-read
+stays for the one case a second reading cannot cover - both models agreed and were wrong
+(`ERL7`: a green L drawn over the pink R, every model reads `ER7`) - and it runs on the
+reader with `captchaRetryMaxTokens` (256) so a narrated reply still ends in the line; flash
+re-read the known-wrong readings 7/12 in the bench.
+
 ### 0.9.58: qwen3.8-max reads the map
 
 The 08:12 map of 0.9.57's story was not accepted after all: the answer was `2VnD` (Drew), and

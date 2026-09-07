@@ -10,6 +10,7 @@ Run this before changing captchaMapPrompt / captchaMapScale / captchaMapSmooth:
     python tools/captcha_bench.py                # full matrix, 8 samples per cell
     python tools/captcha_bench.py --samples 16   # tighter
     python tools/captcha_bench.py --prompt shipped --render x4bil
+    python tools/captcha_bench.py --duo --samples 3 --force-reread   # 0.9.59 test: 3.6-flash first, 3.8-max second, re-read
 
 --single is what the mod actually does since 0.9.32: one greedy read of the native
 128 px map. The full matrix and --vote are comparison modes kept for tuning, not a
@@ -58,6 +59,13 @@ PROMPTS = {
                     "Reply with exactly one line:\nANSWER: <the characters as a JSON array of single characters>"),
 }
 
+# captchaMapRetryPrompt as shipped in 0.9.58; {rejected} = the rejected readings, comma-separated
+RETRY_SUFFIX = ("\nIMPORTANT: these readings were already REJECTED as wrong: {rejected}. Look again, "
+                "check the case of every letter and whether two letters touch, and give a different reading. "
+                "The rejected reading usually differs from the truth by a single character - most often "
+                "h/n, a/d, or the case of one letter. Re-read every character and give a reading that "
+                "differs from the rejected ones.")
+
 # name -> (scale, resample); the mod renders the 128 px map at captchaMapScale, bilinear when smooth and scale > 2
 RENDERS = {
     "x1": (1, "nearest"), "x2near": (2, "nearest"), "x3bil": (3, "bilinear"), "x3near": (3, "nearest"),
@@ -96,9 +104,9 @@ def render(img, name):
     b = io.BytesIO(); im.save(b, "PNG"); return b.getvalue()
 
 
-def ask(prompt, png, temperature, n, timeout=120):
+def ask(prompt, png, temperature, n, timeout=120, model=None, max_tokens=64):
     b64 = base64.b64encode(png).decode()
-    body = {"model": MODEL, "temperature": temperature, "max_tokens": 64, "n": n,
+    body = {"model": model or MODEL, "temperature": temperature, "max_tokens": max_tokens, "n": n,
             # DashScope/QwenCloud thinking models: no reasoning tokens for a four-letter read.
             "enable_thinking": False,
             "messages": [{"role": "user", "content": [
@@ -124,7 +132,18 @@ def main():
                     help="one greedy read of the x4bil render per fixture (the 'is one guess enough' test), repeated --samples times")
     ap.add_argument("--vote", action="store_true",
                     help="replay the mod's ballot (VOTE_RENDERS at t0 then t0.6) per fixture and print the leader")
+    ap.add_argument("--duo", action="store_true",
+                    help="two models fired at once on the native map: --first answers first, --second answers second, "
+                         "then --second is re-prompted with the rejected readings (the 0.9.58 retry suffix) when both missed")
+    ap.add_argument("--first", default="qwen3.6-flash", help="--duo: the model whose reading is typed first")
+    ap.add_argument("--second", default="qwen3.8-max", help="--duo: the second guess and the re-read")
+    ap.add_argument("--force-reread", action="store_true",
+                    help="--duo: also re-read whenever either model was wrong (the mod only re-reads when both were)")
+    ap.add_argument("--extra", action="append", default=[],
+                    help="--duo: extra map png(s) with unknown answer (path[=answer]); readings printed, not scored")
     args = ap.parse_args()
+    if args.duo:
+        sys.exit(duo(args))
     if args.single:
         sys.exit(single(args))
 
@@ -203,6 +222,102 @@ def single(args):
         print("%s %-5s %d/%d right  reads=%s  %.1fs avg" % (flag, fx["answer"], ok, len(reads), reads, sum(secs) / len(secs)))
     print("%d/%d single reads right" % (right, total))
     return 0 if right == total else 1
+
+
+def duo(args):
+    """Fire --first and --second on the native 128 px map at the same time (temperature 0, the
+    shipped prompt). Score in the order the mod would type: the first model's reading, then the
+    second's if it differs, then - only when both missed - the second model re-prompted with the
+    rejected readings (RETRY_SUFFIX). --samples repeats every fixture. Exit 0 iff every fixture is
+    solved within the three guesses on every repeat."""
+    from PIL import Image
+    from concurrent.futures import ThreadPoolExecutor
+    fixtures = [f for f in json.load(open(os.path.join(FIX, "fixtures.json"))) if f["kind"] == "map"]
+    if args.real:
+        fixtures = [f for f in fixtures if f.get("source", "").startswith("bot capture")]
+    for x in args.extra:
+        path, _, ans = x.partition("=")
+        fixtures.append({"file": os.path.abspath(path), "answer": ans or None, "kind": "map", "source": "extra"})
+    prompt = PROMPTS["shipped"]
+    rn = (args.render or ["x1"])[0]
+    print("%s first, %s second, %s re-read; %s render at t0; %d fixtures x %d repeats; %s" % (
+        args.first, args.second, args.second, rn, len(fixtures), args.samples, URL))
+    print()
+
+    def read(model, png, prompt_text):
+        try:
+            outs, dt = ask(prompt_text, png, 0.0, 1, model=model)
+            return parse_answer(outs[0]), dt, None
+        except Exception as e:  # noqa
+            return None, 0.0, "%s: %s" % (type(e).__name__, str(e)[:80])
+
+    tally = collections.Counter()  # first / second / reread / miss / unknown
+    lat = collections.defaultdict(list)
+    matrix = []
+    for fx in fixtures:
+        path = fx["file"] if os.path.isabs(fx["file"]) else os.path.join(FIX, fx["file"])
+        img = Image.open(path).convert("RGB")
+        png = render(img, rn)
+        truth = fx.get("answer")
+        for rep in range(args.samples):
+            with ThreadPoolExecutor(2) as ex:
+                fa = ex.submit(read, args.first, png, prompt)
+                fb = ex.submit(read, args.second, png, prompt)
+                a, dta, ea = fa.result()
+                b, dtb, eb = fb.result()
+            lat[args.first].append(dta)
+            lat[args.second].append(dtb)
+            guesses = [g for g in (a, b) if g]
+            if b and b == a:
+                guesses = [a]
+            c, dtc = None, 0.0
+            if truth is None:
+                outcome = "?"
+                tally["unknown"] += 1
+            elif a == truth:
+                outcome = "first"
+            elif b == truth:
+                outcome = "second"
+            else:
+                rejected = ", ".join(dict.fromkeys(g for g in guesses))
+                c, dtc, ec = read(args.second, png, prompt + RETRY_SUFFIX.replace("{rejected}", rejected or "(none)"))
+                lat[args.second + " re-read"].append(dtc)
+                outcome = "reread" if c == truth else "miss"
+                if ec:
+                    eb = (eb or "") + " reread " + ec
+            forced = ""
+            if args.force_reread and truth is not None and outcome in ("first", "second") and (a != truth or b != truth):
+                wrong = ", ".join(dict.fromkeys(g for g in (a, b) if g and g != truth))
+                fc, fdt, _ = read(args.second, png, prompt + RETRY_SUFFIX.replace("{rejected}", wrong))
+                lat[args.second + " re-read"].append(fdt)
+                tally["forced-ok" if fc == truth else "forced-bad"] += 1
+                forced = "  forced re-read(%s)=%-6s %.1fs %s" % (wrong, fc, fdt, "ok" if fc == truth else "WRONG")
+            if truth is not None:
+                tally[outcome] += 1
+            flag = {"first": "OK1", "second": "OK2", "reread": "OK3", "miss": "BAD", "?": "?? "}[outcome]
+            errs = " ".join(e for e in (ea, eb) if e)
+            print("%s %-5s rep%d  %s=%-6s %.1fs  %s=%-6s %.1fs%s%s" % (
+                flag, str(truth), rep + 1, args.first, a, dta, args.second, b, dtb,
+                ("  re-read=%-6s %.1fs" % (c, dtc)) if outcome in ("reread", "miss") else "",
+                ("  ERR " + errs) if errs else "") + forced)
+            matrix.append((fx["file"], truth, a, b, c, outcome))
+    n = sum(tally[k] for k in ("first", "second", "reread", "miss"))
+    print()
+    print("== outcome over %d scored reads: first %d, second %d, re-read %d, miss %d" % (
+        n, tally["first"], tally["second"], tally["reread"], tally["miss"]))
+    if n:
+        print("   %s alone %d/%d; either of the two %d/%d; with the re-read %d/%d" % (
+            args.first, tally["first"], n, tally["first"] + tally["second"], n,
+            tally["first"] + tally["second"] + tally["reread"], n))
+    if tally["forced-ok"] or tally["forced-bad"]:
+        print("   forced re-reads (one model wrong, the other right): %d recovered, %d still wrong" % (tally["forced-ok"], tally["forced-bad"]))
+    print("== per model over the scored fixtures (right / reads):")
+    for model in (args.first, args.second):
+        col = 2 if model == args.first else 3
+        rows = [m for m in matrix if m[1] is not None]
+        print("   %-14s %d/%d" % (model, sum(1 for m in rows if m[col] == m[1]), len(rows)))
+    print("== latency (s): " + "; ".join("%s median %.1f max %.1f" % (k, sorted(v)[len(v) // 2], max(v)) for k, v in lat.items() if v))
+    return 0 if n and tally["miss"] == 0 else 1
 
 
 def vote(args):

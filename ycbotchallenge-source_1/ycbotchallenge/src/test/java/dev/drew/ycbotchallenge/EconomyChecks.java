@@ -102,6 +102,7 @@ public final class EconomyChecks {
         n += checks0956();
         n += checks0957();
         n += checks0958();
+        n += checks0959();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -2986,8 +2987,7 @@ public final class EconomyChecks {
     private static int checks0958() {
         int n = 0;
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
-        n += eq("reader is 3.8-max", fresh.captchaVlmModel, "qwen3.8-max");
-        n += eq("no second model", fresh.captchaVlmModelSecond, "");
+        // (0.9.59 moved the reader to 3.6-flash with 3.8-max second; see checks0959.)
         n += eq("2VhD's second guess is 2VnD", ChatClassifier.lookalikeAlt("2VhD", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous), "2VnD");
         n += eq("uaWn's second guess is udWn", ChatClassifier.lookalikeAlt("uaWn", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous), "udWn");
         n += eq("pBb's second guess is still p8b", ChatClassifier.lookalikeAlt("pBb", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous), "p8b");
@@ -2998,8 +2998,8 @@ public final class EconomyChecks {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg55", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":55,\"captchaVlmModel\":\"qwen3.6-flash\",\"captchaVlmModelSecond\":\"qwen3.8-flash\"}");
             YCBotChallengeConfig c55 = YCBotChallengeConfig.load(tmp);
-            n += eq("v56 moves the reader to 3.8-max", c55.captchaVlmModel, "qwen3.8-max");
-            n += eq("v56 drops the second model", c55.captchaVlmModelSecond, "");
+            n += eq("v56 then v57: the reader is 3.6-flash", c55.captchaVlmModel, "qwen3.6-flash");
+            n += eq("v56 then v57: 3.8-max is the second model", c55.captchaVlmModelSecond, "qwen3.8-max");
             n += eq("v56 leads with h/n", c55.captchaLookalikes.startsWith("ad,hn,"), true);
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":55,\"captchaVlmModel\":\"qwen3.7-plus\"}");
             YCBotChallengeConfig c55b = YCBotChallengeConfig.load(tmp);
@@ -3017,6 +3017,63 @@ public final class EconomyChecks {
         n += eq("no png, variant left: variant", Economy.rejectionAction(1, 2, false, 10_000, 45_000, true), "variant");
         n += eq("no budget set: re-read", Economy.rejectionAction(1, 2, true, 10_000, 0, false), "reread");
         n += eq("retry prompt names h/n", fresh.captchaMapRetryPrompt.contains("h/n"), true);
+        return n;
+    }
+
+    /** 0.9.59: flash first, max second, both fired at once; ties by launch order; a second reading beats a re-read. */
+    private static int checks0959() {
+        int n = 0;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        n += eq("reader is 3.6-flash", fresh.captchaVlmModel, "qwen3.6-flash");
+        n += eq("second model is 3.8-max", fresh.captchaVlmModelSecond, "qwen3.8-max");
+        n += eq("re-read budget is 256 tokens", fresh.captchaRetryMaxTokens, 256);
+        n += eq("two guesses still", fresh.captchaMaxAnswers, 2);
+        // The 08:12 map: max's reply lands first, flash's reading is still typed first (order 0).
+        CaptchaBallot b = new CaptchaBallot();
+        b.cast("2VnD", "x1", 0.0, 1, "qwen3.8-max");
+        b.cast("2VhD", "x1", 0.0, 0, "qwen3.6-flash");
+        n += eq("reader's reading leads a 1:1 split whichever lands first", b.leader(List.of()), "2VhD");
+        n += eq("the other model's reading is the second guess", b.ranked(List.of("2VhD")), List.of("2VnD"));
+        n += eq("second guess's model is named", b.modelOf("2VnD"), "qwen3.8-max");
+        CaptchaBallot c = new CaptchaBallot();
+        c.cast("p8h", "x1", 0.0, 0, "a"); c.cast("p8b", "x1", 0.0, 1, "b"); c.cast("p8b", "x1", 0.0, 2, "a");
+        n += eq("votes still beat order", c.leader(List.of()), "p8b");
+        CaptchaBallot agree = new CaptchaBallot();
+        agree.cast("KrA", "x1", 0.0, 0, "qwen3.6-flash");
+        agree.cast("KrA", "x1", 0.0, 1, "qwen3.8-max");
+        n += eq("agreement is one reading", agree.distinct(), 1);
+        n += eq("agreement leaves no second reading", agree.ranked(List.of("KrA")).isEmpty(), true);
+        // The 3-arg cast keeps arrival order as the tie-break (0.9.26 checks above).
+        CaptchaBallot old = new CaptchaBallot();
+        old.cast("Kra", "x1", 0.0);
+        old.cast("KrA", "x1", 0.0);
+        n += eq("arrival order still breaks ties without a launch order", old.leader(List.of()), "Kra");
+        // The verdict: a second reading is typed before any re-read; the cap and the old rules hold.
+        n += eq("second reading on hand: typed", Economy.rejectionAction(1, 2, true, 32_000, 45_000, true, true), "second-read");
+        n += eq("second reading past the mark: still typed", Economy.rejectionAction(1, 2, true, 50_000, 45_000, true, true), "second-read");
+        n += eq("cap reached beats the second reading", Economy.rejectionAction(2, 2, true, 30_000, 45_000, true, true), "stop");
+        n += eq("no second reading, inside the budget: re-read", Economy.rejectionAction(1, 2, true, 32_000, 45_000, true, false), "reread");
+        n += eq("6-arg form is the old rule", Economy.rejectionAction(1, 2, true, 32_000, 45_000, true), "reread");
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg56", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":56,\"captchaVlmModel\":\"qwen3.8-max\",\"captchaVlmModelSecond\":\"\"}");
+            YCBotChallengeConfig c56 = YCBotChallengeConfig.load(tmp);
+            n += eq("v57 moves the reader to 3.6-flash", c56.captchaVlmModel, "qwen3.6-flash");
+            n += eq("v57 sets 3.8-max second", c56.captchaVlmModelSecond, "qwen3.8-max");
+            n += eq("v57 re-read budget", c56.captchaRetryMaxTokens, 256);
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":56,\"captchaVlmModel\":\"qwen3.7-plus\",\"captchaVlmModelSecond\":\"\"}");
+            YCBotChallengeConfig c56b = YCBotChallengeConfig.load(tmp);
+            n += eq("v57 keeps a hand-set reader", c56b.captchaVlmModel, "qwen3.7-plus");
+            n += eq("v57 keeps its blank second model", c56b.captchaVlmModelSecond, "");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":56,\"captchaVlmModel\":\"qwen3.8-max\",\"captchaVlmModelSecond\":\"qwen3.8-flash\"}");
+            YCBotChallengeConfig c56c = YCBotChallengeConfig.load(tmp);
+            n += eq("v57 keeps a hand-set second model", c56c.captchaVlmModelSecond, "qwen3.8-flash");
+            n += eq("v57 keeps the reader beside it", c56c.captchaVlmModel, "qwen3.8-max");
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v57 migration: " + ex);
+            n++;
+        }
         return n;
     }
 

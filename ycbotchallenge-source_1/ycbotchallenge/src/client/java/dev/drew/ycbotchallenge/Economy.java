@@ -1197,7 +1197,17 @@ public final class Economy {
      * second-model read or the look-alike - only when there is no time to re-read.
      */
     public static String rejectionAction(int answersSent, int maxAnswers, boolean hasPng, long now, long budgetDeadline, boolean variantLeft) {
+        return rejectionAction(answersSent, maxAnswers, hasPng, now, budgetDeadline, variantLeft, false);
+    }
+
+    /**
+     * 0.9.59: {@code second-read} - the other model's reading is on hand and not yet rejected -
+     * comes before the re-read: it is a real second opinion, already read, typed at once.
+     */
+    public static String rejectionAction(int answersSent, int maxAnswers, boolean hasPng, long now, long budgetDeadline,
+                                         boolean variantLeft, boolean readingLeft) {
         if (answersSent >= Math.max(1, maxAnswers)) return "stop";
+        if (readingLeft) return "second-read";
         if (hasPng && (budgetDeadline <= 0 || now < budgetDeadline)) return "reread";
         if (variantLeft) return "variant";
         return "stop";
