@@ -3036,7 +3036,8 @@ public final class EconomyChecks {
         n += eq("giant: the next giant's plate", Economy.hologramBelongs(3.0, 0.0, 11.0, 0.9, 2.7, 10.5), false);
         n += eq("4-arg form is the cow rule", Economy.hologramBelongs(0.0, 0.0, 3.6, 0.9), false);
         // Reach to the surface: eyes at (0,1.6,0); a cow's box 2.2 blocks out is 2.2 away, its origin 2.65.
-        n += eq("surface: outside the box", Economy.surfaceDistance(0, 1.6, 0, 2.2, 0, -0.45, 3.1, 1.4, 0.45), 2.2, 1e-9);
+        n += eq("surface: outside the box", Economy.surfaceDistance(0, 1.6, 0, 2.2, 0, -0.45, 3.1, 1.8, 0.45), 2.2, 1e-9);
+        n += eq("surface: a cow below the eyes", Economy.surfaceDistance(0, 1.6, 0, 2.2, 0, -0.45, 3.1, 1.4, 0.45), Math.sqrt(2.2 * 2.2 + 0.2 * 0.2), 1e-9);
         // A hovering giant whose box surrounds the eyes is in reach at distance 0; its origin was 4 blocks away.
         n += eq("surface: inside the box", Economy.surfaceDistance(0, 1.6, 0, -1.35, 1.0, -1.35, 1.35, 11.5, 1.35), 0.0, 1e-9);
         // A giant hovering with its floor 3 blocks above the eyes is 3 away, however wide it is.
