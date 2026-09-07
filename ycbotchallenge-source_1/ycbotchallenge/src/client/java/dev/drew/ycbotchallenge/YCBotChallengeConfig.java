@@ -300,6 +300,13 @@ public class YCBotChallengeConfig {
      * session; 90 minutes of "searching" followed.
      */
     public int targetAmnestyMs = 30_000;
+    /**
+     * 0.9.56: any mob seen without a LVL plate for this many ticks while the zone level is known
+     * is not a stage mob and is never approached (target_ignored via=unplated). The farm's
+     * chicken by the barn at spawn: same species as the LVL1 Chickens, no plate, never dies.
+     * 0 = off.
+     */
+    public int unplatedIgnoreAfterTicks = 40;
 
     /**
      * Captcha auto-pause (no bypassing — the bot stops so you solve it).
@@ -1710,7 +1717,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 53;
+    public static final int CURRENT_CONFIG_VERSION = 54;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2097,6 +2104,10 @@ public class YCBotChallengeConfig {
             // Rebirth GUI lore read. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 54) {
+            // v54 (0.9.56): a plateless mob is not a stage mob after unplatedIgnoreAfterTicks. Defaults only.
+            changed = true;
+        }
         if (configVersion < 53) {
             // v53 (0.9.55): the stage-42 stall - the focus guard, the no-connect amnesty, the
             // hurt grace and drift decay of the ghost filter, the plate-only types. Defaults only.
@@ -2209,6 +2220,7 @@ public class YCBotChallengeConfig {
         if (ghostHurtGraceTicks < 0) ghostHurtGraceTicks = 0;
         if (ghostDriftDecayPerTick < 0) ghostDriftDecayPerTick = 0;
         if (targetAmnestyMs < 5_000) targetAmnestyMs = 5_000;
+        if (unplatedIgnoreAfterTicks < 0) unplatedIgnoreAfterTicks = 0;
         if (nameplateHologramRadiusBlocks <= 0) nameplateHologramRadiusBlocks = 0.9;
         if (manualIgnoreRadiusBlocks <= 0) manualIgnoreRadiusBlocks = 1.5;
         if (manualIgnoreAimDeg <= 0) manualIgnoreAimDeg = 4.0;

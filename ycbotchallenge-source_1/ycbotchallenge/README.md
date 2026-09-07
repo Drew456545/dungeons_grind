@@ -255,6 +255,19 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.56: the chicken by the barn
+
+Drew, right after a rebirth on 0.9.55: "ran off targeting this chicken... it's always here...
+it's a dead bot giveaway." The farm's chicken by the barn at spawn is the same species as the
+LVL1 Chickens, carries no plate, never dies, and stands still, so it passed every check: the
+zone-level rule is lenient to a missing plate (0.9.27, plates can be slow), and the ghost
+filter never saw it move. The plate is the tell, but a missing plate must be given a moment.
+Now any mob seen without a LVL plate for `unplatedIgnoreAfterTicks` (40, two seconds) while
+the zone level is known is `target_ignored via=unplated` (with `ticks` and `zoneLevel`) and
+never approached; a plate that shows up later lifts it. Ignored entities (hero, AFK mob,
+unplated) are no longer ghost material either - the 0.9.55 log marked the Archer Queen every
+few seconds. Config v54.
+
 ### 0.9.55: the stage-42 stall
 
 2026-09-06, 17:21-19:51 local: the bot reached lvl42 Skeleton, killed five in 30 min (TTK

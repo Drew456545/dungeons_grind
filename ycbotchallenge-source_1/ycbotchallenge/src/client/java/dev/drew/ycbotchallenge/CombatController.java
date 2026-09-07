@@ -171,6 +171,7 @@ public class CombatController {
         long lastSeen = 0;
         long stillSince = 0; // for ghost redemption: when it last stopped moving
         int lastHurtTick = -1; // 0.9.55: the tick its hurt timer was last running
+        int platelessTicks = 0; // 0.9.56: consecutive ticks seen without a LVL plate
     }
     private final Map<Integer, Motion> motion = new HashMap<>();
     private final java.util.Set<Integer> ghosts = new java.util.HashSet<>();
@@ -1382,6 +1383,18 @@ public class CombatController {
         if (cfg.targetZoneLevelOnly) {
             Integer zoneLevel = stats.confirmedZoneLevel();
             Integer plateLevel = plateLevel(client, le);
+            // 0.9.56: no plate at all for unplatedIgnoreAfterTicks = not a stage mob (the farm's
+            // chicken by the barn at spawn, the companions): never approached.
+            Motion mm = motion.get(e.getId());
+            int platelessTicks = mm == null ? 0 : mm.platelessTicks;
+            if (Economy.unplatedStale(zoneLevel, plateLevel, platelessTicks, cfg.unplatedIgnoreAfterTicks)) {
+                if (ignoredLogged.add(e.getId()) && logger != null) {
+                    logger.log("target_ignored", "via", "unplated", "nameplate", plateSummary(client, le),
+                        "entityId", e.getId(), "mob", typeName(le), "ticks", platelessTicks, "zoneLevel", zoneLevel);
+                }
+                if (ignoredLogged.size() > 4096) ignoredLogged.clear();
+                return false;
+            }
             if (!Economy.sameZoneLevel(plateLevel, zoneLevel)) {
                 if (offzoneLogged.add(e.getId()) && logger != null) {
                     logger.log("target_offzone", "mob", typeName(le), "plateLevel", plateLevel, "zoneLevel", zoneLevel,
@@ -1438,6 +1451,11 @@ public class CombatController {
             m.lastPos = pos;
             m.ticks++;
             m.lastSeen = now;
+            // 0.9.56: how long it has stood without a LVL plate (validMob refuses it after
+            // unplatedIgnoreAfterTicks); ignored entities (hero, AFK mob, unplated) are not
+            // ghost material either - the 0.9.55 log marked the Archer Queen every few seconds.
+            m.platelessTicks = plateLevel(client, (LivingEntity) e) == null ? m.platelessTicks + 1 : 0;
+            if (ignoredLogged.contains(id)) continue;
 
             if (ghosts.contains(id)) {
                 // Redemption: a "ghost" that stays put was a misfire (spawn fall,

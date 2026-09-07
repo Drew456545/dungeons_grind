@@ -99,6 +99,7 @@ public final class EconomyChecks {
         n += checks0952();
         n += checks0954();
         n += checks0955();
+        n += checks0956();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1792,7 +1793,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 53", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 53);
+        n += eq("config version 54", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 54);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2941,6 +2942,18 @@ public final class EconomyChecks {
         n += eq("slime is the default plate-only type", fresh.plateOnlyTypes, java.util.List.of("minecraft:slime"));
         n += eq("amnesty default 30 s", fresh.targetAmnestyMs, 30_000);
         n += eq("hurt grace default", fresh.ghostHurtGraceTicks, 10);
+        return n;
+    }
+
+    /** 0.9.56: the plateless mob is not a stage mob (the farm's chicken by the barn). */
+    private static int checks0956() {
+        int n = 0;
+        n += eq("plateless 40 ticks in a known zone: not ours", Economy.unplatedStale(1, null, 40, 40), true);
+        n += eq("plateless 39 ticks: still a candidate", Economy.unplatedStale(1, null, 39, 40), false);
+        n += eq("plated: ours", Economy.unplatedStale(1, 1, 400, 40), false);
+        n += eq("zone level unknown: lenient", Economy.unplatedStale(null, null, 400, 40), false);
+        n += eq("knob off: lenient", Economy.unplatedStale(1, null, 400, 0), false);
+        n += eq("default 40 ticks", new YCBotChallengeConfig().unplatedIgnoreAfterTicks, 40);
         return n;
     }
 

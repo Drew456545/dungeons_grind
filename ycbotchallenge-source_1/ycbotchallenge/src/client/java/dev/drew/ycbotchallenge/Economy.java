@@ -1179,6 +1179,16 @@ public final class Economy {
         return plateLevel == null && typeListed(typeId, types);
     }
 
+    /**
+     * 0.9.56: a mob seen without any LVL plate for {@code afterTicks} while the zone level is
+     * known is not a stage mob (the farm's chicken by the barn: the same species as the LVL1
+     * Chickens, no plate, never dies - walking out to hit it is a bot's tell). Zero = off; a
+     * plate that is merely slow to appear passes once it shows.
+     */
+    public static boolean unplatedStale(Integer zoneLevel, Integer plateLevel, int platelessTicks, int afterTicks) {
+        return afterTicks > 0 && zoneLevel != null && plateLevel == null && platelessTicks >= afterTicks;
+    }
+
     /** 0.9.47: a container title the server owns (Heroes, Crafting): left open for a person, never a captcha. */
     public static boolean isServerMenu(String title, java.util.List<String> titles) {
         if (title == null || titles == null) return false;
