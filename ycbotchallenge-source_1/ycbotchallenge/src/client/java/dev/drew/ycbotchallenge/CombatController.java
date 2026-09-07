@@ -785,7 +785,8 @@ public class CombatController {
                 logger.log("target_abandoned", "reason", frozen ? "aim-frozen" : "no-connect", "mob", targetMob, "rarity", targetRarity,
                     "level", targetLevel, "afterMs", now - targetPickedAt, "clicks", clicksThisTarget,
                     "streak", noConnectStreak, "ignored", ignore, "reach", Math.round(effectiveReach() * 100.0) / 100.0,
-                    "dist", client.player != null ? Math.round(client.player.distanceTo(target) * 100.0) / 100.0 : null,
+                    "dist", client.player != null ? Math.round(reachDistance(client, target) * 100.0) / 100.0 : null,
+                    "originDist", client.player != null ? Math.round(client.player.distanceTo(target) * 100.0) / 100.0 : null,
                     "aimBusy", MouseDriver.INSTANCE.isBusy(),
                     "flickDeg", Math.round(flickDegForTarget * 10.0) / 10.0, "aimErr", Math.round(aimErrNow * 10.0) / 10.0,
                     "focused", windowFocused, "cursorLocked", client.mouse != null && client.mouse.isCursorLocked());
@@ -890,7 +891,7 @@ public class CombatController {
         maybeLook(client, target, "approach");
         reacquireIfNeeded(client, target, "approach-correct");
 
-        double dist = client.player.distanceTo(target);
+        double dist = reachDistance(client, target); // 0.9.60: to the hitbox, not the origin
 
         // Anticipatory swing spam on the way in: 2-3 cps with a wandering vigor.
         // Mostly whiffs at air — that's exactly what a player closing in looks like.
@@ -1043,8 +1044,8 @@ public class CombatController {
         }
 
         if (nextTarget == null) { releaseKeys(client); return; }
-        double leash = client.player.distanceTo(target);
-        double toNext = client.player.distanceTo(nextTarget);
+        double leash = reachDistance(client, target);
+        double toNext = reachDistance(client, nextTarget);
         boolean roomOnLeash = leash + coastDistance(client) < cookLeash - 0.25;
         boolean throughTarget = leash < toNext
             && Math.abs(MathHelper.wrapDegrees(bearingTo(client, nextTarget) - bearingTo(client, target))) < 35f;
@@ -1262,6 +1263,17 @@ public class CombatController {
         return targetReach > 0 ? targetReach : cfg.reach;
     }
 
+    /**
+     * 0.9.60: how far the mob is for reach purposes - eyes to the nearest point of its hitbox,
+     * not to its origin. Same number as before for a cow; the truth for a hovering giant.
+     */
+    private double reachDistance(MinecraftClient client, Entity e) {
+        if (client.player == null || e == null) return Double.MAX_VALUE;
+        Vec3d eye = client.player.getEyePos();
+        net.minecraft.util.math.Box b = e.getBoundingBox();
+        return Economy.surfaceDistance(eye.x, eye.y, eye.z, b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ);
+    }
+
     private void rollAimPoint(MinecraftClient client) {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
         aimHeightFrac = (float) (0.42 + rng.nextDouble() * 0.32);
@@ -1311,7 +1323,7 @@ public class CombatController {
         if (lookIssued && lookEntityId == e.getId()) return;
         float lead = 0f;
         if ("approach".equals(reason) && approachYawOffset != 0f) {
-            double distXZ = client.player.distanceTo(e);
+            double distXZ = reachDistance(client, e);
             double t = MathHelper.clamp((distXZ - effectiveReach()) / 8.0, 0.0, 1.0);
             lead = approachYawOffset * (float) t;
         }
@@ -1688,7 +1700,9 @@ public class CombatController {
         for (Entity p : plateCache) {
             if (p.isRemoved()) continue;
             Vec3d pp = p.getEntityPos();
-            if (!Economy.hologramBelongs(pp.x - pos.x, pp.z - pos.z, pp.y - pos.y, cfg.nameplateHologramRadiusBlocks)) continue;
+            // 0.9.60: the window scales with the mob (the zone-50 giants carry their plate ten blocks up).
+            if (!Economy.hologramBelongs(pp.x - pos.x, pp.z - pos.z, pp.y - pos.y, cfg.nameplateHologramRadiusBlocks,
+                                         e.getWidth(), e.getHeight())) continue;
             addPlateText(p, lines);
         }
         return lines;

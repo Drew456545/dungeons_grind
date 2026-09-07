@@ -255,6 +255,26 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.60: the zone-50 giants - a plate window that grows with the mob, reach to the hitbox
+
+2026-09-07 19:53 the bot bought zone 50 and farmed nothing for an hour (momentum 2.00x ->
+1.01x, income 0.00 a minute). The zone's mob is a scaled-up Wither eight to ten blocks tall
+with its "LVL50 Wither" plate at the top of the body. The plate finder looked 3.5 blocks
+above the origin (a Mooshroom's plate), so every Wither read as plateless, and the 0.9.56
+rule ignored the whole zone two seconds after each toggle (`target_ignored via=unplated`,
+logged once per entity and then silent) - the HUD said "searching" with Withers all around,
+and a toggle "fixed" it for exactly one engagement because it resets the plateless clock.
+That one engagement never killed anything either: the Wither's bar is on screen whenever you
+face one, so one click counted as a connect, the bot cooked 200-480 s and booked a kill when
+the bar left the screen (`kill via=bossbar-gone`, no money). And the plated ones it did
+approach no-connected at "4-6 blocks" - reach was measured to the origin, the feet centre of
+a hovering giant whose body filled the screen. Two changes: `Economy.hologramBelongs` takes the
+mob's width and height (half the width plus 0.5 across, the height plus 1.5 up, never less than
+the old window), and reach, the approach distance, the cook leash and the approach lead are
+`Economy.surfaceDistance` from the eyes to the nearest point of the hitbox
+(`target_abandoned dist` is now that; `originDist` keeps the old number). The Phantom Swarm and
+Warden Guard mobs of the same hour were a sword enchant's animation; Drew turned it off.
+
 ### 0.9.59: two models at once - flash first, max second
 
 Drew: test 3.6-flash as the reader with 3.8-max as the second guess, both requests fired the

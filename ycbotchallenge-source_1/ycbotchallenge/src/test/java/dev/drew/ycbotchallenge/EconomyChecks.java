@@ -103,6 +103,7 @@ public final class EconomyChecks {
         n += checks0957();
         n += checks0958();
         n += checks0959();
+        n += checks0960();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -3021,6 +3022,29 @@ public final class EconomyChecks {
     }
 
     /** 0.9.59: flash first, max second, both fired at once; ties by launch order; a second reading beats a re-read. */
+    /** 0.9.60: the plate window grows with the mob; reach is measured to the hitbox surface. */
+    private static int checks0960() {
+        int n = 0;
+        // A cow: the old window, unchanged (width 0.9, height 1.4).
+        n += eq("cow plate above", Economy.hologramBelongs(0.2, 0.1, 1.9, 0.9, 0.9, 1.4), true);
+        n += eq("cow neighbour's plate", Economy.hologramBelongs(2.5, 0.0, 1.9, 0.9, 0.9, 1.4), false);
+        n += eq("cow: nothing 4 blocks up", Economy.hologramBelongs(0.0, 0.0, 4.0, 0.9, 0.9, 1.4), false);
+        // The zone-50 giant (about 2.7 wide, 10.5 tall): the plate at the top of the body counts.
+        n += eq("giant's plate ten blocks up", Economy.hologramBelongs(0.3, 0.2, 11.0, 0.9, 2.7, 10.5), true);
+        n += eq("giant's plate a block off centre", Economy.hologramBelongs(1.5, 0.0, 11.0, 0.9, 2.7, 10.5), true);
+        n += eq("giant: nothing 13 blocks up", Economy.hologramBelongs(0.0, 0.0, 13.0, 0.9, 2.7, 10.5), false);
+        n += eq("giant: the next giant's plate", Economy.hologramBelongs(3.0, 0.0, 11.0, 0.9, 2.7, 10.5), false);
+        n += eq("4-arg form is the cow rule", Economy.hologramBelongs(0.0, 0.0, 3.6, 0.9), false);
+        // Reach to the surface: eyes at (0,1.6,0); a cow's box 2.2 blocks out is 2.2 away, its origin 2.65.
+        n += eq("surface: outside the box", Economy.surfaceDistance(0, 1.6, 0, 2.2, 0, -0.45, 3.1, 1.4, 0.45), 2.2, 1e-9);
+        // A hovering giant whose box surrounds the eyes is in reach at distance 0; its origin was 4 blocks away.
+        n += eq("surface: inside the box", Economy.surfaceDistance(0, 1.6, 0, -1.35, 1.0, -1.35, 1.35, 11.5, 1.35), 0.0, 1e-9);
+        // A giant hovering with its floor 3 blocks above the eyes is 3 away, however wide it is.
+        n += eq("surface: box above the eyes", Economy.surfaceDistance(0, 1.6, 0, -1.35, 4.6, -1.35, 1.35, 15.1, 1.35), 3.0, 1e-9);
+        n += eq("surface: corner", Economy.surfaceDistance(0, 0, 0, 3, 4, 0, 5, 6, 1), 5.0, 1e-9);
+        return n;
+    }
+
     private static int checks0959() {
         int n = 0;
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();

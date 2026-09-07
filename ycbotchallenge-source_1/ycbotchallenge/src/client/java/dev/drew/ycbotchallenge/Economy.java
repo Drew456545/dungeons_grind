@@ -450,7 +450,35 @@ public final class Economy {
 
     /** A floating plate belongs to the mob it hovers over: within {@code radius} horizontally, from half a block below to 3.5 above. */
     public static boolean hologramBelongs(double dx, double dz, double dy, double radius) {
-        return Math.sqrt(dx * dx + dz * dz) <= Math.max(0, radius) && dy >= -0.5 && dy <= 3.5;
+        return hologramBelongs(dx, dz, dy, radius, 0.0, 0.0);
+    }
+
+    /**
+     * 0.9.60: the window grows with the mob. The zone-50 Withers are scaled giants eight to
+     * ten blocks tall with the "LVL50 Wither" plate at the top of the body; the fixed 3.5-block
+     * window (built for a Mooshroom) never saw it, every Wither read as plateless, and the
+     * 0.9.56 rule ignored the whole zone two seconds after each toggle. Horizontal: the
+     * radius or half the width plus 0.5; vertical: 3.5 blocks or the height plus 1.5.
+     */
+    public static boolean hologramBelongs(double dx, double dz, double dy, double radius, double width, double height) {
+        double r = Math.max(Math.max(0, radius), width * 0.5 + 0.5);
+        double top = Math.max(3.5, height + 1.5);
+        return Math.sqrt(dx * dx + dz * dz) <= r && dy >= -0.5 && dy <= top;
+    }
+
+    /**
+     * 0.9.60: distance from a point (the eyes) to the nearest point of a box (the hitbox).
+     * Reach used to be measured to the mob's origin, its feet centre: a hovering giant whose
+     * body fills the screen was "4-6 blocks away" and never in reach (the LVL50 Wither
+     * no-connects), while the game's own attack ray only needs the SURFACE within reach.
+     */
+    public static double surfaceDistance(double ex, double ey, double ez,
+                                         double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
+        double cx = Math.max(minX, Math.min(maxX, ex));
+        double cy = Math.max(minY, Math.min(maxY, ey));
+        double cz = Math.max(minZ, Math.min(maxZ, ez));
+        double dx = ex - cx, dy = ey - cy, dz = ez - cz;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     /** A manual mark (Ctrl+toggle) matches the same kind of mob within {@code radius} of where it was marked. */
