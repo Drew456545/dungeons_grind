@@ -244,6 +244,19 @@ public class YCBotChallengeClient implements ClientModInitializer {
         }
 
         if (!enabled && "reboot".equals(pausedReason)) { tickRebootWait(client, System.currentTimeMillis()); return; }
+        // 0.9.57: paused for a captcha, the bot still watches the hotbar. 2026-09-07 08:12: the
+        // budget paused it with one guess out; a second captcha came at 08:26 with nobody to
+        // answer it; the kick at 08:27. A map other than the one it paused on is a fresh
+        // window - resume and solve it.
+        if (!enabled && "captcha".equals(pausedReason) && config.captchaAutoSolve) {
+            CaptchaDetector.Hit hit = captchaDetector.tick(client, System.currentTimeMillis());
+            if (hit != null && !hit.detail().equals(lastCaptchaDetail)) {
+                if (logger != null) logger.log("captcha_resume", "detail", hit.detail(), "pausedOn", lastCaptchaDetail);
+                setEnabled(client, true, true);
+                beginCaptcha(client, hit.source(), hit.detail());
+            }
+            return;
+        }
         if (!enabled) return;
         noteScreenEdge(client);
         long nowHub = System.currentTimeMillis();

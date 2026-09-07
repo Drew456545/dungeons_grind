@@ -416,7 +416,7 @@ public class YCBotChallengeConfig {
      * rather than typing a guess that will land after the server's ~30s window closes —
      * the remainder is the human's room to type it themselves.
      */
-    public int captchaBudgetMs = 25_000;
+    public int captchaBudgetMs = 45_000; // 0.9.57: the server's window is 60 s (Drew); read 5 s + type 4 s + held-map 20 s + the second guess fit
     /**
      * Hedged reads (0.9.34): read A fires as soon as the map is captured, read B this
      * long after it WITHOUT waiting for A to fail, both voting into the same ballot.
@@ -1717,7 +1717,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 54;
+    public static final int CURRENT_CONFIG_VERSION = 55;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2102,6 +2102,12 @@ public class YCBotChallengeConfig {
         if (configVersion < 45) {
             // v45 (0.9.43): enchant prestige, the maxed-tab rescan, the sword-level hook, the
             // Rebirth GUI lore read. Every knob is new and takes its default.
+            changed = true;
+        }
+        if (configVersion < 55) {
+            // v55 (0.9.57): the captcha budget is 45 s of the server's 60 s window (was 25 s,
+            // which killed the second guess the moment the held map called the first one wrong).
+            if (captchaBudgetMs == 25_000) captchaBudgetMs = 45_000;
             changed = true;
         }
         if (configVersion < 54) {

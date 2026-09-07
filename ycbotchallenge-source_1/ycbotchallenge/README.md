@@ -255,6 +255,25 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.57: the captcha's second guess
+
+2026-09-07 08:12 UTC: a held-map captcha read `2VhD` (the map shows exactly that; the second
+model read `2WhD`). The answer went out at +9 s; the map was still in hand 20 s later, which
+is the held-map rejection rule (0.9.42), so the second candidate was queued - and one
+millisecond later the 25 s budget, which exempted `TYPING_RUN` and `AWAITING_RESULT` but not
+the queued `TYPING`, killed it and paused the bot (`captcha_budget_spent phase=TYPING`,
+`captcha_pause reason=budget`). No kick followed within 60 s, so the first answer had very
+likely been accepted and the map lingered, as on 08:37 two days before. Fourteen minutes
+later a second captcha arrived, the paused bot never saw it, and the kick came at 08:27
+("failed to solve the captcha in the 60 seconds").
+
+Now: `captchaBudgetMs` is 45 s of the server's 60 s window (Drew; v55 moves a 25 s value);
+a queued guess is never cut off by the budget; once a guess is out the budget ends in
+`captcha_unverified stage=budget` and the bot runs on (a pause helps nobody at 4 am);
+and a bot that is paused for a captcha keeps watching the hotbar - a map other than the one
+it paused on is `captcha_resume` and is solved (`CaptchaDetector` also treats a different map
+swapped into a known slot as new). Config v55.
+
 ### 0.9.56: the chicken by the barn
 
 Drew, right after a rebirth on 0.9.55: "ran off targeting this chicken... it's always here...

@@ -100,6 +100,7 @@ public final class EconomyChecks {
         n += checks0954();
         n += checks0955();
         n += checks0956();
+        n += checks0957();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1253,7 +1254,7 @@ public final class EconomyChecks {
             c.captchaVoteMinReads <= c.captchaHedgeMax, true);
         n += eq("timeout leaves room for a hedge",
             c.captchaTimeoutMs + c.captchaHedgeMs < c.captchaBudgetMs, true);
-        n += eq("budget leaves the human room in a ~30s window", c.captchaBudgetMs <= 25_000, true);
+        n += eq("budget inside the server's 60 s window (0.9.57)", c.captchaBudgetMs <= 45_000, true);
         // The hedge must land inside the reading pause, or it is not free.
         n += eq("hedge hides inside the answer delay",
             c.captchaHedgeMs <= c.captchaAnswerDelayMaxMs, true);
@@ -1267,7 +1268,7 @@ public final class EconomyChecks {
             n += eq("v37 migrates to current", c37.configVersion, YCBotChallengeConfig.CURRENT_CONFIG_VERSION);
             n += eq("v38 takes the 8s read timeout", c37.captchaTimeoutMs, 8000);
             n += eq("v38 drops minReads to the hedge count", c37.captchaVoteMinReads, 2);
-            n += eq("v38 gains the budget", c37.captchaBudgetMs, 25_000);
+            n += eq("v38 gains the budget (45 s since v55)", c37.captchaBudgetMs, 45_000);
             n += eq("v38 gains the hedge stagger", c37.captchaHedgeMs, 3000);
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
@@ -1793,7 +1794,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 54", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 54);
+        n += eq("config version 55", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 55);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2954,6 +2955,29 @@ public final class EconomyChecks {
         n += eq("zone level unknown: lenient", Economy.unplatedStale(null, null, 400, 40), false);
         n += eq("knob off: lenient", Economy.unplatedStale(1, null, 400, 0), false);
         n += eq("default 40 ticks", new YCBotChallengeConfig().unplatedIgnoreAfterTicks, 40);
+        return n;
+    }
+
+    /** 0.9.57: the captcha budget is 45 s; a v54 config's 25 s moves, a hand-set value stays. */
+    private static int checks0957() {
+        int n = 0;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        n += eq("budget default 45 s", fresh.captchaBudgetMs, 45_000);
+        n += eq("read + type + held map + second guess fit", 5_000 + 4_000 + fresh.captchaMapHeldRejectMs + 8_000 <= fresh.captchaBudgetMs, true);
+        n += eq("budget under the server's 60 s", fresh.captchaBudgetMs < 60_000, true);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg54", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":54,\"captchaBudgetMs\":25000}");
+            YCBotChallengeConfig c54 = YCBotChallengeConfig.load(tmp);
+            n += eq("v55 moves the 25 s budget", c54.captchaBudgetMs, 45_000);
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":54,\"captchaBudgetMs\":30000}");
+            YCBotChallengeConfig c54b = YCBotChallengeConfig.load(tmp);
+            n += eq("v55 keeps a hand-set budget", c54b.captchaBudgetMs, 30_000);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v55 migration: " + ex);
+            n++;
+        }
         return n;
     }
 

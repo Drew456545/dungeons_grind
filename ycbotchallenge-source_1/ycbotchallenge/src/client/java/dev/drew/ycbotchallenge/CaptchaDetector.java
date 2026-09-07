@@ -66,6 +66,10 @@ final class CaptchaDetector {
         boolean mutedPresent = false;
         for (int i = 0; i < SLOTS; i++) {
             if (cur[i] < 0) known[i] = false;
+            // 0.9.57: a different map swapped into a known slot is a new map (the second
+            // captcha of the night lands in the same hotbar slot as the first).
+            if (cur[i] >= 0 && ids[i] >= 0 && cur[i] != ids[i]) known[i] = false;
+            ids[i] = cur[i];
             if (mutedMapId != null && cur[i] == mutedMapId) mutedPresent = true;
         }
         if (mutedMapId != null && !mutedPresent) mutedMapId = null;

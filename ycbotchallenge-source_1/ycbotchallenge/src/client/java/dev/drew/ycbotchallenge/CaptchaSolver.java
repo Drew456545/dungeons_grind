@@ -504,12 +504,19 @@ public class CaptchaSolver {
         // One budget for the whole captcha (0.9.34). Past it an answer would land after the
         // server's ~30s window shuts, so hand over instead and leave the remainder to the
         // human. Typing already under way and the post-answer verify are not interrupted.
+        // 0.9.57: a queued guess (TYPING) is never cut off either - the 08:12 map persisted at
+        // 20.023 s, the second candidate was queued, and the 25 s budget killed it one
+        // millisecond later. And once a guess is out the budget is no hand-over: the server
+        // says nothing on a right answer, a wrong one is a kick within 60 s either way, and a
+        // paused bot missed the next captcha (08:26) and took the kick (08:27).
         if (budgetDeadline > 0 && now >= budgetDeadline
-            && phase != Phase.IDLE && phase != Phase.TYPING_RUN && phase != Phase.AWAITING_RESULT) {
+            && phase != Phase.IDLE && phase != Phase.TYPING && phase != Phase.TYPING_RUN && phase != Phase.AWAITING_RESULT) {
             cancelInFlight();
             log("captcha_budget_spent", "budgetMs", cfg.captchaBudgetMs, "phase", phase.name(),
-                "hedges", hedgesLaunched, "reads", ballot.reads(), "failures", hedgeFailures.get());
-            fail(client, "budget", "no answer within " + cfg.captchaBudgetMs + "ms — handing over");
+                "hedges", hedgesLaunched, "reads", ballot.reads(), "failures", hedgeFailures.get(),
+                "answersSent", answersSent);
+            if (answersSent > 0) unverified(client, "budget", answersSent + " guess(es) out, budget spent - nothing more typed");
+            else fail(client, "budget", "no answer within " + cfg.captchaBudgetMs + "ms — handing over");
             return;
         }
         switch (phase) {
