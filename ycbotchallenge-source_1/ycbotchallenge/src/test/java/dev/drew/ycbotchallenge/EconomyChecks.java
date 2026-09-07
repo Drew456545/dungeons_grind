@@ -1792,7 +1792,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 52", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 52);
+        n += eq("config version 53", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 53);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
