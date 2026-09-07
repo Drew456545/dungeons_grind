@@ -76,6 +76,17 @@ public class CombatController {
     private int noConnectEntityId = Integer.MIN_VALUE;
     private long lastNoRayLogAt = 0;
     private int noRayCount = 0;
+    /** 0.9.55: the no-connect ignores live apart from the bossbar/manual ones - cleared by reset() and forgiven by the amnesty. */
+    private final java.util.Set<Integer> noConnectIgnored = new java.util.HashSet<>();
+    /** 0.9.55: window focus - vanilla applies mouse look only while focused (TFT launched in front of the game, 2026-09-06 17:57). */
+    private boolean windowFocused = true;
+    private long focusLostAt = 0;
+    /** 0.9.55: the last flick issued at the current target, for the frozen-camera verdict. */
+    private double flickDegForTarget = 0;
+    /** 0.9.55: since when no scan found a legal target, and the mobs the last scan refused for our own reasons. */
+    private long noCandidatesSince = 0;
+    private long lastAmnestyAt = 0;
+    private int excludedByUsThisScan = 0;
     /** While the current mob cooks: the mob we'll go for next (pre-aimed so the handoff is instant). */
     private LivingEntity nextTarget = null;
     private long nextPickedAt = 0;
@@ -159,6 +170,7 @@ public class CombatController {
         int ticks = 0;
         long lastSeen = 0;
         long stillSince = 0; // for ghost redemption: when it last stopped moving
+        int lastHurtTick = -1; // 0.9.55: the tick its hurt timer was last running
     }
     private final Map<Integer, Motion> motion = new HashMap<>();
     private final java.util.Set<Integer> ghosts = new java.util.HashSet<>();
@@ -205,7 +217,12 @@ public class CombatController {
     public void setLogger(EventLogger logger) { this.logger = logger; }
 
     public String stateDescription() {
-        if (target == null) return "searching";
+        if (target == null) {
+            String s = "searching";
+            if (!windowFocused) s += "  §8focus lost";
+            if (!noConnectIgnored.isEmpty()) s += "  §8ignored " + noConnectIgnored.size();
+            return s;
+        }
         String phase = connected ? "cooking " : (clicksThisTarget > 0 ? "clicking " : "approaching ");
         String s = phase + (lastTargetDesc == null ? "?" : lastTargetDesc);
         if (connected && nextTargetDesc != null) s += "  §8→ next: " + nextTargetDesc;
@@ -340,6 +357,8 @@ public class CombatController {
         currentDps = null;
         currentEtaMs = null;
         ghosts.clear();
+        noConnectIgnored.clear();
+        noCandidatesSince = 0;
         pendingTeleportAt = 0;
         motion.clear();
         radarMotion.clear();
@@ -522,6 +541,29 @@ public class CombatController {
                 // left range or despawned = dwell resets
                 radarMotion.keySet().removeIf(id -> !seenNow.contains(id));
             }
+        }
+
+        // 0.9.55: vanilla applies mouse look only while its window is focused, and with the
+        // pause screen off (F3+P) nothing shows it. 2026-09-06 17:57 local: TFT launched in
+        // front of the game, every flick swallowed (misclick aimErr equal to the flick just
+        // issued), 43 no-connect strikes in five minutes, 90 minutes of "searching". No picks,
+        // no strikes and no paths until the window is back; a connected mob keeps cooking.
+        boolean focusedNow = client.isWindowFocused();
+        if (focusedNow != windowFocused) {
+            windowFocused = focusedNow;
+            if (!focusedNow) {
+                focusLostAt = now;
+                MouseDriver.INSTANCE.cancel();
+                if (logger != null) logger.log("focus_lost", "target", targetMob, "connected", connected);
+            } else {
+                if (logger != null) logger.log("focus_regained", "durationMs", focusLostAt == 0 ? null : now - focusLostAt);
+                focusLostAt = 0;
+            }
+        }
+        if (!windowFocused && !(target != null && connected)) {
+            if (target != null) targetPickedAt = now; // the no-connect clock does not run while we cannot aim
+            releaseKeys(client);
+            return;
         }
 
         updateMotion(client);
@@ -723,19 +765,32 @@ public class CombatController {
         // six times at exactly 12.000 s each, 72 s of clicks, until Drew toggled the bot).
         if (target != null && !connected && now - targetPickedAt > Math.max(500, cfg.noConnectTimeoutMs)) {
             int id = target.getId();
-            noConnectStreak = id == noConnectEntityId ? noConnectStreak + 1 : 1;
-            noConnectEntityId = id;
-            boolean ignore = noConnectStreak >= Math.max(1, cfg.noConnectIgnoreAfter);
-            if (ignore) ignoredIds.add(id);
+            // 0.9.55: a camera that never moved is our fault, not the mob's (the window unfocused:
+            // 43 strikes in five minutes struck every Skeleton in the zone off the list for the
+            // session). No streak, no ignore; the row says what the camera did.
+            double aimErrNow = MouseDriver.aimErrorDeg(client, target, aimHeightFrac);
+            boolean frozen = "frozen".equals(Economy.noConnectVerdict(clicksThisTarget, flickDegForTarget, aimErrNow, windowFocused));
+            boolean ignore = false;
+            if (frozen) {
+                noConnectStreak = 0;
+                noConnectEntityId = Integer.MIN_VALUE;
+            } else {
+                noConnectStreak = id == noConnectEntityId ? noConnectStreak + 1 : 1;
+                noConnectEntityId = id;
+                ignore = noConnectStreak >= Math.max(1, cfg.noConnectIgnoreAfter);
+                if (ignore) noConnectIgnored.add(id);
+            }
             if (logger != null) {
-                logger.log("target_abandoned", "reason", "no-connect", "mob", targetMob, "rarity", targetRarity,
+                logger.log("target_abandoned", "reason", frozen ? "aim-frozen" : "no-connect", "mob", targetMob, "rarity", targetRarity,
                     "level", targetLevel, "afterMs", now - targetPickedAt, "clicks", clicksThisTarget,
                     "streak", noConnectStreak, "ignored", ignore, "reach", Math.round(effectiveReach() * 100.0) / 100.0,
                     "dist", client.player != null ? Math.round(client.player.distanceTo(target) * 100.0) / 100.0 : null,
-                    "aimBusy", MouseDriver.INSTANCE.isBusy());
+                    "aimBusy", MouseDriver.INSTANCE.isBusy(),
+                    "flickDeg", Math.round(flickDegForTarget * 10.0) / 10.0, "aimErr", Math.round(aimErrNow * 10.0) / 10.0,
+                    "focused", windowFocused, "cursorLocked", client.mouse != null && client.mouse.isCursorLocked());
             }
             // Stand closer next time: reach is vanilla's exact range with no margin.
-            targetReach = Math.max(1.6, effectiveReach() - 0.5);
+            if (!frozen) targetReach = Math.max(1.6, effectiveReach() - 0.5);
             target = null;
             clicksThisTarget = 0;
             lookIssued = false;
@@ -760,6 +815,7 @@ public class CombatController {
             nextTarget = null;
             nextTargetDesc = null;
             targetPickedAt = now;
+            flickDegForTarget = 0;
             clicksThisTarget = 0;
             barGoneAt = 0;
             firstClickAt = 0;
@@ -1259,6 +1315,7 @@ public class CombatController {
             lead = approachYawOffset * (float) t;
         }
         MouseDriver.INSTANCE.lookAtEntity(client, e, aimHeightFrac, lead, reason);
+        if (e == target) flickDegForTarget = MouseDriver.INSTANCE.lastFlickDeg();
         lookIssued = true;
         lookEntityId = e.getId();
     }
@@ -1309,6 +1366,15 @@ public class CombatController {
             if (ignoredLogged.size() > 4096) ignoredLogged.clear();
             return false;
         }
+        // 0.9.55: the Slime Bunny enchant's slimes hop about the zone with no plate; a listed type
+        // is a stage mob only with a LVL plate ("LVL43 Slime" stays a target - Drew).
+        if (unplatedListedType(client, le)) {
+            if (ignoredLogged.add(e.getId()) && logger != null) {
+                logger.log("target_ignored", "via", "unplated", "nameplate", plateSummary(client, le),
+                    "entityId", e.getId(), "mob", typeName(le));
+            }
+            return false;
+        }
         // Stay in your zone (0.9.27): the plate carries the stage ("LVL7 Donkey"); a mob whose
         // level differs from the boss-bar-confirmed zone level is a neighbour's, however
         // close it stands. 20:35 log: a Chicken picked in zone 7 right after a respawn
@@ -1331,8 +1397,10 @@ public class CombatController {
             }
         }
         if (!inZone(e.getEntityPos())) return false;
+        // 0.9.55: struck off by our own no-connect runs - counted, so an empty scan can forgive them.
+        if (noConnectIgnored.contains(e.getId())) { excludedByUsThisScan++; return false; }
         if (cfg.stationaryOnly) {
-            if (ghosts.contains(e.getId()) && !mayAttackMoving()) return false;
+            if (ghosts.contains(e.getId()) && !mayAttackMoving()) { excludedByUsThisScan++; return false; }
             Motion m = motion.get(e.getId());
             // must have been observed standing still before it's targetable
             if (m == null || m.ticks < cfg.minObservationTicks) return false;
@@ -1357,6 +1425,7 @@ public class CombatController {
             if (!(e instanceof LivingEntity) || e == client.player || e instanceof PlayerEntity) continue;
             if (e instanceof ArmorStandEntity || e instanceof DisplayEntity) continue;
             if (client.player.distanceTo(e) > cfg.targetRange * 1.5) continue;
+            if (unplatedListedType(client, (LivingEntity) e)) continue; // 0.9.55: the enchant's slimes are not ghosts either
             int id = e.getId();
             Vec3d pos = e.getEntityPos();
             Motion m = motion.computeIfAbsent(id, k -> new Motion());
@@ -1391,12 +1460,26 @@ public class CombatController {
             // Spawn grace: newly-seen or airborne entities get position
             // interpolation and fall movement we must not count.
             if (m.ticks <= cfg.spawnGraceTicks || !e.isOnGround()) continue;
+            // 0.9.55: knockback is not self-propulsion - hero arrows, enchant procs and the Slime
+            // Bunny's slimes shove a 60-500 s mob past the threshold. Nothing counts while the hurt
+            // timer runs and for ghostHurtGraceTicks after; a still tick forgets some of the drift.
+            if (((LivingEntity) e).hurtTime > 0) m.lastHurtTick = m.ticks;
+            if (m.lastHurtTick >= 0 && m.ticks - m.lastHurtTick <= cfg.ghostHurtGraceTicks) continue;
+            if (drift < 0.03) {
+                m.moved = Economy.ghostDriftDecay(m.moved, cfg.ghostDriftDecayPerTick);
+                continue;
+            }
 
             m.moved += drift;
             if (m.moved > cfg.ghostMotionBlocks) {
                 ghosts.add(id);
                 ghostsIgnored++;
                 m.stillSince = 0;
+                if (logger != null) {
+                    LivingEntity le = (LivingEntity) e;
+                    logger.log("ghost_marked", "mob", describe(le), "level", plateLevel(client, le), "entityId", id,
+                        "moved", Math.round(m.moved * 100.0) / 100.0, "ticks", m.ticks);
+                }
             }
         }
         if (motion.size() > 512) motion.values().removeIf(m -> now - m.lastSeen > 10_000);
@@ -1406,6 +1489,7 @@ public class CombatController {
     private LivingEntity pickTarget(MinecraftClient client, LivingEntity exclude) {
         List<LivingEntity> candidates = new ArrayList<>();
         Map<EntityType<?>, Integer> counts = new HashMap<>();
+        excludedByUsThisScan = 0;
         for (Entity e : client.world.getEntities()) {
             if (e == exclude || !validMob(client, e)) continue;
             LivingEntity le = (LivingEntity) e;
@@ -1421,6 +1505,20 @@ public class CombatController {
             for (java.util.Map.Entry<Integer, java.util.Set<Integer>> v : offzoneVotes.entrySet()) counts2.put(v.getKey(), v.getValue().size());
             Integer adopt = Economy.plateMajority(counts2, stats.confirmedZoneLevel(), cfg.plateMajorityMin);
             long nowMs = System.currentTimeMillis();
+            // 0.9.55: nothing legal in sight while mobs of ours stand struck off by our own
+            // no-connect runs or the ghost list - after targetAmnestyMs both are forgiven.
+            if (noCandidatesSince == 0) noCandidatesSince = nowMs;
+            if (Economy.amnestyDue(noCandidatesSince, nowMs, excludedByUsThisScan, cfg.targetAmnestyMs)
+                && nowMs - lastAmnestyAt >= cfg.targetAmnestyMs) {
+                lastAmnestyAt = nowMs;
+                if (logger != null) {
+                    logger.log("target_amnesty", "ignored", noConnectIgnored.size(), "ghosts", ghosts.size(),
+                        "excluded", excludedByUsThisScan, "idleMs", nowMs - noCandidatesSince);
+                }
+                noConnectIgnored.clear();
+                ghosts.clear();
+                noCandidatesSince = nowMs;
+            }
             if (adopt != null && nowMs - lastPlateAdoptAt > 10_000) {
                 lastPlateAdoptAt = nowMs;
                 int voters = counts2.getOrDefault(adopt, 0);
@@ -1430,6 +1528,8 @@ public class CombatController {
             }
             return null;
         }
+
+        noCandidatesSince = 0;
 
         // dominant mob type = the majority population in range (the current stage's spawn)
         dominantType = null;
@@ -1492,6 +1592,13 @@ public class CombatController {
     private String parseRarity(LivingEntity e) {
         Plate p = parsePlate(plateName(MinecraftClient.getInstance(), e));
         return p != null && p.rarity() != null ? p.rarity().toUpperCase(java.util.Locale.ROOT) : null;
+    }
+
+    /** 0.9.55: a plate-only type (the Slime Bunny enchant's slimes) with no LVL plate - not a stage mob, not a ghost. */
+    private boolean unplatedListedType(MinecraftClient client, LivingEntity le) {
+        if (cfg.plateOnlyTypes == null || cfg.plateOnlyTypes.isEmpty()) return false;
+        if (!Economy.typeListed(EntityType.getId(le.getType()).toString(), cfg.plateOnlyTypes)) return false;
+        return Economy.unplatedListedType(EntityType.getId(le.getType()).toString(), plateLevel(client, le), cfg.plateOnlyTypes);
     }
 
     /** The stage printed on the mob's plate ("LVL7 Donkey" → 7), or null. */
@@ -1657,6 +1764,7 @@ public class CombatController {
             ? ignoreStore.removeNear(type, p.x, p.y, p.z, cfg.manualIgnoreRadiusBlocks) : null;
         if (old != null) {
             ignoredIds.remove(le.getId());
+            noConnectIgnored.remove(le.getId());
             ignoredLogged.remove(le.getId());
             if (logger != null) {
                 logger.log("target_unignored", "via", "manual", "nameplate", label, "entityId", le.getId(),

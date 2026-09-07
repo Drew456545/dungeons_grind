@@ -32,6 +32,8 @@ public final class MouseDriver {
     private long lastTremorMs;
     /** The previous flick was a shortened big turn; the next intent is its settle. */
     private boolean settlePending;
+    /** 0.9.55: the distance of the last look intent (degrees), for combat's frozen-camera check. */
+    private double lastFlickDeg;
 
     // agility regime: subtle tempo variance so no single Fitts regression fits a session
     private double regimeMult = 1.0;
@@ -43,6 +45,9 @@ public final class MouseDriver {
     }
 
     public boolean isBusy() { return pathActive; }
+
+    /** 0.9.55: how far the last look intent asked the camera to travel (0.35 or less = already there). */
+    public double lastFlickDeg() { return lastFlickDeg; }
 
     public void cancel() {
         pathActive = false;
@@ -85,6 +90,7 @@ public final class MouseDriver {
         float dy = MathHelper.wrapDegrees(wantYaw - curYaw);
         float dp = MathHelper.clamp(wantPitch, -89f, 89f) - curPitch;
         double dist = Math.sqrt(dy * dy + dp * dp);
+        lastFlickDeg = dist;
         if (dist < 0.35) return; // already there — don't twitch
 
         // Big turns are two movements for a person: a fast coarse swing that lands

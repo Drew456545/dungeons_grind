@@ -279,6 +279,27 @@ public class YCBotChallengeConfig {
      * Set 0 to make ghosting permanent like before.
      */
     public double ghostRedemptionSeconds = 5.0;
+    /**
+     * 0.9.55: knockback is not self-propulsion. Drift is not counted while a mob's hurt timer
+     * runs and for this many ticks after (hero arrows, enchant procs and the Slime Bunny's
+     * slimes shoved the 60-500 s Skeletons of stage 42 past ghostMotionBlocks).
+     */
+    public int ghostHurtGraceTicks = 10;
+    /** 0.9.55: a still tick forgets this much accumulated drift (a 0.5-block shove in ~2.5 s of standing). 0 = never. */
+    public double ghostDriftDecayPerTick = 0.01;
+    /**
+     * 0.9.55: entity types that are stage mobs only with a LVL plate. The Slime Bunny enchant's
+     * slimes hop about the zone plateless and were picked, then ghosted, over and over; a
+     * "LVL43 Slime" stage mob is plated and stays a target (Drew: some stages have Slime mobs).
+     */
+    public List<String> plateOnlyTypes = List.of("minecraft:slime");
+    /**
+     * 0.9.55: with nothing legal to target for this long while mobs of ours stand excluded by
+     * our own no-connect strikes or the ghost list, both are forgiven (target_amnesty). The
+     * frozen-camera loop of 2026-09-06 struck every Skeleton in the zone off the list for the
+     * session; 90 minutes of "searching" followed.
+     */
+    public int targetAmnestyMs = 30_000;
 
     /**
      * Captcha auto-pause (no bypassing — the bot stops so you solve it).
@@ -1689,7 +1710,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 52;
+    public static final int CURRENT_CONFIG_VERSION = 53;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2076,6 +2097,11 @@ public class YCBotChallengeConfig {
             // Rebirth GUI lore read. Every knob is new and takes its default.
             changed = true;
         }
+        if (configVersion < 53) {
+            // v53 (0.9.55): the stage-42 stall - the focus guard, the no-connect amnesty, the
+            // hurt grace and drift decay of the ghost filter, the plate-only types. Defaults only.
+            changed = true;
+        }
         if (configVersion < 52) {
             // v52 (0.9.54): the audit release - menus are the server's (pauseOnContainerScreen
             // off), the pause screen is closed, the hero waits for the farm phase, the
@@ -2179,6 +2205,10 @@ public class YCBotChallengeConfig {
         if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
         if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;
         if (ignoreMobPatterns == null) ignoreMobPatterns = fresh.ignoreMobPatterns;
+        if (plateOnlyTypes == null) plateOnlyTypes = fresh.plateOnlyTypes;
+        if (ghostHurtGraceTicks < 0) ghostHurtGraceTicks = 0;
+        if (ghostDriftDecayPerTick < 0) ghostDriftDecayPerTick = 0;
+        if (targetAmnestyMs < 5_000) targetAmnestyMs = 5_000;
         if (nameplateHologramRadiusBlocks <= 0) nameplateHologramRadiusBlocks = 0.9;
         if (manualIgnoreRadiusBlocks <= 0) manualIgnoreRadiusBlocks = 1.5;
         if (manualIgnoreAimDeg <= 0) manualIgnoreAimDeg = 4.0;

@@ -255,6 +255,42 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.55: the stage-42 stall
+
+2026-09-06, 17:21-19:51 local: the bot reached lvl42 Skeleton, killed five in 30 min (TTK
+52-532 s, a hard stage), then nothing for 95 min while the HUD read `searching  ghosts 73`
+with a dozen `LVL42 Skeleton` plates in view (Drew's screenshot, after a walk). "Ghost" is not
+a mob type: it is the motion blacklist in `CombatController.updateMotion`. Three faults stacked:
+
+- **The camera was frozen** (18:04-18:09 local): 43 `target_abandoned reason=no-connect` at
+  exactly 4.000 s, `clicks 0`, and every `misclick aimErr` equal to the `mouse_flick distDeg`
+  just issued (49.6 -> 49.6, 179.9 -> 179.4): the flick was consumed, vanilla applied no look.
+  Vanilla applies mouse look only while its window is focused, and with `pauseOnLostFocus:false`
+  nothing shows it. Windows shows the League client launching at 17:55:50 and TFT at 17:57:14,
+  in front of the game. Not the monitor: 10 fps is vanilla's `inactivityFpsLimit: afk` limiter
+  (ten minutes without input), and earlier nights killed 100-170 mobs an hour at 10 fps.
+- **The strikes were permanent.** Two no-connect runs on one mob added it to `ignoredIds` for
+  the session (`noConnectIgnoreAfter=2`); in five minutes every Skeleton in the zone was struck
+  off. `reset()` cleared the ghost list on each respawn broadcast but never the ignores, and
+  Drew's toggles at 19:35-19:39 changed nothing. Only a game restart would have.
+- **The counter counted the Slime Bunny enchant's slimes** (plateless, hopping; picked when they
+  paused, ghosted a tick later, 8 of 9 `moving-ghost` rows), the hero, and Skeletons shoved by
+  knockback at a stage where a mob lives minutes instead of seconds.
+
+Now: `focus_lost` / `focus_regained` are logged and nothing is picked, struck or flicked while
+the window is unfocused (a connected mob keeps cooking); a no-connect run whose camera never
+moved (aim error still at least 80% of the flick, zero clicks) or whose window is unfocused is
+`target_abandoned reason=aim-frozen` - no streak, no ignore (`Economy.noConnectVerdict`); the
+no-connect ignores live in their own set, cleared by every zone reset and forgiven with the
+ghost list when nothing legal has been in sight for `targetAmnestyMs` (30 s) while mobs of ours
+stand excluded (`target_amnesty ignored ghosts excluded idleMs`); the ghost filter counts no
+drift while a mob's hurt timer runs and for `ghostHurtGraceTicks` (10) after, a still tick
+forgets `ghostDriftDecayPerTick` (0.01) of it, and each blacklisting is logged (`ghost_marked
+mob level moved`); `plateOnlyTypes` (`minecraft:slime`) are stage mobs only with a LVL plate -
+the enchant's plateless slimes are `target_ignored via=unplated` and never ghosts, a `LVL43
+Slime` stays a target (Drew: some stages have Slime mobs). The HUD's `searching` says
+`focus lost` and `ignored N`; the `perf` row carries `focused` and `cursorLocked`. Config v53.
+
 ### 0.9.54: the audit release
 
 An audit of 2026-09-06 (11.7 h of bot-on time, 18 rebirths, Drew's own play excluded

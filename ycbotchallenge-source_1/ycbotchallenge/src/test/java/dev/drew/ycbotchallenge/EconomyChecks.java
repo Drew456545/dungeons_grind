@@ -98,6 +98,7 @@ public final class EconomyChecks {
         n += checks0951();
         n += checks0952();
         n += checks0954();
+        n += checks0955();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -2907,6 +2908,39 @@ public final class EconomyChecks {
         n += eq("unlock line parses", m.find() ? m.group("n") : null, "200");
         n += eq("menus are the server's by default", fresh.pauseOnContainerScreen, false);
         n += eq("hero waits for the farm", fresh.heroFarmPhaseOnly, true);
+        return n;
+    }
+
+    /** 0.9.55: the stage-42 stall - a frozen camera is our fault, the no-connect ignores are forgiven, shoves are not motion, the Slime Bunny's slimes. */
+    private static int checks0955() {
+        int n = 0;
+        // The no-connect verdict (22:05:54: flick 179.9, aimErr 179.4 three seconds later, zero clicks).
+        n += eq("unfocused: frozen", Economy.noConnectVerdict(0, 49.6, 49.6, false), "frozen");
+        n += eq("camera never moved: frozen", Economy.noConnectVerdict(0, 49.6, 49.6, true), "frozen");
+        n += eq("flick 179.9, aim 179.4: frozen", Economy.noConnectVerdict(0, 179.9, 179.4, true), "frozen");
+        n += eq("camera arrived, no connect: strike", Economy.noConnectVerdict(0, 49.6, 2.0, true), "strike");
+        n += eq("clicks went out: strike", Economy.noConnectVerdict(1, 49.6, 49.6, true), "strike");
+        n += eq("tiny flick: strike", Economy.noConnectVerdict(0, 3.0, 3.0, true), "strike");
+        // The amnesty.
+        n += eq("idle 31 s with 15 excluded: amnesty", Economy.amnestyDue(1000, 32_000, 15, 30_000), true);
+        n += eq("idle 10 s: wait", Economy.amnestyDue(1000, 11_000, 15, 30_000), false);
+        n += eq("nothing excluded by us: never", Economy.amnestyDue(1000, 60_000, 0, 30_000), false);
+        n += eq("never empty: never", Economy.amnestyDue(0, 60_000, 15, 30_000), false);
+        // Drift decay.
+        n += eq("0.5 decays by 0.01", Economy.ghostDriftDecay(0.5, 0.01), 0.49, 1e-9);
+        n += eq("decay floors at 0", Economy.ghostDriftDecay(0.005, 0.01), 0.0, 1e-9);
+        n += eq("decay off keeps the drift", Economy.ghostDriftDecay(0.5, 0), 0.5, 1e-9);
+        // The plate-only types (Drew: some stages have Slime mobs).
+        java.util.List<String> types = java.util.List.of("minecraft:slime");
+        n += eq("plateless slime is the enchant's", Economy.unplatedListedType("minecraft:slime", null, types), true);
+        n += eq("LVL43 Slime is a stage mob", Economy.unplatedListedType("minecraft:slime", 43, types), false);
+        n += eq("plateless skeleton is a mob", Economy.unplatedListedType("minecraft:skeleton", null, types), false);
+        n += eq("slime is listed", Economy.typeListed("minecraft:slime", types), true);
+        n += eq("null type is not", Economy.typeListed(null, types), false);
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        n += eq("slime is the default plate-only type", fresh.plateOnlyTypes, java.util.List.of("minecraft:slime"));
+        n += eq("amnesty default 30 s", fresh.targetAmnestyMs, 30_000);
+        n += eq("hurt grace default", fresh.ghostHurtGraceTicks, 10);
         return n;
     }
 

@@ -205,7 +205,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 "tickMaxMs", Math.round(perfMaxNs / 1e4) / 100.0, "ticks", perfTicks,
                 "fps", client.getCurrentFps(),
                 "heapUsedMb", (rt.totalMemory() - rt.freeMemory()) / 1_048_576, "heapMaxMb", rt.maxMemory() / 1_048_576,
-                "logRows", rows - perfRowsAt, "entitiesInWorld", entities, "botOn", enabled);
+                "logRows", rows - perfRowsAt, "entitiesInWorld", entities, "botOn", enabled,
+                "focused", client.isWindowFocused(), "cursorLocked", client.mouse != null && client.mouse.isCursorLocked());
             perfRowsAt = rows;
         }
         perfTicks = 0;

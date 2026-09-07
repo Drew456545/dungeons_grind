@@ -1134,6 +1134,51 @@ public final class Economy {
         return swordLevel != null && swordLevel >= nextUnlockLevel;
     }
 
+    // ---- 0.9.55: the stage-42 stall - a frozen camera, the poisoned ignore list, shoved mobs, the Slime Bunny's slimes
+
+    /**
+     * 0.9.55: the verdict on a target that never connected. {@code frozen} when the fault is
+     * ours - the window is unfocused (vanilla applies mouse look only while focused: TFT
+     * launched in front of the game at 17:57 on 2026-09-06), or no click went out and the
+     * camera still sits where it was before the flick (aim error at least 80% of a flick over
+     * 5 degrees: flick 179.9, aimErr 179.4 three seconds later). {@code strike} otherwise.
+     */
+    public static String noConnectVerdict(int clicks, double flickDeg, double aimErrNow, boolean focused) {
+        if (!focused) return "frozen";
+        if (clicks <= 0 && flickDeg > 5.0 && aimErrNow >= 0.8 * flickDeg) return "frozen";
+        return "strike";
+    }
+
+    /**
+     * 0.9.55: amnesty for the no-connect ignores and the ghost list - nothing legal to target
+     * for {@code amnestyMs} while mobs of ours stand excluded by our own bookkeeping.
+     */
+    public static boolean amnestyDue(long emptySinceMs, long now, int excludedByUs, long amnestyMs) {
+        if (excludedByUs <= 0 || emptySinceMs <= 0) return false;
+        return now - emptySinceMs >= Math.max(0, amnestyMs);
+    }
+
+    /** 0.9.55: a still tick forgets some of the drift a shove left behind (never below 0). */
+    public static double ghostDriftDecay(double moved, double decayPerTick) {
+        return Math.max(0.0, moved - Math.max(0.0, decayPerTick));
+    }
+
+    /** 0.9.55: an entity type on the plate-only list ("minecraft:slime"). */
+    public static boolean typeListed(String typeId, java.util.List<String> types) {
+        if (typeId == null || types == null) return false;
+        for (String t : types) if (t != null && t.trim().equalsIgnoreCase(typeId)) return true;
+        return false;
+    }
+
+    /**
+     * 0.9.55: a listed type with no LVL plate is not a stage mob (the Slime Bunny enchant's
+     * slimes hop about the zone plateless); a plated one ("LVL43 Slime") is - Drew: some stages
+     * have Slime mobs, no blanket ignore.
+     */
+    public static boolean unplatedListedType(String typeId, Integer plateLevel, java.util.List<String> types) {
+        return plateLevel == null && typeListed(typeId, types);
+    }
+
     /** 0.9.47: a container title the server owns (Heroes, Crafting): left open for a person, never a captcha. */
     public static boolean isServerMenu(String title, java.util.List<String> titles) {
         if (title == null || titles == null) return false;
