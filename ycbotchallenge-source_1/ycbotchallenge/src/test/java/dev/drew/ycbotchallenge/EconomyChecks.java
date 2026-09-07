@@ -3000,7 +3000,7 @@ public final class EconomyChecks {
             YCBotChallengeConfig c55 = YCBotChallengeConfig.load(tmp);
             n += eq("v56 moves the reader to 3.8-max", c55.captchaVlmModel, "qwen3.8-max");
             n += eq("v56 drops the second model", c55.captchaVlmModelSecond, "");
-            n += eq("v56 leads with h/n", c55.captchaLookalikes.startsWith("hn,ad,"), true);
+            n += eq("v56 leads with h/n", c55.captchaLookalikes.startsWith("ad,hn,"), true);
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":55,\"captchaVlmModel\":\"qwen3.7-plus\"}");
             YCBotChallengeConfig c55b = YCBotChallengeConfig.load(tmp);
             n += eq("v56 keeps a hand-set reader", c55b.captchaVlmModel, "qwen3.7-plus");

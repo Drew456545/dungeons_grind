@@ -525,7 +525,7 @@ public class YCBotChallengeConfig {
      * letters and digits (17:38: read "pBb", answer "p8b"). First matching character is
      * swapped for its partner; with none, the case flip (captchaCaseAmbiguous).
      */
-    public String captchaLookalikes = "hn,ad,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9"; // 0.9.58: h/n (2VhD for 2VnD) and a/d (uaWn for udWn) first - the map font's own confusions
+    public String captchaLookalikes = "ad,hn,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9"; // 0.9.58: h/n (2VhD for 2VnD) and a/d (uaWn for udWn) first - the map font's own confusions
     /** The screenshot fallback is downscaled to this width first (the native 1605 px shot hallucinated a letter). */
     public int captchaScreenMaxPx = 1024;
     /** Hide the HUD (hotbar, boss bar, our overlay) for the screenshot fallback. */
@@ -2112,7 +2112,7 @@ public class YCBotChallengeConfig {
             if ("qwen3.6-flash".equals(captchaVlmModel)) captchaVlmModel = "qwen3.8-max";
             if ("qwen3.8-flash".equals(captchaVlmModelSecond)) captchaVlmModelSecond = "";
             if ("\nIMPORTANT: these readings were already REJECTED as wrong: {rejected}. Look again, check the case of every letter and whether two letters touch, and give a different reading.".equals(captchaMapRetryPrompt)) captchaMapRetryPrompt = fresh.captchaMapRetryPrompt;
-            if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "hn,ad,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
+            if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "ad,hn,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
             changed = true;
         }
         if (configVersion < 55) {
