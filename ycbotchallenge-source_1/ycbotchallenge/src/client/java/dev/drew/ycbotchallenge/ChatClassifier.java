@@ -1,5 +1,6 @@
 package dev.drew.ycbotchallenge;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -320,18 +321,48 @@ public final class ChatClassifier {
      * is swapped for its partner; with none, the case flip of {@link #caseFlipAlt}.
      */
     public static String lookalikeAlt(String answer, String pairs, String ambiguous) {
-        if (answer == null || answer.isEmpty()) return null;
+        List<String> v = lookalikeVariants(answer, pairs, ambiguous);
+        return v.isEmpty() ? null : v.get(0);
+    }
+
+    /** Variants a map answer gets at most (0.9.62). */
+    public static final int MAX_VARIANTS = 8;
+
+    /**
+     * 0.9.62: every one-character look-alike of {@code answer}, best first - each pair of
+     * {@code pairs} in order, at every position, both directions; then the case flip of every
+     * letter in {@code ambiguous}; then {@link #caseFlipAlt}. The first element is exactly
+     * what {@link #lookalikeAlt} always returned. The 2026-09-08 06:47 map read BT9 for BTq:
+     * the one variant was 8T9 (B8 precedes q9 in the pair list) and it was the whole second
+     * guess. De-duplicated, the answer itself excluded, at most {@link #MAX_VARIANTS}.
+     */
+    public static List<String> lookalikeVariants(String answer, String pairs, String ambiguous) {
+        List<String> out = new ArrayList<>();
+        if (answer == null || answer.isEmpty()) return out;
         if (pairs != null) {
             for (String pair : pairs.split("[,\\s]+")) {
                 if (pair.length() != 2) continue;
                 for (int i = 0; i < answer.length(); i++) {
                     char c = answer.charAt(i);
-                    if (c == pair.charAt(0)) return answer.substring(0, i) + pair.charAt(1) + answer.substring(i + 1);
-                    if (c == pair.charAt(1)) return answer.substring(0, i) + pair.charAt(0) + answer.substring(i + 1);
+                    if (c == pair.charAt(0)) addVariant(out, answer, answer.substring(0, i) + pair.charAt(1) + answer.substring(i + 1));
+                    if (c == pair.charAt(1)) addVariant(out, answer, answer.substring(0, i) + pair.charAt(0) + answer.substring(i + 1));
                 }
             }
         }
-        return caseFlipAlt(answer, ambiguous);
+        String amb = ambiguous == null ? "" : ambiguous.toLowerCase(Locale.ROOT);
+        for (int i = 0; i < answer.length(); i++) {
+            char c = answer.charAt(i);
+            if (Character.isLetter(c) && amb.indexOf(Character.toLowerCase(c)) >= 0) {
+                char f = Character.isUpperCase(c) ? Character.toLowerCase(c) : Character.toUpperCase(c);
+                addVariant(out, answer, answer.substring(0, i) + f + answer.substring(i + 1));
+            }
+        }
+        addVariant(out, answer, caseFlipAlt(answer, ambiguous));
+        return out.size() > MAX_VARIANTS ? new ArrayList<>(out.subList(0, MAX_VARIANTS)) : out;
+    }
+
+    private static void addVariant(List<String> out, String answer, String v) {
+        if (v != null && !v.equals(answer) && !out.contains(v)) out.add(v);
     }
 
     /** Reward Summary header seconds, e.g. "Reward Summary: (60s)" → 60. */

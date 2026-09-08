@@ -611,13 +611,20 @@ public class CaptchaSolver {
                 List<String> got = vlmCandidates.getAndSet(null);
                 if (got != null) {
                     candidates.clear();
-                    candidates.addAll(got); // ranked, de-duped, best first
-                    // 0.9.58: a re-read that only repeats rejected readings falls back to the
-                    // variants set aside at the rejection, so the second guess still differs.
-                    if (attempt > 1 && !fallbackCandidates.isEmpty()
-                        && candidates.stream().noneMatch(c -> !wrongAnswers.contains(c))) {
-                        log("captcha_reread_repeat", "got", got, "wrong", wrongAnswers, "fallback", fallbackCandidates);
-                        for (String c : fallbackCandidates) if (!candidates.contains(c)) candidates.add(c);
+                    if (attempt <= 1) {
+                        candidates.addAll(got); // ranked, de-duped, best first
+                    } else {
+                        // 0.9.62: after a rejection the re-read's own readings come first, then the
+                        // readings set aside at the rejection (the other model's - 06:47 BTq), and
+                        // only then the look-alike variants: a real reading always outranks a guess
+                        // (0.9.58 used the fallbacks only when the re-read had nothing new, so the
+                        // B/8 variant 8T9 went out while BTq waited).
+                        List<String> variants = got.isEmpty() ? List.of()
+                            : ChatClassifier.lookalikeVariants(got.get(0), cfg.captchaLookalikes, cfg.captchaCaseAmbiguous);
+                        candidates.addAll(rereadCandidates(got, fallbackCandidates, wrongAnswers, variants));
+                        if (got.stream().noneMatch(c -> !wrongAnswers.contains(c))) {
+                            log("captcha_reread_repeat", "got", got, "wrong", wrongAnswers, "fallback", fallbackCandidates);
+                        }
                     }
                     log("captcha_candidates", "candidates", candidates, "raw", vlmRaw.getAndSet(null),
                         "second", vlmSecond.getAndSet(null), "secondScale", secondPng != null ? cfg.captchaSecondScale : null,
@@ -1000,7 +1007,11 @@ public class CaptchaSolver {
         return CaptchaImages.encodePng(CaptchaImages.scale(base, 128 * Math.max(1, scale), smooth && scale > 2));
     }
 
-    /** "x4bil" -> {4, 1}, "x2near" -> {2, 0}; null for anything else. */
+    /**
+     * "x4bil" -> {4, 1}, "x2near" -> {2, 0}, "x1" -> {1, 0} (bare = nearest); null for anything
+     * else. 0.9.62: the bare form is accepted - the default "x1" never matched, so no render
+     * was made, the ballot never started and the second model read a x3 upscale (06:47 BTq).
+     */
     static int[] parseRenderSpec(String spec) {
         if (spec == null) return null;
         Matcher m = RENDER_SPEC.matcher(spec.trim().toLowerCase(java.util.Locale.ROOT));
@@ -1010,7 +1021,7 @@ public class CaptchaSolver {
         return new int[]{scale, "bil".equals(m.group(2)) ? 1 : 0};
     }
 
-    private static final Pattern RENDER_SPEC = Pattern.compile("x(\\d{1,2})(bil|near)");
+    private static final Pattern RENDER_SPEC = Pattern.compile("x(\\d{1,2})(bil|near)?");
 
     /** Rough cost of opening chat, typing a 3-4 character answer and sending it. */
     static final long TYPING_ESTIMATE_MS = 2500;
@@ -1180,9 +1191,9 @@ public class CaptchaSolver {
         candidates.addAll(ballot.ranked(wrongAnswers));
         if (ballot.distinct() == 1) {
             String only = ballot.leader(List.of());
-            String alt = ChatClassifier.lookalikeAlt(only, cfg.captchaLookalikes, cfg.captchaCaseAmbiguous);
-            if (alt != null && !alt.equals(only) && !wrongAnswers.contains(alt) && !candidates.contains(alt)) {
-                candidates.add(alt);
+            // 0.9.62: every one-character variant, best first, not just the first pair's.
+            for (String alt : ChatClassifier.lookalikeVariants(only, cfg.captchaLookalikes, cfg.captchaCaseAmbiguous)) {
+                if (!alt.equals(only) && !wrongAnswers.contains(alt) && !candidates.contains(alt)) candidates.add(alt);
             }
         }
     }
@@ -1223,6 +1234,26 @@ public class CaptchaSolver {
     private boolean hasSecondModel() {
         String m = cfg.captchaVlmModelSecond;
         return m != null && !m.isBlank() && !m.equals(cfg.captchaVlmModel);
+    }
+
+    /**
+     * 0.9.62: the candidate order after a re-read. The re-read's readings first, then the
+     * readings set aside at the rejection (the other model's), then the look-alike variants;
+     * rejected readings and duplicates dropped, order kept. Pure, for the checks.
+     */
+    public static List<String> rereadCandidates(List<String> got, List<String> fallback, List<String> wrong, List<String> variants) {
+        List<String> out = new ArrayList<>();
+        addUnrejected(out, got, wrong);
+        addUnrejected(out, fallback, wrong);
+        addUnrejected(out, variants, wrong);
+        return out;
+    }
+
+    private static void addUnrejected(List<String> out, List<String> src, List<String> wrong) {
+        if (src == null) return;
+        for (String c : src) {
+            if (c != null && !c.isEmpty() && (wrong == null || !wrong.contains(c)) && !out.contains(c)) out.add(c);
+        }
     }
 
     /**
@@ -1327,7 +1358,9 @@ public class CaptchaSolver {
                             vlmSecond.set(other);
                         }
                         String alt = ChatClassifier.lookalikeAlt(answer, cfg.captchaLookalikes, cfg.captchaCaseAmbiguous);
-                        ranked.addAll(mapGuesses(answer, other, alt));
+                        // 0.9.62: a re-read ranks only its reading; the variants go behind the
+                        // readings set aside at the rejection (rereadCandidates).
+                        ranked.addAll(attempt <= 1 ? mapGuesses(answer, other, alt) : List.of(answer));
                     }
                 } else {
                     // Sonar path: ranked ANSWER/ALT lines, lowercase, de-duped.

@@ -105,6 +105,7 @@ public final class EconomyChecks {
         n += checks0959();
         n += checks0960();
         n += checks0961();
+        n += checks0962a();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -3024,6 +3025,48 @@ public final class EconomyChecks {
 
     /** 0.9.59: flash first, max second, both fired at once; ties by launch order; a second reading beats a re-read. */
     /** 0.9.60: the plate window grows with the mob; reach is measured to the hitbox surface. */
+    /**
+     * 0.9.62a: the 2026-09-08 06:47 map (BTq, 4 h 16 min lost). captchaVoteRenders' "x1" never
+     * matched the render spec, so no render was made, the ballot never ran and the second
+     * model read a x3 upscale; at the rejection the re-read's look-alike variant 8T9 outranked
+     * the other model's BTq set aside at the rejection.
+     */
+    private static int checks0962a() {
+        int n = 0;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        n += eq("x1 is a native nearest render", java.util.Arrays.toString(CaptchaSolver.parseRenderSpec("x1")), "[1, 0]");
+        n += eq("x1near", java.util.Arrays.toString(CaptchaSolver.parseRenderSpec("x1near")), "[1, 0]");
+        n += eq("x4bil", java.util.Arrays.toString(CaptchaSolver.parseRenderSpec("x4bil")), "[4, 1]");
+        n += eq("X2 case-insensitive", java.util.Arrays.toString(CaptchaSolver.parseRenderSpec(" X2 ")), "[2, 0]");
+        n += eq("x9 out of range", CaptchaSolver.parseRenderSpec("x9") == null, true);
+        n += eq("x0 out of range", CaptchaSolver.parseRenderSpec("x0") == null, true);
+        n += eq("1x is not a spec", CaptchaSolver.parseRenderSpec("1x") == null, true);
+        n += eq("empty spec", CaptchaSolver.parseRenderSpec("") == null, true);
+        n += eq("null spec", CaptchaSolver.parseRenderSpec(null) == null, true);
+        n += eq("a default render exists", fresh.captchaVoteRenders.isEmpty(), false);
+        for (String spec : fresh.captchaVoteRenders) {
+            n += eq("default render parses: " + spec, CaptchaSolver.parseRenderSpec(spec) != null, true);
+        }
+        List<String> v = ChatClassifier.lookalikeVariants("BT9", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous);
+        n += eq("BT9's variants lead 8T9, BTg, BTq", v.subList(0, 3), List.of("8T9", "BTg", "BTq"));
+        n += eq("BT9's first variant is unchanged", ChatClassifier.lookalikeAlt("BT9", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous), "8T9");
+        n += eq("variants never repeat the answer", v.contains("BT9"), false);
+        n += eq("2VhD's variants start 2VnD", ChatClassifier.lookalikeVariants("2VhD", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous).get(0), "2VnD");
+        n += eq("no pair, ambiguous flip first", ChatClassifier.lookalikeVariants("aef", "B8,O0", "cosuvwxz"), List.of("Aef"));
+        n += eq("variants capped", ChatClassifier.lookalikeVariants("B8O0S5Z2I1", fresh.captchaLookalikes, fresh.captchaCaseAmbiguous).size(), ChatClassifier.MAX_VARIANTS);
+        n += eq("empty answer, no variants", ChatClassifier.lookalikeVariants("", "B8", "c").isEmpty(), true);
+        n += eq("re-read: the parked reading beats the variants",
+            CaptchaSolver.rereadCandidates(List.of("BT9"), List.of("BTq"), List.of("BT9"), List.of("8T9", "BTg", "BTq")),
+            List.of("BTq", "8T9", "BTg"));
+        n += eq("re-read: a fresh reading leads",
+            CaptchaSolver.rereadCandidates(List.of("XYZ"), List.of("BTq"), List.of("BT9"), List.of("8T9")).get(0), "XYZ");
+        n += eq("re-read: nothing new, nothing parked",
+            CaptchaSolver.rereadCandidates(List.of("BT9"), List.of(), List.of("BT9"), List.of()).isEmpty(), true);
+        n += eq("re-read: nulls tolerated",
+            CaptchaSolver.rereadCandidates(null, null, null, List.of("a", "a", "b")), List.of("a", "b"));
+        return n;
+    }
+
     /**
      * 0.9.61: the server's ladder ends at NVG (1e90); above 1e92 it drops suffixes and
      * writes the exponent itself ("1.03235E93"). Both forms are live at once - after a
