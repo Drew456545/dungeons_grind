@@ -23,7 +23,7 @@ import net.minecraft.util.math.Vec3d;
  * kill, or the mob being cooked already past the patience), the sword only when it is,
  * or while it is cheap against the zone gap; the same object feeds the log and the HUD.
  */
-public class UpgradeController {
+public class UpgradeController extends BotModule {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
     private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY, CHAT, GG }
 
@@ -31,7 +31,6 @@ public class UpgradeController {
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
-    private EventLogger logger;
     /** 0.9.43: the Rebirth GUI's diamond lore, read before any click. */
     private RebirthLore rebirthLore;
     private Integer rebirthGuiLoggedAtRebirths = null;
@@ -136,7 +135,6 @@ public class UpgradeController {
         this.typer = new ChatTyper(cfg);
     }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 

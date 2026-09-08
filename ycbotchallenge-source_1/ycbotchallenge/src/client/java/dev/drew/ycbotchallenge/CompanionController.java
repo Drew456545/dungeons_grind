@@ -36,7 +36,7 @@ import net.minecraft.util.math.Vec3d;
  *
  * Every GUI is dumped verbatim (companion_gui) — the fixture net for the next version.
  */
-public class CompanionController {
+public class CompanionController extends BotModule {
     private enum Phase { IDLE, WALK, AIM, OPEN_WAIT, EGG_LOOK, BUY, BUY_CLICK, BUY_SETTLE, CLOSE_EGG, TYPE_COMPANION, COMP_WAIT,
         COMP_LOOK, COMP_RETURN, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, FUSE_ALL_CLICK, FUSE_ALL_SETTLE, DELETE, DELETE_TYPE, DELETE_WAIT,
         BULK_CLICK, BULK_WAIT, BULK_READ, DONE }
@@ -49,7 +49,6 @@ public class CompanionController {
     private final UpgradeController upgrades;
     private final CompanionLore lore;
     private final ChatTyper typer;
-    private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
     private long phaseUntil;
@@ -175,7 +174,6 @@ public class CompanionController {
         this.typer = new ChatTyper(cfg);
     }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
@@ -287,9 +285,6 @@ public class CompanionController {
         manualRequested = false;
     }
 
-    private void log(String type, Object... kv) {
-        if (logger != null) logger.log(type, kv);
-    }
 
     /** @return true if combat should yield this tick. */
     public boolean tick(MinecraftClient client, CombatController combat) {

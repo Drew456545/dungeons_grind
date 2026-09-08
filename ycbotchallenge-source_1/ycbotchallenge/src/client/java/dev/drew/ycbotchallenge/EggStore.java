@@ -3,9 +3,7 @@ package dev.drew.ycbotchallenge;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-import java.io.IOException;
 import java.lang.reflect.Type;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -38,23 +36,17 @@ public final class EggStore {
     }
 
     public void load() {
-        try {
-            if (file != null && Files.exists(file)) {
-                Map<String, Egg> m = GSON.fromJson(Files.readString(file), MAP_TYPE);
-                if (m != null) {
-                    // Legacy per-stage keys ("lvl12") fold into their location ("loc2"); the newest wins.
-                    Map<String, Egg> ok = new LinkedHashMap<>();
-                    m.forEach((k, v) -> {
-                        if (k == null || v == null) return;
-                        String nk = key(k);
-                        Egg prev = ok.get(nk);
-                        if (prev == null || v.at >= prev.at) ok.put(nk, v);
-                    });
-                    eggs = ok;
-                }
-            }
-        } catch (Exception e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to read egg file {}: {}", file, e.toString());
+        Map<String, Egg> m = JsonStore.read(file, MAP_TYPE, GSON, "egg");
+        if (m != null) {
+            // Legacy per-stage keys ("lvl12") fold into their location ("loc2"); the newest wins.
+            Map<String, Egg> ok = new LinkedHashMap<>();
+            m.forEach((k, v) -> {
+                if (k == null || v == null) return;
+                String nk = key(k);
+                Egg prev = ok.get(nk);
+                if (prev == null || v.at >= prev.at) ok.put(nk, v);
+            });
+            eggs = ok;
         }
     }
 
@@ -94,12 +86,6 @@ public final class EggStore {
     }
 
     private void save() {
-        if (file == null) return;
-        try {
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, GSON.toJson(eggs, MAP_TYPE));
-        } catch (IOException e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to write egg file {}: {}", file, e.toString());
-        }
+        JsonStore.write(file, GSON.toJson(eggs, MAP_TYPE), "egg");
     }
 }

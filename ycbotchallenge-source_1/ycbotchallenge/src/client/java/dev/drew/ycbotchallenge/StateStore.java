@@ -3,10 +3,8 @@ package dev.drew.ycbotchallenge;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-import java.io.IOException;
 import java.lang.reflect.Type;
 import java.util.List;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -135,14 +133,8 @@ public final class StateStore {
     public Path file() { return file; }
 
     public void load() {
-        try {
-            if (file != null && Files.exists(file)) {
-                Map<String, Entry> m = GSON.fromJson(Files.readString(file), MAP_TYPE);
-                if (m != null) users = new LinkedHashMap<>(m);
-            }
-        } catch (Exception e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to read state file {}: {}", file, e.toString());
-        }
+        Map<String, Entry> m = JsonStore.read(file, MAP_TYPE, GSON, "state");
+        if (m != null) users = new LinkedHashMap<>(m);
     }
 
     public static String key(String username) {
@@ -170,12 +162,6 @@ public final class StateStore {
     public Set<String> usernames() { return users.keySet(); }
 
     private void save() {
-        if (file == null) return;
-        try {
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, GSON.toJson(users, MAP_TYPE));
-        } catch (IOException e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to write state file {}: {}", file, e.toString());
-        }
+        JsonStore.write(file, GSON.toJson(users, MAP_TYPE), "state");
     }
 }

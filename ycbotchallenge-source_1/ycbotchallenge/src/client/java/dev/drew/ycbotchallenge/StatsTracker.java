@@ -28,9 +28,8 @@ import net.minecraft.text.Text;
  * multiplier, balances), boss bars (boosts), action bar (rebirth progress %),
  * chat (ascension/prestige broadcasts). Emits log events on change.
  */
-public class StatsTracker {
+public class StatsTracker extends BotModule {
     private final YCBotChallengeConfig cfg;
-    private EventLogger logger;
 
     public Integer rebirths = null;
     public int ascensions = 0;
@@ -1185,9 +1184,7 @@ public class StatsTracker {
 
     private static String fmt(Double v) { return v != null ? Amounts.format(v) : null; }
 
-    private static String groupOrNull(Matcher m, String name) {
-        try { return m.group(name); } catch (IllegalArgumentException | IllegalStateException e) { return null; }
-    }
+    private static String groupOrNull(Matcher m, String name) { return Groups.group(m, name); }
 
     /** 0.9.43: an enchant's beacon as last read, or null when never seen. */
     public EnchantLore.PrestigeState enchantPrestigeState(String name) {
@@ -1421,14 +1418,8 @@ public class StatsTracker {
         return Economy.sidebarSettled(nowMs, lastSpendAt, settleMs);
     }
 
-    private static Pattern compileLoose(String p) {
-        if (p.startsWith("/") && p.endsWith("/") && p.length() > 2) {
-            return Pattern.compile(p.substring(1, p.length() - 1), Pattern.CASE_INSENSITIVE);
-        }
-        return Pattern.compile(Pattern.quote(p), Pattern.CASE_INSENSITIVE);
-    }
+    private static Pattern compileLoose(String p) { return Loose.compile(p); }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
     public JsonObject context() {
         JsonObject ctx = new JsonObject();
@@ -1454,9 +1445,6 @@ public class StatsTracker {
         return ctx;
     }
 
-    private void log(String type, Object... kv) {
-        if (logger != null) logger.log(type, kv);
-    }
 
     /** Call every ~20 ticks. */
     public void poll(MinecraftClient client) {

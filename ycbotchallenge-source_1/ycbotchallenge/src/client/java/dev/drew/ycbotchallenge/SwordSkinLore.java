@@ -156,14 +156,7 @@ public final class SwordSkinLore {
         return out;
     }
 
-    private static Integer intGroup(Matcher m, String group) {
-        try {
-            String g = m.group(group);
-            return g == null ? null : Integer.parseInt(g.replace(",", "").trim());
-        } catch (Exception e) {
-            return null;
-        }
-    }
+    private static Integer intGroup(Matcher m, String group) { return Groups.intGroup(m, group); }
 
     static String lower(String s) { return s == null ? "" : s.toLowerCase(Locale.ROOT); }
 }

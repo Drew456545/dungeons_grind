@@ -25,7 +25,7 @@ import net.minecraft.client.MinecraftClient;
  * (hero_regen) for the next estimate. The nameplate tracker ({@link HeroTracker})
  * supplies the decay rate and the alive/gone state.
  */
-public class HeroController {
+public class HeroController extends BotModule {
     private enum Phase { IDLE, TYPE, MENU_WAIT, LOOK, CLICK, CONFIRM, CLOSE, DONE }
 
     private final YCBotChallengeConfig cfg;
@@ -35,7 +35,6 @@ public class HeroController {
     private final ChatTyper typer;
     private final Pattern plateRe;
     private final Pattern loreRe;
-    private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
     private long phaseUntil;
@@ -50,7 +49,6 @@ public class HeroController {
     private Double menuMax;
     private int consecutiveAborts;
     private boolean suspended;
-    private long lastSkipLogAt;
     private int spawnsThisSession;
     private long lastGateSeen;
     /** The drawn target holds for the whole cycle; a fresh draw only after a spawn (or a first plan). */
@@ -69,8 +67,6 @@ public class HeroController {
         this.loreRe = HeroTracker.compile(cfg.heroLorePattern);
     }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
-    private void log(String type, Object... kv) { if (logger != null) logger.log(type, kv); }
 
     public boolean isBusy() { return phase != Phase.IDLE; }
     public boolean isSuspended() { return suspended; }
@@ -274,7 +270,7 @@ public class HeroController {
         }
         if (now < nextCheckAt) return false;
         if (stats.heroAlive(now) || tracker.isAlive()) {
-            if (now - lastSkipLogAt > 60_000) { lastSkipLogAt = now; log("hero_skip", "reason", "alive", "plate", tracker.isAlive(), "sinceSpawnMs", now - stats.heroSpawnedAt); }
+            logThrottled("hero_skip:alive", 60_000, "hero_skip", "reason", "alive", "plate", tracker.isAlive(), "sinceSpawnMs", now - stats.heroSpawnedAt);
             return false;
         }
         if (upgrades != null && (upgrades.isBusy() || upgrades.hasPendingDecision())) return false;

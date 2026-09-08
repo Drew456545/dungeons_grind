@@ -70,7 +70,7 @@ import net.minecraft.text.Text;
  * All Minecraft state is touched on the client tick thread; only the HTTP
  * round-trips and PNG encoding happen off-thread.
  */
-public class CaptchaSolver {
+public class CaptchaSolver extends BotModule {
     private enum Phase { IDLE, SETTLING, HUD_HIDE, CAPTURING, SOLVING, TYPING, TYPING_RUN, AWAITING_RESULT }
 
     /** What the client should do when solving ends. */
@@ -117,7 +117,6 @@ public class CaptchaSolver {
     private final List<Pattern> retryRes = new ArrayList<>();
     private final ChatTyper typer;
     private final Path debugDir;
-    private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
     private long phaseDeadline = 0;
@@ -220,14 +219,8 @@ public class CaptchaSolver {
         for (String p : cfg.captchaRetryPatterns) retryRes.add(compileLoose(p));
     }
 
-    private static Pattern compileLoose(String p) {
-        if (p.startsWith("/") && p.endsWith("/") && p.length() > 2) {
-            return Pattern.compile(p.substring(1, p.length() - 1), Pattern.CASE_INSENSITIVE);
-        }
-        return Pattern.compile(Pattern.quote(p), Pattern.CASE_INSENSITIVE);
-    }
+    private static Pattern compileLoose(String p) { return Loose.compile(p); }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
     public boolean isActive() { return phase != Phase.IDLE; }
 
@@ -275,9 +268,6 @@ public class CaptchaSolver {
         }
     }
 
-    private void log(String type, Object... kv) {
-        if (logger != null) logger.log(type, kv);
-    }
 
     /** Kick off a solve. Call only when isActive() is false. */
     public void begin(MinecraftClient client, String detectSource, String detail) {

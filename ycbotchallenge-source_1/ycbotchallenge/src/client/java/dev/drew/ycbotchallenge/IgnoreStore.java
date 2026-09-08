@@ -3,9 +3,7 @@ package dev.drew.ycbotchallenge;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-import java.io.IOException;
 import java.lang.reflect.Type;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -43,17 +41,11 @@ public final class IgnoreStore {
     public Path file() { return file; }
 
     public void load() {
-        try {
-            if (file != null && Files.exists(file)) {
-                List<Mark> m = GSON.fromJson(Files.readString(file), LIST_TYPE);
-                if (m != null) {
-                    List<Mark> ok = new ArrayList<>();
-                    for (Mark k : m) if (k != null && k.type != null) ok.add(k);
-                    marks = ok;
-                }
-            }
-        } catch (Exception e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to read ignore file {}: {}", file, e.toString());
+        List<Mark> m = JsonStore.read(file, LIST_TYPE, GSON, "ignore");
+        if (m != null) {
+            List<Mark> ok = new ArrayList<>();
+            for (Mark k : m) if (k != null && k.type != null) ok.add(k);
+            marks = ok;
         }
     }
 
@@ -93,12 +85,6 @@ public final class IgnoreStore {
     }
 
     private void save() {
-        if (file == null) return;
-        try {
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, GSON.toJson(marks, LIST_TYPE));
-        } catch (IOException e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to write ignore file {}: {}", file, e.toString());
-        }
+        JsonStore.write(file, GSON.toJson(marks, LIST_TYPE), "ignore");
     }
 }

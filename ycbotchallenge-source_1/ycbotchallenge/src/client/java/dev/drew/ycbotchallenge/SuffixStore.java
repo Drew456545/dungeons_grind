@@ -3,9 +3,7 @@ package dev.drew.ycbotchallenge;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-import java.io.IOException;
 import java.lang.reflect.Type;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -35,17 +33,11 @@ public final class SuffixStore {
     public Path file() { return file; }
 
     public void load() {
-        try {
-            if (file != null && Files.exists(file)) {
-                Map<String, Amounts.Learned> m = GSON.fromJson(Files.readString(file), MAP_TYPE);
-                if (m != null) {
-                    Map<String, Amounts.Learned> up = new LinkedHashMap<>();
-                    m.forEach((k, v) -> { if (k != null && v != null) up.put(key(k), v); });
-                    entries = up;
-                }
-            }
-        } catch (Exception e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to read suffix file {}: {}", file, e.toString());
+        Map<String, Amounts.Learned> m = JsonStore.read(file, MAP_TYPE, GSON, "suffix");
+        if (m != null) {
+            Map<String, Amounts.Learned> up = new LinkedHashMap<>();
+            m.forEach((k, v) -> { if (k != null && v != null) up.put(key(k), v); });
+            entries = up;
         }
     }
 
@@ -77,12 +69,6 @@ public final class SuffixStore {
     }
 
     private void save() {
-        if (file == null) return;
-        try {
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, GSON.toJson(entries, MAP_TYPE));
-        } catch (IOException e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to write suffix file {}: {}", file, e.toString());
-        }
+        JsonStore.write(file, GSON.toJson(entries, MAP_TYPE), "suffix");
     }
 }

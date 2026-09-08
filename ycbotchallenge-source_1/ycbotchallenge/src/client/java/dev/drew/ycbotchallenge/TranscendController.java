@@ -20,10 +20,9 @@ import net.minecraft.client.option.KeyBinding;
  * open. If the sword is not in the hand half a second later the press dropped it:
  * transcend_drop_suspect and an emergency stop so Drew can pick it up.
  */
-public class TranscendController {
+public class TranscendController extends BotModule {
     private final YCBotChallengeConfig cfg;
     private final EnchantLore swordLore;
-    private EventLogger logger;
     private final Pattern activeRe;
     private final Pattern endRe;
     private final Pattern cooldownRe;
@@ -48,11 +47,7 @@ public class TranscendController {
         this.cooldownRe = RebirthLore.compileLoose(cfg.transcendCooldownPattern);
     }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
-    private void log(String type, Object... kv) {
-        if (logger != null) logger.log(type, kv);
-    }
 
     /** Bot enabled: a first press somewhere in the next minutes, not at once. */
     public void onEnable(long now, int kills) {

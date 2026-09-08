@@ -399,14 +399,9 @@ public final class CompanionLore {
         return template.replace("{zone}", Integer.toString(zs.zone())).replace("{stage}", Integer.toString(zs.stage()));
     }
 
-    private static String group(Matcher m, String name) {
-        try { return m.group(name); } catch (IllegalArgumentException e) { return null; }
-    }
+    private static String group(Matcher m, String name) { return Groups.group(m, name); }
 
-    private static Integer parseInt(String s) {
-        if (s == null) return null;
-        try { return Integer.parseInt(s.replace(",", "").trim()); } catch (NumberFormatException e) { return null; }
-    }
+    private static Integer parseInt(String s) { return Groups.parseInt(s); }
 
     /** Lower-cased "name | lore" haystack for ad-hoc matching in logs. */
     public static String haystack(String name, List<String> lore) {

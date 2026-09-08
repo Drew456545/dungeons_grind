@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -87,6 +88,18 @@ public class EventLogger {
         } catch (IOException e) {
             YCBotChallengeClient.LOGGER.warn("Event log write failed: {}", e.toString());
         }
+    }
+
+    private final Map<String, Long> throttleAt = new HashMap<>();
+
+    /** 0.9.62: log {@code type} at most once per {@code everyMs} under {@code key}; true when it logged. */
+    public synchronized boolean throttled(String key, long everyMs, String type, Object... kv) {
+        long now = System.currentTimeMillis();
+        Long last = throttleAt.get(key);
+        if (last != null && now - last < everyMs) return false;
+        throttleAt.put(key, now);
+        log(type, kv);
+        return true;
     }
 
     public synchronized void close() {

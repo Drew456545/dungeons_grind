@@ -109,6 +109,7 @@ public final class EconomyChecks {
         n += checks0962b();
         n += checks0962c();
         n += checks0962d();
+        n += checksInfra();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -116,12 +117,7 @@ public final class EconomyChecks {
         System.out.println("EconomyChecks ok");
     }
 
-    private static Pattern loose(String spec) {
-        if (spec.startsWith("/") && spec.endsWith("/") && spec.length() > 2) {
-            return Pattern.compile(spec.substring(1, spec.length() - 1), Pattern.CASE_INSENSITIVE);
-        }
-        return Pattern.compile(Pattern.quote(spec), Pattern.CASE_INSENSITIVE);
-    }
+    private static Pattern loose(String spec) { return Loose.compile(spec); }
 
     private static List<Pattern> looseAll(List<String> specs) {
         return specs.stream().map(EconomyChecks::loose).toList();
@@ -3266,6 +3262,60 @@ public final class EconomyChecks {
     private static String find(Pattern p, String s) {
         java.util.regex.Matcher m = p.matcher(s);
         return m.find() ? m.group() : null;
+    }
+
+    /** 0.9.62: the shared pieces the refactor rests on - Loose, Groups, JsonStore's atomic write, the log throttle. */
+    private static int checksInfra() {
+        int n = 0;
+        n += eq("loose regex is case-insensitive", Loose.compile("/ab+c/").matcher("xABBCx").find(), true);
+        n += eq("loose plain is quoted", Loose.compile("a.c").matcher("abc").find(), false);
+        n += eq("loose plain matches itself", Loose.compile("a.c").matcher("xA.Cx").find(), true);
+        n += eq("loose null matches nothing", Loose.compile(null).matcher("anything").find(), false);
+        n += eq("loose blank matches nothing", Loose.compile("  ").matcher("anything").find(), false);
+        n += eq("loose slash alone is plain", Loose.compile("/").matcher("a/b").find(), true);
+        java.util.regex.Matcher m = Pattern.compile("(?<n>[\\d,]+) x(\\d)").matcher("1,234 x5");
+        n += eq("group found", m.find(), true);
+        n += eq("group named", Groups.group(m, "n"), "1,234");
+        n += eq("group missing is null", Groups.group(m, "nope") == null, true);
+        n += eq("groupOr falls back to the index", Groups.groupOr(m, "nope", 2), "5");
+        n += eq("intGroup reads commas", Groups.intGroup(m, "n"), 1234);
+        n += eq("intGroup missing is null", Groups.intGroup(m, "nope") == null, true);
+        n += eq("parseInt garbage is null", Groups.parseInt("1.5K") == null, true);
+        try {
+            java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("ycbot-store");
+            java.nio.file.Path f = dir.resolve("sub").resolve("store.json");
+            JsonStore.write(f, "{\"a\":1}", "test");
+            n += eq("write creates the parent", java.nio.file.Files.exists(f), true);
+            n += eq("no tmp left behind", java.nio.file.Files.exists(dir.resolve("sub").resolve("store.json.tmp")), false);
+            java.util.Map<?, ?> back = JsonStore.read(f, new com.google.gson.reflect.TypeToken<java.util.Map<String, Integer>>() {}.getType(), new com.google.gson.Gson(), "test");
+            n += eq("read round-trips", back != null ? back.get("a") : null, 1);
+            JsonStore.write(f, "{\"a\":2}", "test");
+            back = JsonStore.read(f, new com.google.gson.reflect.TypeToken<java.util.Map<String, Integer>>() {}.getType(), new com.google.gson.Gson(), "test");
+            n += eq("write replaces", back != null ? back.get("a") : null, 2);
+            n += eq("missing file reads null", JsonStore.read(dir.resolve("none.json"), java.util.Map.class, new com.google.gson.Gson(), "test") == null, true);
+            n += eq("null file reads null", JsonStore.read(null, java.util.Map.class, new com.google.gson.Gson(), "test") == null, true);
+            java.nio.file.Files.deleteIfExists(f);
+            java.nio.file.Files.deleteIfExists(dir.resolve("sub"));
+            java.nio.file.Files.deleteIfExists(dir);
+        } catch (Exception ex) {
+            System.err.println("FAIL JsonStore: " + ex);
+            n++;
+        }
+        try {
+            java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("ycbot-log");
+            EventLogger lg = new EventLogger(dir, "check", com.google.gson.JsonObject::new);
+            n += eq("throttle logs the first", lg.throttled("k", 60_000, "t", "a", 1), true);
+            n += eq("throttle holds the second", lg.throttled("k", 60_000, "t", "a", 2), false);
+            n += eq("another key logs", lg.throttled("k2", 60_000, "t", "a", 3), true);
+            n += eq("rows written", lg.rowsWritten(), 2L);
+            lg.close();
+            for (java.nio.file.Path p : java.nio.file.Files.list(dir).toList()) java.nio.file.Files.deleteIfExists(p);
+            java.nio.file.Files.deleteIfExists(dir);
+        } catch (Exception ex) {
+            System.err.println("FAIL throttle: " + ex);
+            n++;
+        }
+        return n;
     }
 
     /**

@@ -17,10 +17,9 @@ import net.minecraft.registry.Registries;
  * goes, so the decay rate, the lifetime and the cooldown can be read off the log before
  * a controller is written.
  */
-public class HeroTracker {
+public class HeroTracker extends BotModule {
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
-    private EventLogger logger;
     private final Pattern plateRe;
 
     private String seenName;
@@ -37,9 +36,7 @@ public class HeroTracker {
         this.plateRe = compile(cfg.heroPlatePattern);
     }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
-    private void log(String type, Object... kv) { if (logger != null) logger.log(type, kv); }
 
     static Pattern compile(String p) {
         if (p == null || p.isBlank()) return null;

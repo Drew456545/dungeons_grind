@@ -2784,11 +2784,6 @@ public class YCBotChallengeConfig {
 
     public void save(Path file) {
         configVersion = CURRENT_CONFIG_VERSION;
-        try {
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, GSON.toJson(this));
-        } catch (IOException e) {
-            YCBotChallengeClient.LOGGER.warn("Failed to save config: {}", e.toString());
-        }
+        JsonStore.write(file, GSON.toJson(this), "config");
     }
 }

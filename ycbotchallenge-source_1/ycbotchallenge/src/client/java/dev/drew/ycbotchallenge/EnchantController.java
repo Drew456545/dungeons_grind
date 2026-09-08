@@ -27,7 +27,7 @@ import net.minecraft.util.hit.HitResult;
  * purchase in flight completes and the menu closes; nothing is ever left open
  * while combat should be running.
  */
-public class EnchantController {
+public class EnchantController extends BotModule {
     private enum Phase {
         IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_PRESS, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
         MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, PRESTIGE_CLICK, PRESTIGE_SETTLE, CLOSE_RETURN,
@@ -40,7 +40,6 @@ public class EnchantController {
     /** 0.9.33: the Sword Skins menu reached from the enchanter's "Swords" item. */
     private final SwordSkinLore skins;
     private int swordsSlot = -1;
-    private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
     private long phaseUntil;
@@ -89,7 +88,6 @@ public class EnchantController {
         this.skins = new SwordSkinLore(cfg);
     }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
     /** 0.9.37: the upgrade controller, so a visit never opens the enchanter over a buy that is decided or in flight. */
     private UpgradeController upgrades;
@@ -1041,7 +1039,4 @@ public class EnchantController {
 
     private static long now() { return System.currentTimeMillis(); }
 
-    private void log(String type, Object... kv) {
-        if (logger != null) logger.log(type, kv);
-    }
 }

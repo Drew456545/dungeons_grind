@@ -316,20 +316,7 @@ public final class EnchantLore {
         return false;
     }
 
-    private static Integer intGroup(Matcher m, String group) {
-        try {
-            String s = m.group(group);
-            return s == null ? null : Integer.parseInt(s.replace(",", "").trim());
-        } catch (Exception e) {
-            return null;
-        }
-    }
+    private static Integer intGroup(Matcher m, String group) { return Groups.intGroup(m, group); }
 
-    private static Pattern compileLoose(String p) {
-        if (p == null || p.isBlank()) return Pattern.compile("(?!)");
-        if (p.startsWith("/") && p.endsWith("/") && p.length() > 2) {
-            return Pattern.compile(p.substring(1, p.length() - 1), Pattern.CASE_INSENSITIVE);
-        }
-        return Pattern.compile(Pattern.quote(p), Pattern.CASE_INSENSITIVE);
-    }
+    private static Pattern compileLoose(String p) { return Loose.compile(p); }
 }

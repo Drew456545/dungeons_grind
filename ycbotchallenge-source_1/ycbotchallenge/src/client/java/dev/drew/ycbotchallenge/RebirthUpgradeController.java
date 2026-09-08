@@ -23,7 +23,7 @@ import net.minecraft.screen.slot.Slot;
  * item's tooltip changed: unchanged = nothing bought, stop. A sub-menu opening
  * from the click is logged and closed, never clicked into blind.
  */
-public class RebirthUpgradeController {
+public class RebirthUpgradeController extends BotModule {
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, GUI_WAIT, LOOK, STAR_CLICK, MENU_WAIT, SCAN, CLICK, AFTER, CLOSE, CLOSE_RETURN }
 
     private record Entry(int slot, String name, List<String> lore) {}
@@ -34,7 +34,6 @@ public class RebirthUpgradeController {
     private final StatsTracker stats;
     private final RebirthLore lore;
     private final ChatTyper typer;
-    private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
     private long phaseUntil;
@@ -67,7 +66,6 @@ public class RebirthUpgradeController {
         this.typer = new ChatTyper(cfg);
     }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
@@ -114,9 +112,6 @@ public class RebirthUpgradeController {
         chosen = null;
     }
 
-    private void log(String type, Object... kv) {
-        if (logger != null) logger.log(type, kv);
-    }
 
     /** @return true if combat should yield this tick. */
     public boolean tick(MinecraftClient client, CombatController combat) {

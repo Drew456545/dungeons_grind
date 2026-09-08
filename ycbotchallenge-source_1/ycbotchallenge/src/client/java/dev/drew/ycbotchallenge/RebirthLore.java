@@ -93,13 +93,7 @@ public final class RebirthLore {
         return new RebirthItem(required, from, to);
     }
 
-    static Pattern compileLoose(String p) {
-        if (p == null || p.isBlank()) return Pattern.compile("(?!)");
-        if (p.length() > 2 && p.startsWith("/") && p.endsWith("/")) {
-            return Pattern.compile(p.substring(1, p.length() - 1), Pattern.CASE_INSENSITIVE);
-        }
-        return Pattern.compile(Pattern.quote(p), Pattern.CASE_INSENSITIVE);
-    }
+    static Pattern compileLoose(String p) { return Loose.compile(p); }
 
     /** The nether star ("REBIRTH UPGRADES") by name or lore. */
     public boolean isStar(String name, List<String> lore) {
@@ -178,11 +172,5 @@ public final class RebirthLore {
         return null;
     }
 
-    private static String groupOr(Matcher m, String named, int idx) {
-        try {
-            String g = m.group(named);
-            if (g != null) return g;
-        } catch (IllegalArgumentException ignored) { }
-        return m.groupCount() >= idx ? m.group(idx) : null;
-    }
+    private static String groupOr(Matcher m, String named, int idx) { return Groups.groupOr(m, named, idx); }
 }

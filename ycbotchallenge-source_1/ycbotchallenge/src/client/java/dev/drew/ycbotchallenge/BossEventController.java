@@ -52,7 +52,7 @@ import net.minecraft.util.math.Vec3d;
  * abort with time left waits {@code bossRescanMs} on the spot, and the bot leaves only
  * when the window is spent, the bar is gone or the boss is dead.
  */
-public class BossEventController {
+public class BossEventController extends BotModule {
     private enum Phase { IDLE, SCAN, WALK, AIM, HIT, WAIT, DONE }
 
     private record Candidate(Entity e, String type, int rank, double dBody, double volume, String plate) {}
@@ -60,7 +60,6 @@ public class BossEventController {
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
     private final UpgradeController upgrades;
-    private EventLogger logger;
 
     private Phase phase = Phase.IDLE;
     private long eventStartedAt;
@@ -130,7 +129,6 @@ public class BossEventController {
         this.upgrades = upgrades;
     }
 
-    public void setLogger(EventLogger logger) { this.logger = logger; }
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
@@ -162,9 +160,6 @@ public class BossEventController {
         startPendingSince = 0;
     }
 
-    private void log(String type, Object... kv) {
-        if (logger != null) logger.log(type, kv);
-    }
 
     /** @return true if combat should yield this tick. */
     public boolean tick(MinecraftClient client, CombatController combat) {
