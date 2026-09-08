@@ -839,6 +839,11 @@ public class YCBotChallengeConfig {
     public int rebirthUpgradeSettleMinMs = 400;
     public int rebirthUpgradeSettleMaxMs = 1200;
     public int rebirthUpgradeOpenTimeoutMs = 4000;
+    /**
+     * 0.9.62: aborts in a row before the rebirth-upgrade visits are suspended until the next
+     * toggle (the controller read enchantMaxConsecutiveAborts until now).
+     */
+    public int rebirthUpgradeMaxConsecutiveAborts = 3;
     public int rebirthUpgradeMaxMenuMs = 60_000;
     /** Look-at-menu pause after Rebirth GUI opens, before Esc or diamond click. */
     public int rebirthLookMinMs = 600;
@@ -1753,7 +1758,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 60;
+    public static final int CURRENT_CONFIG_VERSION = 61;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2178,6 +2183,10 @@ public class YCBotChallengeConfig {
             if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "ad,hn,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
             changed = true;
         }
+        if (configVersion < 61) {
+            // v61 (0.9.62): rebirthUpgradeMaxConsecutiveAborts (defaults only - a fresh knob).
+            changed = true;
+        }
         if (configVersion < 60) {
             // v60 (0.9.62): four amount tokens the v58 migration missed - the rebirth, companion
             // and prestige multipliers and the hero plate - learn the exponent form (the
@@ -2340,6 +2349,7 @@ public class YCBotChallengeConfig {
         if (captchaMapHeldRejectMs < 0) captchaMapHeldRejectMs = 0;
         if (captchaMapGoneConfirmMs < 0) captchaMapGoneConfirmMs = 0;
         if (captchaMapGoneConfirmMs > 10_000) captchaMapGoneConfirmMs = 10_000;
+        if (rebirthUpgradeMaxConsecutiveAborts < 1) rebirthUpgradeMaxConsecutiveAborts = 3;
         if (captchaSolvedPatterns == null) captchaSolvedPatterns = fresh.captchaSolvedPatterns;
         if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
         if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;

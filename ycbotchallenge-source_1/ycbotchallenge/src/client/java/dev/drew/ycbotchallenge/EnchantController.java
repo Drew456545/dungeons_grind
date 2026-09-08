@@ -61,9 +61,8 @@ public class EnchantController extends BotModule implements Module {
     private boolean reopened;
     private boolean wrapUp;
     private boolean useHeld;
-    private int consecutiveAborts;
-    private boolean suspended;
-    private long suspendedAt;
+    /** 0.9.62: the abort and suspension bookkeeping, shared (enchant_abort / enchant_suspended / enchant_resumed). */
+    private GuiFlow.Aborts aborts;
     // 0.9.45: the open-clear glance, repeated while a corpse still fills the crosshair.
     private long clearStartedAt;
     private int clearGlances;
@@ -84,6 +83,7 @@ public class EnchantController extends BotModule implements Module {
 
     public EnchantController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
+        this.aborts = new GuiFlow.Aborts("enchant", () -> cfg.enchantMaxConsecutiveAborts, () -> cfg.enchantSuspendMs);
         this.stats = stats;
         this.lore = new EnchantLore(cfg);
         this.skins = new SwordSkinLore(cfg);
@@ -120,7 +120,7 @@ public class EnchantController extends BotModule implements Module {
     public boolean isBusy() { return phase != Phase.IDLE; }
 
     /** 0.9.30 HUD chip: suspended after repeated aborts (toggle to reset). */
-    public boolean isSuspended() { return suspended; }
+    public boolean isSuspended() { return aborts.suspended(); }
 
     public EnchantLore lore() { return lore; }
 
@@ -156,9 +156,9 @@ public class EnchantController extends BotModule implements Module {
     public String hudLine() {
         if (!cfg.enchantsEnabled) return null;
         if (phase == Phase.IDLE) {
-            if (!suspended) return null;
+            if (!aborts.suspended()) return null;
             if (cfg.enchantSuspendMs <= 0) return "enchant: suspended after repeated aborts (toggle to reset)";
-            long left = Math.max(0, cfg.enchantSuspendMs - (System.currentTimeMillis() - suspendedAt));
+            long left = Math.max(0, cfg.enchantSuspendMs - (System.currentTimeMillis() - aborts.suspendedAt()));
             return "enchant: suspended after repeated aborts · retry in " + Math.max(1, Math.round(left / 60000.0)) + " min";
         }
         return "enchant: " + phase.name().toLowerCase(Locale.ROOT)
@@ -187,8 +187,7 @@ public class EnchantController extends BotModule implements Module {
         phase = Phase.IDLE;
         picked = null;
         maxItem = null;
-        suspended = false;
-        consecutiveAborts = 0;
+        aborts.onEnable();
     }
 
     /** @return true if combat should yield this tick. */
@@ -459,7 +458,7 @@ public class EnchantController extends BotModule implements Module {
                 if (now < phaseUntil) return true;
                 if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.UPGRADE) {
                     phase = Phase.RETURN_WAIT;
-                    phaseUntil = now + 1500;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                     return true;
                 }
                 ScreenHandler h = EnchantScreens.handler(client);
@@ -489,7 +488,7 @@ public class EnchantController extends BotModule implements Module {
                     if (block != null) {
                         GuiHuman.close(client, "enchant", logger);
                         phase = Phase.RETURN_WAIT;
-                        phaseUntil = now + 1500;
+                        phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                         return true;
                     }
                     phase = Phase.PRESTIGE_CLICK;
@@ -501,7 +500,7 @@ public class EnchantController extends BotModule implements Module {
                     log("enchant_skip", "reason", "no-max-item", "name", picked != null ? picked.name() : null);
                     GuiHuman.close(client, "enchant", logger);
                     phase = Phase.RETURN_WAIT;
-                    phaseUntil = now + 1500;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                     return true;
                 }
                 maxItem = mi.item();
@@ -521,7 +520,7 @@ public class EnchantController extends BotModule implements Module {
                         "currency", cur, "balance", bal != null ? Amounts.format(bal) : null);
                     GuiHuman.close(client, "enchant", logger);
                     phase = Phase.RETURN_WAIT;
-                    phaseUntil = now + 1500;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                     return true;
                 }
                 phase = Phase.MAX_CLICK;
@@ -531,7 +530,7 @@ public class EnchantController extends BotModule implements Module {
                 if (now < phaseUntil) return true;
                 if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.UPGRADE) {
                     phase = Phase.RETURN_WAIT;
-                    phaseUntil = now + 1500;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                     return true;
                 }
                 GuiHuman.click(client, maxSlot, "enchant", "max-upgrade", logger);
@@ -556,7 +555,7 @@ public class EnchantController extends BotModule implements Module {
                 if (k == EnchantScreens.Kind.UPGRADE) {
                     GuiHuman.close(client, "enchant", logger);
                     phase = Phase.RETURN_WAIT;
-                    phaseUntil = now + 1500;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                 } else if (k == EnchantScreens.Kind.ENCHANTER) {
                     phase = wrapUp ? Phase.CLOSE : Phase.SCAN;
                 } else {
@@ -575,7 +574,7 @@ public class EnchantController extends BotModule implements Module {
                 if (now < phaseUntil) return true;
                 if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.UPGRADE || prestigeItem == null) {
                     phase = Phase.RETURN_WAIT;
-                    phaseUntil = now + 1500;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                     return true;
                 }
                 GuiHuman.click(client, prestigeItem.slot(), "enchant", "prestige", logger);
@@ -615,7 +614,7 @@ public class EnchantController extends BotModule implements Module {
                 }
                 if (k != EnchantScreens.Kind.UPGRADE) {
                     phase = Phase.RETURN_WAIT;
-                    phaseUntil = now + 1500;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                     return true;
                 }
                 String block = after == null ? "no-item" : EnchantLore.prestigeBlock(after, stats.rebirths,
@@ -628,7 +627,7 @@ public class EnchantController extends BotModule implements Module {
                 }
                 GuiHuman.close(client, "enchant", logger);
                 phase = Phase.RETURN_WAIT;
-                phaseUntil = now + 1500;
+                phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
             }
             case SWORDS_CLICK -> {
                 if (wrapUp) { phase = Phase.CLOSE; return true; }
@@ -698,7 +697,7 @@ public class EnchantController extends BotModule implements Module {
                         // menu closed, the enchanter lingered 8 s to the stray close, 21 times in
                         // one session). Wait for it and close it too.
                         phase = Phase.CLOSE_RETURN;
-                        phaseUntil = now + 1500;
+                        phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                         closeAt = 0;
                         return true;
                     }
@@ -735,15 +734,11 @@ public class EnchantController extends BotModule implements Module {
      * ever clustered right after zone advances.
      */
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
-        if (suspended && cfg.enchantSuspendMs > 0 && now - suspendedAt >= cfg.enchantSuspendMs) {
-            // 0.9.45: a suspension lifts on its own (the 01:43 log: three no-gui opens in a row
-            // - each one a corpse under the crosshair - parked the enchanter until the next
-            // toggle, which overnight is the whole night).
-            suspended = false;
-            consecutiveAborts = 0;
-            log("enchant_resumed", "afterMs", now - suspendedAt);
-        }
-        if (suspended || combat.isOnBreak() || client.currentScreen != null) return false;
+        // 0.9.45: a suspension lifts on its own (the 01:43 log: three no-gui opens in a row
+        // - each one a corpse under the crosshair - parked the enchanter until the next
+        // toggle, which overnight is the whole night). enchant_resumed.
+        aborts.maybeUnsuspend(now, logger);
+        if (aborts.suspended() || combat.isOnBreak() || client.currentScreen != null) return false;
         if (lastVisitAt == 0) lastVisitAt = now; // session start counts as a visit for the ramp
         // 0.9.37: a zone/sword buy is decided or typing - the enchanter would steal the chat
         // (2026-09-04 19:24:38: upgrade_abort chat-closed kind=zone inside the lvl4 leg).
@@ -916,7 +911,7 @@ public class EnchantController extends BotModule implements Module {
         if (k == EnchantScreens.Kind.UPGRADE) {
             EnchantScreens.closeGui(client);
             phase = Phase.RETURN_WAIT;
-            phaseUntil = now + 1500;
+            phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
             return;
         }
         boolean workLeft = !wrapUp && tabIndex < lore.tabs().size();
@@ -981,21 +976,16 @@ public class EnchantController extends BotModule implements Module {
         spent.forEach((k, v) -> spentFmt.put(k, Amounts.format(v)));
         log("enchant_menu_close", "reason", reason, "buys", buys, "prestiges", prestigesThisVisit, "spent", spentFmt,
             "durationMs", now - visitStartedAt, "balances", balancesNow());
-        consecutiveAborts = 0;
+        aborts.finish();
         endVisit(client, now);
     }
 
     private void abort(MinecraftClient client, String why, boolean closeGui) {
-        log("enchant_abort", "reason", why, "phase", phase.name().toLowerCase(Locale.ROOT), "buys", buys);
-        if (closeGui || isOurGui(client)) EnchantScreens.closeGui(client);
         // A menu that never opens or keeps vanishing is a server/layout change, not
-        // bad luck: stop trying until the bot is toggled, rather than right-clicking forever.
-        if (++consecutiveAborts >= Math.max(1, cfg.enchantMaxConsecutiveAborts)) {
-            suspended = true;
-            suspendedAt = now();
-            log("enchant_suspended", "aborts", consecutiveAborts, "lastReason", why,
-                "resumeInMs", cfg.enchantSuspendMs > 0 ? cfg.enchantSuspendMs : null);
-        }
+        // bad luck: stop trying until the bot is toggled (or enchantSuspendMs), rather than
+        // right-clicking forever. enchant_abort / enchant_suspended.
+        aborts.abort(now(), why, phase.name().toLowerCase(Locale.ROOT), logger, "buys", buys);
+        if (closeGui || isOurGui(client)) EnchantScreens.closeGui(client);
         endVisit(client, now());
     }
 

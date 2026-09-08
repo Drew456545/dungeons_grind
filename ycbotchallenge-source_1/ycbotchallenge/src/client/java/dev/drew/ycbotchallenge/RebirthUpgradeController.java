@@ -2,12 +2,8 @@ package dev.drew.ycbotchallenge;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
-import net.minecraft.item.ItemStack;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.Slot;
 
 /**
  * Spends rebirth points (0.9.17). Each rebirth grants points that buy permanent
@@ -22,22 +18,27 @@ import net.minecraft.screen.slot.Slot;
  * every item (rebirth_upgrade_menu) and the click is judged by whether the
  * item's tooltip changed: unchanged = nothing bought, stop. A sub-menu opening
  * from the click is logged and closed, never clicked into blind.
+ *
+ * <p>0.9.62: the visit is a {@link GuiFlow} script (wait_still, pause, type, gui_wait,
+ * look, star_click, menu_wait, scan, click, after, close, close_return) with the shared
+ * abort bookkeeping; the menu-timeout rule (jump to close, never abort) is the driver's
+ * timeout hook. The abort cap is its own knob now - it read the enchanter's.
  */
 public class RebirthUpgradeController extends BotModule implements Module {
     @Override public String name() { return "rebirth_upgrade"; }
-    private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, GUI_WAIT, LOOK, STAR_CLICK, MENU_WAIT, SCAN, CLICK, AFTER, CLOSE, CLOSE_RETURN }
-
-    private record Entry(int slot, String name, List<String> lore) {}
-    /** Close beat (0.9.33). */
-    private long closeAt = 0;
 
     private final YCBotChallengeConfig cfg;
     private final StatsTracker stats;
     private final RebirthLore lore;
     private final ChatTyper typer;
+    private final GuiFlow.Aborts aborts;
+    private final GuiFlow flow;
+    private GuiFlow.Step stepWaitStill;
+    private GuiFlow.Step stepClose;
+    private GuiFlow.Step stepScan;
+    /** The scan's first look is the menu look; a re-read after a purchase is the shorter read beat. */
+    private long scanDelayMs;
 
-    private Phase phase = Phase.IDLE;
-    private long phaseUntil;
     private long visitStartedAt;
     private String visitVia = "rebirth";
     private long plannedAt = 0;
@@ -57,36 +58,181 @@ public class RebirthUpgradeController extends BotModule implements Module {
     private RebirthLore.Item chosen;
     private int chosenSlot = -1;
     private List<String> chosenLoreBefore = List.of();
-    private int consecutiveAborts;
-    private boolean suspended;
 
     public RebirthUpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
         this.stats = stats;
         this.lore = new RebirthLore(cfg);
         this.typer = new ChatTyper(cfg);
+        this.aborts = new GuiFlow.Aborts("rebirth_upgrade", () -> cfg.rebirthUpgradeMaxConsecutiveAborts, () -> 0L);
+        this.flow = new GuiFlow(aborts, () -> cfg.rebirthUpgradeMaxMenuMs, "menu-timeout");
+        this.flow.abortFields(() -> new Object[] {"clicks", clicks});
+        this.flow.onAbort((client, why) -> {
+            typer.cancel(client);
+            if (isOurGui(client)) EnchantScreens.closeGui(client);
+        });
+        this.flow.onTimeout(c -> {
+            String p = flow.phaseName();
+            if ("close".equals(p) || "close_return".equals(p)) return null;
+            log("rebirth_upgrade_skip", "reason", "menu-timeout", "phase", p);
+            return stepClose;
+        });
+        buildSteps();
     }
 
+    /** The visit script, last step first so every reference points backwards (the scan loop goes through a field). */
+    private void buildSteps() {
+        GuiFlow.Step closeReturn = GuiFlow.custom("close_return", c -> {
+            if (rebirthGuiOpen(c.client)) {
+                if (!c.armed()) { c.arm(GuiHuman.closeDelayMs(cfg)); return null; }
+                if (!c.due()) return null;
+                GuiHuman.close(c.client, "rebirth-upgrade", logger);
+                log("rebirth_upgrade_close_return", "closed", true);
+            } else if (c.sinceStep() < GuiFlow.SUBMENU_BEAT_MS) {
+                return null;
+            }
+            return endVisit(c.now);
+        });
+        stepClose = GuiFlow.custom("close", c -> {
+            if (isOurGui(c.client)) {
+                if (!c.armed()) { c.arm(GuiHuman.closeDelayMs(cfg)); return null; }
+                if (!c.due()) return null;
+                boolean submenu = !rebirthGuiOpen(c.client);
+                GuiHuman.close(c.client, "rebirth-upgrade", logger);
+                if (submenu) {
+                    // 0.9.54: Esc on the Upgrades menu brings the Rebirth GUI back (13 stray closes
+                    // of it on 2026-09-06, 8 s idle each) - wait for it and close it too.
+                    return closeReturn;
+                }
+            }
+            return endVisit(c.now);
+        });
+        GuiFlow.Step after = GuiFlow.custom("after", c -> {
+            if (!c.armed()) c.arm(HumanTiming.logNormalMs(cfg.rebirthUpgradeSettleMinMs, cfg.rebirthUpgradeSettleMaxMs));
+            if (!c.due()) return null;
+            if (!menuOpen(c.client)) return onMenuGone(c.client, c.now);
+            List<String> loreAfter = List.of();
+            for (GuiHuman.Item e : GuiHuman.items(c.client)) if (e.slot() == chosenSlot) { loreAfter = e.lore(); break; }
+            if (!loreAfter.equals(chosenLoreBefore)) {
+                RebirthLore.Item nowItem = lore.parse(chosen != null ? chosen.name() : "", loreAfter);
+                if (chosen != null && chosen.cost() != null && points != null) points = Math.max(0, points - chosen.cost());
+                log("rebirth_upgrade_bought", "name", chosen != null ? chosen.name() : null, "clicks", clicks,
+                    "before", chosenLoreBefore, "after", loreAfter, "level", nowItem.level(), "pointsLeft", points);
+                scanDelayMs = GuiHuman.readDelayMs(cfg);
+                return stepScan;
+            }
+            log("rebirth_upgrade_stop", "reason", "no-change", "name", chosen != null ? chosen.name() : null,
+                "lore", loreAfter, "points", points);
+            return stepClose;
+        });
+        GuiFlow.Step click = GuiFlow.custom("click", c -> {
+            if (!menuOpen(c.client)) return onMenuGone(c.client, c.now);
+            if (!c.armed()) c.arm(GuiHuman.clickDelayMs(cfg));
+            if (!c.due()) return null;
+            GuiHuman.click(c.client, chosenSlot, "rebirth-upgrade", "upgrade:" + (chosen != null ? chosen.name() : "?"), logger);
+            clicks++;
+            log("rebirth_upgrade_click", "name", chosen != null ? chosen.name() : null, "slot", chosenSlot, "clicks", clicks);
+            return after;
+        });
+        stepScan = GuiFlow.custom("scan", c -> {
+            if (!menuOpen(c.client)) return onMenuGone(c.client, c.now);
+            if (!c.armed()) c.arm(scanDelayMs);
+            if (!c.due()) return null;
+            List<GuiHuman.Item> entries = GuiHuman.items(c.client);
+            List<RebirthLore.Item> items = new ArrayList<>();
+            List<Integer> slots = new ArrayList<>();
+            for (GuiHuman.Item e : entries) { items.add(lore.parse(e.name(), e.lore())); slots.add(e.slot()); }
+            if (!menuLogged) {
+                menuLogged = true;
+                log("rebirth_upgrade_menu", "title", GuiHuman.title(c.client), "items", GuiHuman.describe(entries));
+            }
+            List<String> summaries = new ArrayList<>();
+            for (RebirthLore.Item it : items) summaries.add(it.summary());
+            log("rebirth_upgrade_scan", "items", summaries, "points", points, "clicks", clicks);
+            if (clicks >= cfg.rebirthUpgradeMaxClicks) {
+                log("rebirth_upgrade_skip", "reason", "click-cap", "clicks", clicks);
+                return stepClose;
+            }
+            RebirthLore.Item pick = lore.choose(items, points);
+            if (pick == null) {
+                log("rebirth_upgrade_skip", "reason", "nothing-eligible", "points", points, "order", lore.order());
+                stats.noteNothingEligible();
+                return stepClose;
+            }
+            chosen = pick;
+            chosenSlot = slots.get(items.indexOf(pick));
+            chosenLoreBefore = new ArrayList<>(pick.lore());
+            log("rebirth_upgrade_pick", "name", pick.name(), "slot", chosenSlot, "level", pick.level(),
+                "maxLevel", pick.maxLevel(), "cost", pick.cost(), "points", points, "orderIndex", lore.orderIndex(pick));
+            return click;
+        });
+        GuiFlow.Step menuWait = GuiFlow.custom("menu_wait", c -> {
+            if (menuOpen(c.client)) {
+                scanDelayMs = HumanTiming.logNormalMs(cfg.rebirthLookMinMs, cfg.rebirthLookMaxMs);
+                return stepScan;
+            }
+            if (!c.armed()) c.arm(cfg.rebirthUpgradeOpenTimeoutMs);
+            if (!c.due()) return null;
+            if (rebirthGuiOpen(c.client)) {
+                log("rebirth_upgrade_skip", "reason", "no-menu", "title", GuiHuman.title(c.client));
+                return stepClose;
+            }
+            c.abort("gui-closed");
+            return null;
+        });
+        GuiFlow.Step starClick = GuiFlow.custom("star_click", c -> {
+            if (!rebirthGuiOpen(c.client)) { c.abort("gui-closed"); return null; }
+            if (!c.armed()) c.arm(GuiHuman.clickDelayMs(cfg));
+            if (!c.due()) return null;
+            GuiHuman.click(c.client, starSlot, "rebirth-upgrade", "star", logger);
+            log("rebirth_upgrade_star_click", "slot", starSlot);
+            return menuWait;
+        });
+        GuiFlow.Step look = GuiFlow.look("look", c -> rebirthGuiOpen(c.client),
+            () -> HumanTiming.logNormalMs(cfg.rebirthLookMinMs, cfg.rebirthLookMaxMs), "gui-closed", c -> {
+                GuiHuman.Item star = null;
+                List<GuiHuman.Item> entries = GuiHuman.items(c.client);
+                for (GuiHuman.Item e : entries) if (lore.isStar(e.name(), e.lore())) { star = e; break; }
+                if (star == null) {
+                    log("rebirth_upgrade_skip", "reason", "no-star", "menuItems", GuiHuman.describe(entries));
+                    return stepClose;
+                }
+                starSlot = star.slot();
+                points = lore.points(star.lore());
+                log("rebirth_points", "points", points, "slot", starSlot, "lore", star.lore(), "via", visitVia);
+                if (points != null && points <= 0) {
+                    stats.notePointsChecked();
+                    log("rebirth_upgrade_skip", "reason", "no-points", "rebirths", stats.rebirths);
+                    return stepClose;
+                }
+                return starClick;
+            });
+        GuiFlow.Step guiWait = GuiFlow.waitFor("gui_wait", c -> rebirthGuiOpen(c.client), () -> cfg.rebirthUpgradeOpenTimeoutMs, "no-gui", look);
+        GuiFlow.Step type = GuiFlow.type("type", typer, () -> cfg.rebirthCommand, c -> isOurGui(c.client),
+            c -> log("rebirth_upgrade_send", "command", cfg.rebirthCommand, "typos", typer.typos(), "via", visitVia), guiWait);
+        GuiFlow.Step pause = GuiFlow.pause("pause", () -> HumanTiming.logNormalMs(cfg.upgradeStopPauseMinMs, cfg.upgradeStopPauseMaxMs), false, type);
+        stepWaitStill = GuiFlow.waitStill("wait_still", c -> c.combat.isStationary(c.client), () -> 5000L, pause);
+    }
 
-    public boolean isBusy() { return phase != Phase.IDLE; }
+    public boolean isBusy() { return flow.isBusy(); }
 
     /** 0.9.30 HUD chip: suspended after repeated aborts (toggle to reset). */
-    public boolean isSuspended() { return suspended; }
+    public boolean isSuspended() { return aborts.suspended(); }
 
     /** The Rebirth GUI and its Upgrades menu are ours (or hand-opened), never a captcha. */
     public boolean isOurGui(MinecraftClient client) {
-        String title = title(client);
+        String title = GuiHuman.title(client);
         return title != null && (RebirthScreens.isRebirthGui(title) || lore.isMenuTitle(title));
     }
 
     public String hudLine() {
         if (!cfg.rebirthUpgradesEnabled) return null;
-        if (phase == Phase.IDLE) {
-            if (suspended) return "rebirth upgrades: suspended after repeated aborts (toggle to reset)";
+        if (!flow.isBusy()) {
+            if (aborts.suspended()) return "rebirth upgrades: suspended after repeated aborts (toggle to reset)";
             if (plannedAt != 0) return "rebirth upgrades: visit in " + Math.max(0, (plannedAt - System.currentTimeMillis() + 999) / 1000) + "s";
             return null;
         }
-        return "rebirth upgrades: " + phase.name().toLowerCase(Locale.ROOT)
+        return "rebirth upgrades: " + flow.phaseName()
             + (points != null ? "  pts " + points : "") + (clicks > 0 ? "  bought " + clicks : "");
     }
 
@@ -100,214 +246,37 @@ public class RebirthUpgradeController extends BotModule implements Module {
         enableDelayMs = HumanTiming.logNormalMs(cfg.rebirthUpgradeEnableDelayMinMs,
             Math.max(cfg.rebirthUpgradeEnableDelayMinMs + 1, cfg.rebirthUpgradeEnableDelayMaxMs));
         lastRebirthSeen = stats.lastRebirthAt;
-        suspended = false;
-        consecutiveAborts = 0;
+        aborts.onEnable();
     }
 
     public void reset(MinecraftClient client) {
-        if (client != null && phase != Phase.IDLE && isOurGui(client)) EnchantScreens.closeGui(client);
+        if (client != null && flow.isBusy() && isOurGui(client)) EnchantScreens.closeGui(client);
         typer.cancel(client);
-        phase = Phase.IDLE;
+        flow.cancel();
         plannedAt = 0;
         revisitAt = 0;
         chosen = null;
     }
 
-
     /** @return true if combat should yield this tick. */
     public boolean tick(MinecraftClient client, CombatController combat) {
         if (!cfg.rebirthUpgradesEnabled || client.player == null) return false;
         long now = System.currentTimeMillis();
-        if (phase == Phase.IDLE) return maybeStart(client, combat, now);
-
+        if (!flow.isBusy()) return maybeStart(client, combat, now);
         combat.releaseKeys(client);
-        if (phase != Phase.CLOSE && now - visitStartedAt > cfg.rebirthUpgradeMaxMenuMs) {
-            log("rebirth_upgrade_skip", "reason", "menu-timeout", "phase", phase.name().toLowerCase(Locale.ROOT));
-            phase = Phase.CLOSE;
-        }
-        switch (phase) {
-            case WAIT_STILL -> {
-                if (combat.isStationary(client)) {
-                    phase = Phase.PAUSE;
-                    phaseUntil = now + HumanTiming.logNormalMs(cfg.upgradeStopPauseMinMs, cfg.upgradeStopPauseMaxMs);
-                } else if (now >= phaseUntil) {
-                    abort(client, "not-still");
-                    return false;
-                }
-            }
-            case PAUSE -> {
-                if (now < phaseUntil) return true;
-                if (client.currentScreen != null) { abort(client, "screen-open"); return false; }
-                typer.begin(client, cfg.rebirthCommand, now);
-                phase = Phase.TYPE;
-            }
-            case TYPE -> {
-                ChatTyper.State s = typer.tick(client, now);
-                if (s == ChatTyper.State.FAILED) { abort(client, typer.failReason()); return false; }
-                if (s != ChatTyper.State.DONE) return true;
-                log("rebirth_upgrade_send", "command", cfg.rebirthCommand, "typos", typer.typos(), "via", visitVia);
-                phase = Phase.GUI_WAIT;
-                phaseUntil = now + cfg.rebirthUpgradeOpenTimeoutMs;
-            }
-            case GUI_WAIT -> {
-                if (rebirthGuiOpen(client)) {
-                    phase = Phase.LOOK;
-                    phaseUntil = now + HumanTiming.logNormalMs(cfg.rebirthLookMinMs, cfg.rebirthLookMaxMs);
-                } else if (now >= phaseUntil) {
-                    abort(client, "no-gui");
-                    return false;
-                }
-            }
-            case LOOK -> {
-                if (!rebirthGuiOpen(client)) { abort(client, "gui-closed"); return false; }
-                if (now < phaseUntil) return true;
-                Entry star = null;
-                List<Entry> entries = containerItems(client);
-                for (Entry e : entries) if (lore.isStar(e.name(), e.lore())) { star = e; break; }
-                if (star == null) {
-                    log("rebirth_upgrade_skip", "reason", "no-star", "menuItems", describe(entries));
-                    phase = Phase.CLOSE;
-                    return true;
-                }
-                starSlot = star.slot();
-                points = lore.points(star.lore());
-                log("rebirth_points", "points", points, "slot", starSlot, "lore", star.lore(), "via", visitVia);
-                if (points != null && points <= 0) {
-                    stats.notePointsChecked();
-                    log("rebirth_upgrade_skip", "reason", "no-points", "rebirths", stats.rebirths);
-                    phase = Phase.CLOSE;
-                    return true;
-                }
-                phase = Phase.STAR_CLICK;
-                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
-            }
-            case STAR_CLICK -> {
-                if (!rebirthGuiOpen(client)) { abort(client, "gui-closed"); return false; }
-                if (now < phaseUntil) return true;
-                GuiHuman.click(client, starSlot, "rebirth-upgrade", "star", logger);
-                log("rebirth_upgrade_star_click", "slot", starSlot);
-                phase = Phase.MENU_WAIT;
-                phaseUntil = now + cfg.rebirthUpgradeOpenTimeoutMs;
-            }
-            case MENU_WAIT -> {
-                if (menuOpen(client)) {
-                    phase = Phase.SCAN;
-                    phaseUntil = now + HumanTiming.logNormalMs(cfg.rebirthLookMinMs, cfg.rebirthLookMaxMs);
-                } else if (now >= phaseUntil) {
-                    if (rebirthGuiOpen(client)) {
-                        log("rebirth_upgrade_skip", "reason", "no-menu", "title", title(client));
-                        phase = Phase.CLOSE;
-                    } else {
-                        abort(client, "gui-closed");
-                        return false;
-                    }
-                }
-            }
-            case SCAN -> {
-                if (!menuOpen(client)) { onMenuGone(client, now); return true; }
-                if (now < phaseUntil) return true;
-                List<Entry> entries = containerItems(client);
-                List<RebirthLore.Item> items = new ArrayList<>();
-                List<Integer> slots = new ArrayList<>();
-                for (Entry e : entries) { items.add(lore.parse(e.name(), e.lore())); slots.add(e.slot()); }
-                if (!menuLogged) {
-                    menuLogged = true;
-                    log("rebirth_upgrade_menu", "title", title(client), "items", describe(entries));
-                }
-                List<String> summaries = new ArrayList<>();
-                for (RebirthLore.Item it : items) summaries.add(it.summary());
-                log("rebirth_upgrade_scan", "items", summaries, "points", points, "clicks", clicks);
-                if (clicks >= cfg.rebirthUpgradeMaxClicks) {
-                    log("rebirth_upgrade_skip", "reason", "click-cap", "clicks", clicks);
-                    phase = Phase.CLOSE;
-                    return true;
-                }
-                RebirthLore.Item pick = lore.choose(items, points);
-                if (pick == null) {
-                    log("rebirth_upgrade_skip", "reason", "nothing-eligible", "points", points, "order", lore.order());
-                    stats.noteNothingEligible();
-                    phase = Phase.CLOSE;
-                    return true;
-                }
-                chosen = pick;
-                chosenSlot = slots.get(items.indexOf(pick));
-                chosenLoreBefore = new ArrayList<>(pick.lore());
-                log("rebirth_upgrade_pick", "name", pick.name(), "slot", chosenSlot, "level", pick.level(),
-                    "maxLevel", pick.maxLevel(), "cost", pick.cost(), "points", points, "orderIndex", lore.orderIndex(pick));
-                phase = Phase.CLICK;
-                phaseUntil = now + GuiHuman.clickDelayMs(cfg);
-            }
-            case CLICK -> {
-                if (!menuOpen(client)) { onMenuGone(client, now); return true; }
-                if (now < phaseUntil) return true;
-                GuiHuman.click(client, chosenSlot, "rebirth-upgrade", "upgrade:" + (chosen != null ? chosen.name() : "?"), logger);
-                clicks++;
-                log("rebirth_upgrade_click", "name", chosen != null ? chosen.name() : null, "slot", chosenSlot, "clicks", clicks);
-                phase = Phase.AFTER;
-                phaseUntil = now + HumanTiming.logNormalMs(cfg.rebirthUpgradeSettleMinMs, cfg.rebirthUpgradeSettleMaxMs);
-            }
-            case AFTER -> {
-                if (now < phaseUntil) return true;
-                if (!menuOpen(client)) { onMenuGone(client, now); return true; }
-                List<String> after = List.of();
-                for (Entry e : containerItems(client)) if (e.slot() == chosenSlot) { after = e.lore(); break; }
-                if (!after.equals(chosenLoreBefore)) {
-                    RebirthLore.Item nowItem = lore.parse(chosen != null ? chosen.name() : "", after);
-                    if (chosen != null && chosen.cost() != null && points != null) points = Math.max(0, points - chosen.cost());
-                    log("rebirth_upgrade_bought", "name", chosen != null ? chosen.name() : null, "clicks", clicks,
-                        "before", chosenLoreBefore, "after", after, "level", nowItem.level(), "pointsLeft", points);
-                    phase = Phase.SCAN;
-                    phaseUntil = now + GuiHuman.readDelayMs(cfg);
-                } else {
-                    log("rebirth_upgrade_stop", "reason", "no-change", "name", chosen != null ? chosen.name() : null,
-                        "lore", after, "points", points);
-                    phase = Phase.CLOSE;
-                }
-            }
-            case CLOSE -> {
-                if (isOurGui(client)) {
-                    if (closeAt == 0) { closeAt = now + GuiHuman.closeDelayMs(cfg); return true; }
-                    if (now < closeAt) return true;
-                    boolean submenu = !rebirthGuiOpen(client);
-                    GuiHuman.close(client, "rebirth-upgrade", logger);
-                    if (submenu) {
-                        // 0.9.54: Esc on the Upgrades menu brings the Rebirth GUI back (13 stray closes
-                        // of it on 2026-09-06, 8 s idle each) - wait for it and close it too.
-                        phase = Phase.CLOSE_RETURN;
-                        phaseUntil = now + 1500;
-                        closeAt = 0;
-                        return true;
-                    }
-                }
-                log("rebirth_upgrade_close", "clicks", clicks, "points", points, "visitMs", now - visitStartedAt, "via", visitVia);
-                consecutiveAborts = 0;
-                phase = Phase.IDLE;
-                return false;
-            }
-            case CLOSE_RETURN -> {
-                if (rebirthGuiOpen(client)) {
-                    if (closeAt == 0) { closeAt = now + GuiHuman.closeDelayMs(cfg); return true; }
-                    if (now < closeAt) return true;
-                    GuiHuman.close(client, "rebirth-upgrade", logger);
-                    log("rebirth_upgrade_close_return", "closed", true);
-                } else if (now < phaseUntil) {
-                    return true;
-                }
-                log("rebirth_upgrade_close", "clicks", clicks, "points", points, "visitMs", now - visitStartedAt, "via", visitVia);
-                consecutiveAborts = 0;
-                phase = Phase.IDLE;
-                return false;
-            }
-            default -> { }
-        }
-        return true;
+        return flow.tick(client, combat, now, logger);
+    }
+
+    private GuiFlow.Step endVisit(long now) {
+        log("rebirth_upgrade_close", "clicks", clicks, "points", points, "visitMs", now - visitStartedAt, "via", visitVia);
+        return GuiFlow.DONE;
     }
 
     /** The Upgrades menu vanished mid-visit: a sub-menu (logged, closed) or a server close after a purchase. */
-    private void onMenuGone(MinecraftClient client, long now) {
-        String title = title(client);
+    private GuiFlow.Step onMenuGone(MinecraftClient client, long now) {
+        String title = GuiHuman.title(client);
         if (title != null && !rebirthGuiOpen(client)) {
-            log("rebirth_upgrade_submenu", "title", title, "items", describe(containerItems(client)),
+            log("rebirth_upgrade_submenu", "title", title, "items", GuiHuman.describe(GuiHuman.items(client)),
                 "after", chosen != null ? chosen.name() : null);
             EnchantScreens.closeGui(client);
         } else {
@@ -317,11 +286,11 @@ public class RebirthUpgradeController extends BotModule implements Module {
             revisits++;
             revisitAt = now + HumanTiming.logNormalMs(20_000, 90_000);
         }
-        phase = Phase.CLOSE;
+        return stepClose;
     }
 
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
-        if (suspended) return false;
+        if (aborts.suspended()) return false;
         long rb = stats.lastRebirthAt;
         if (rb != lastRebirthSeen) {
             lastRebirthSeen = rb;
@@ -366,7 +335,6 @@ public class RebirthUpgradeController extends BotModule implements Module {
         plannedAt = 0;
         visitVia = planVia;
         visitStartedAt = now;
-        closeAt = 0;
         points = null;
         clicks = 0;
         menuLogged = false;
@@ -376,53 +344,19 @@ public class RebirthUpgradeController extends BotModule implements Module {
         log("rebirth_upgrade_visit", "via", visitVia);
         combat.releaseKeys(client);
         MouseDriver.INSTANCE.cancel();
-        phase = Phase.WAIT_STILL;
-        phaseUntil = now + 5000;
+        flow.start(stepWaitStill, now);
         return true;
-    }
-
-    private void abort(MinecraftClient client, String why) {
-        log("rebirth_upgrade_abort", "reason", why, "phase", phase.name().toLowerCase(Locale.ROOT), "clicks", clicks);
-        typer.cancel(client);
-        if (isOurGui(client)) EnchantScreens.closeGui(client);
-        phase = Phase.IDLE;
-        if (++consecutiveAborts >= Math.max(1, cfg.enchantMaxConsecutiveAborts)) {
-            suspended = true;
-            log("rebirth_upgrade_suspended", "aborts", consecutiveAborts);
-        }
     }
 
     // ---------------------------------------------------------------- screens
 
-    private static String title(MinecraftClient client) {
-        if (client.currentScreen == null || client.currentScreen.getTitle() == null) return null;
-        return client.currentScreen.getTitle().getString();
-    }
-
     private static boolean rebirthGuiOpen(MinecraftClient client) {
-        String t = title(client);
+        String t = GuiHuman.title(client);
         return t != null && client.currentScreen instanceof HandledScreen && RebirthScreens.isRebirthGui(t);
     }
 
     private boolean menuOpen(MinecraftClient client) {
-        String t = title(client);
+        String t = GuiHuman.title(client);
         return t != null && client.currentScreen instanceof HandledScreen && lore.isMenuTitle(t);
-    }
-
-    private static ScreenHandler handler(MinecraftClient client) {
-        return GuiHuman.handler(client);
-    }
-
-    /** Non-empty container slots (player inventory excluded), in slot order (GuiHuman since 0.9.33). */
-    private static List<Entry> containerItems(MinecraftClient client) {
-        List<Entry> out = new ArrayList<>();
-        for (GuiHuman.Item it : GuiHuman.items(client)) out.add(new Entry(it.slot(), it.name(), it.lore()));
-        return out;
-    }
-
-    private static List<String> describe(List<Entry> entries) {
-        List<GuiHuman.Item> items = new ArrayList<>();
-        for (Entry e : entries) items.add(new GuiHuman.Item(e.slot(), e.name(), e.lore()));
-        return GuiHuman.describe(items);
     }
 }

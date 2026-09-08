@@ -1799,7 +1799,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 60", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 60);
+        n += eq("config version 61", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 61);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -3400,6 +3400,34 @@ public final class EconomyChecks {
         n += eq("settled", flow.tick(null, null, 30_500, null), false);
         n += eq("settle ran", settled[0], 1);
         n += eq("a step with no clock is never due", new GuiFlow.Ctx().due(), false);
+        // the timeout hook: jump to a step instead of aborting (the rebirth upgrades' menu-timeout)
+        final int[] jumped = {0};
+        GuiFlow.Aborts ab2 = new GuiFlow.Aborts("t2", () -> 3, () -> 0L);
+        GuiFlow flow2 = new GuiFlow(ab2, () -> 1000L, "menu-timeout");
+        GuiFlow.Step closing = GuiFlow.custom("close", c -> c.sinceStep() >= 200 ? GuiFlow.DONE : null);
+        flow2.onTimeout(c -> { if ("close".equals(flow2.phaseName())) return null; jumped[0]++; return closing; });
+        flow2.start(forever, 40_000);
+        n += eq("under the limit", flow2.tick(null, null, 40_500, null), true);
+        n += eq("over the limit: jumped", flow2.tick(null, null, 41_100, null), true);
+        n += eq("jumped once", jumped[0], 1);
+        n += eq("now closing", flow2.phaseName(), "close");
+        n += eq("closing runs on", flow2.tick(null, null, 41_200, null), true);
+        n += eq("still jumped once", jumped[0], 1);
+        n += eq("closed", flow2.tick(null, null, 41_400, null), false);
+        n += eq("no abort from a timeout jump", ab2.count(), 0);
+        n += eq("sub-menu beat", GuiFlow.SUBMENU_BEAT_MS, 1500L);
+        n += eq("rebirth upgrades' own abort cap", new YCBotChallengeConfig().rebirthUpgradeMaxConsecutiveAborts, 3);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg60", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":60,\"rebirthUpgradeMaxConsecutiveAborts\":0}");
+            YCBotChallengeConfig c60 = YCBotChallengeConfig.load(tmp);
+            n += eq("v61 fills and clamps the cap", c60.rebirthUpgradeMaxConsecutiveAborts, 3);
+            n += eq("v61 lands on the current version", c60.configVersion, YCBotChallengeConfig.CURRENT_CONFIG_VERSION);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v61: " + ex);
+            n++;
+        }
         return n;
     }
 

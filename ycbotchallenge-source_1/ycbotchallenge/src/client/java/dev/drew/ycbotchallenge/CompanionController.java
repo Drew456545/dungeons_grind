@@ -42,7 +42,6 @@ public class CompanionController extends BotModule implements Module {
         COMP_LOOK, COMP_RETURN, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, FUSE_ALL_CLICK, FUSE_ALL_SETTLE, DELETE, DELETE_TYPE, DELETE_WAIT,
         BULK_CLICK, BULK_WAIT, BULK_READ, DONE }
 
-    private record Entry(int slot, String name, List<String> lore) {}
     private record EggHit(Vec3d aim, List<String> lines, Double price, double dist, String via) {}
 
     private final YCBotChallengeConfig cfg;
@@ -183,7 +182,7 @@ public class CompanionController extends BotModule implements Module {
 
     /** The egg GUI, the Companions GUI and the fuse GUI are ours (or hand-opened), never a captcha. */
     public boolean isOurGui(MinecraftClient client) {
-        String t = title(client);
+        String t = GuiHuman.title(client);
         return t != null && (lore.isEggsTitle(t) || lore.isCompanionsTitle(t) || lore.isFuseTitle(t));
     }
 
@@ -390,7 +389,7 @@ public class CompanionController extends BotModule implements Module {
                     phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
                 } else if (now >= phaseUntil) {
                     if (client.currentScreen != null) {
-                        log("companion_skip", "reason", "other-gui", "title", title(client), "items", describe(containerItems(client)));
+                        log("companion_skip", "reason", "other-gui", "title", GuiHuman.title(client), "items", GuiHuman.describe(GuiHuman.items(client)));
                         EnchantScreens.closeGui(client);
                     }
                     abort(client, combat, "no-egg-gui");
@@ -402,7 +401,7 @@ public class CompanionController extends BotModule implements Module {
                     // 0.9.41: the animation toggle may have closed the menu - open the egg again, once.
                     if (animToggleTried && animKnownOff && !animReopened && eggsOpened == 0) {
                         animReopened = true;
-                        log("companion_anim_reopen", "title", title(client));
+                        log("companion_anim_reopen", "title", GuiHuman.title(client));
                         if (client.currentScreen != null) EnchantScreens.closeGui(client);
                         aimTry = 0;
                         aimIssuedAt = 0;
@@ -413,16 +412,16 @@ public class CompanionController extends BotModule implements Module {
                     return false;
                 }
                 if (now < phaseUntil) return true;
-                List<Entry> eggEntries = containerItems(client);
+                List<GuiHuman.Item> eggEntries = GuiHuman.items(client);
                 if (!eggsGuiLogged) {
                     eggsGuiLogged = true;
-                    log("companion_gui", "which", "eggs", "title", title(client), "items", describe(eggEntries));
+                    log("companion_gui", "which", "eggs", "title", GuiHuman.title(client), "items", GuiHuman.describe(eggEntries));
                 }
                 // 0.9.41: the preview companions name the zone/stage this egg hatches - the
                 // landed check after the buy counts that pair in the menu.
                 if (eggZs == null) {
                     List<CompanionLore.Companion> previews = new ArrayList<>();
-                    for (Entry e : eggEntries) {
+                    for (GuiHuman.Item e : eggEntries) {
                         CompanionLore.Companion c = lore.companion(e.slot(), e.name(), e.lore());
                         if (c != null) previews.add(c);
                     }
@@ -434,7 +433,7 @@ public class CompanionController extends BotModule implements Module {
                 // enabled, then the GUI is read again.
                 if (!animToggleTried) {
                     animToggleTried = true;
-                    for (Entry e : eggEntries) {
+                    for (GuiHuman.Item e : eggEntries) {
                         if (!lore.isAnimToggle(e.name(), e.lore())) continue;
                         boolean enabledNow = lore.isAnimEnabled(e.name(), e.lore());
                         if (!enabledNow) { animKnownOff = true; break; }
@@ -452,7 +451,7 @@ public class CompanionController extends BotModule implements Module {
                 if (!eggsGuiOpen(client)) { onEggsGuiGone(client, now); return true; }
                 List<CompanionLore.OpenOption> options = new ArrayList<>();
                 List<CompanionLore.OpenOption> rawOptions = new ArrayList<>();
-                for (Entry e : containerItems(client)) {
+                for (GuiHuman.Item e : GuiHuman.items(client)) {
                     CompanionLore.OpenOption o = lore.openOption(e.slot(), e.name(), e.lore());
                     if (o == null) continue;
                     rawOptions.add(o);
@@ -598,8 +597,8 @@ public class CompanionController extends BotModule implements Module {
             case COMP_LOOK -> {
                 if (!companionsGuiOpen(client)) { abort(client, combat, "companions-gui-closed"); return false; }
                 if (now < phaseUntil) return true;
-                List<Entry> entries = containerItems(client);
-                log("companion_gui", "which", "companions", "title", title(client), "items", describe(entries));
+                List<GuiHuman.Item> entries = GuiHuman.items(client);
+                log("companion_gui", "which", "companions", "title", GuiHuman.title(client), "items", GuiHuman.describe(entries));
                 // The second pass of a visit (after a fusion) must not overwrite the "before" set.
                 readCompanions(entries, !fusedThisVisit && !bulkDumpThisVisit);
                 // 0.9.41: did the bought companions land? Their zone/stage in storage + equipped
@@ -630,7 +629,7 @@ public class CompanionController extends BotModule implements Module {
                 equipSlot = -1;
                 fuseSlot = -1;
                 bulkDeleteSlot = -1;
-                for (Entry e : entries) {
+                for (GuiHuman.Item e : entries) {
                     if (equipSlot < 0 && lore.isEquipBest(e.name(), e.lore())) equipSlot = e.slot();
                     if (fuseSlot < 0 && lore.isFuse(e.name(), e.lore())) fuseSlot = e.slot();
                     if (bulkDeleteSlot < 0 && lore.isBulkDelete(e.name(), e.lore())) bulkDeleteSlot = e.slot();
@@ -698,7 +697,7 @@ public class CompanionController extends BotModule implements Module {
                     phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
                     return true;
                 }
-                List<Entry> entries = containerItems(client);
+                List<GuiHuman.Item> entries = GuiHuman.items(client);
                 readCompanions(entries, false);
                 noteRoster(equippedAfter);
                 equipChanged = !summaries(equippedBefore).equals(summaries(equippedAfter));
@@ -734,7 +733,7 @@ public class CompanionController extends BotModule implements Module {
                     phase = Phase.FUSE_LOG;
                     phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
                 } else if (now >= phaseUntil) {
-                    log("companion_skip", "reason", "no-fuse-gui", "title", title(client));
+                    log("companion_skip", "reason", "no-fuse-gui", "title", GuiHuman.title(client));
                     if (fuseDue) { fusedThisVisit = true; beginReturn(client, now); return true; }
                     if (isOurGui(client)) EnchantScreens.closeGui(client);
                     prepareDeletes();
@@ -745,10 +744,10 @@ public class CompanionController extends BotModule implements Module {
             }
             case FUSE_LOG -> {
                 if (now < phaseUntil) return true;
-                List<Entry> fuseEntries = containerItems(client);
-                log("companion_gui", "which", "fuse", "title", title(client), "items", describe(fuseEntries));
+                List<GuiHuman.Item> fuseEntries = GuiHuman.items(client);
+                log("companion_gui", "which", "fuse", "title", GuiHuman.title(client), "items", GuiHuman.describe(fuseEntries));
                 fuseAllSlot = -1;
-                for (Entry e : fuseEntries) if (lore.isFuseAll(e.name(), e.lore())) { fuseAllSlot = e.slot(); break; }
+                for (GuiHuman.Item e : fuseEntries) if (lore.isFuseAll(e.name(), e.lore())) { fuseAllSlot = e.slot(); break; }
                 if (fuseDue && fuseAllSlot >= 0 && fuseGuiOpen(client)) {
                     phase = Phase.FUSE_ALL_CLICK;
                     phaseUntil = now + GuiHuman.clickDelayMs(cfg);
@@ -781,14 +780,14 @@ public class CompanionController extends BotModule implements Module {
                 // Whatever the server shows after Fuse All is recorded verbatim; a confirmation
                 // screen is never clicked blind (the 0.9.17 rule) - it is the fixture for the
                 // version that automates it.
-                List<Entry> after = client.currentScreen != null ? containerItems(client) : List.of();
-                log("companion_gui", "which", "fuse-after", "title", title(client), "items", describe(after),
+                List<GuiHuman.Item> after = client.currentScreen != null ? GuiHuman.items(client) : List.of();
+                log("companion_gui", "which", "fuse-after", "title", GuiHuman.title(client), "items", GuiHuman.describe(after),
                     "fuseGui", fuseGuiOpen(client));
                 List<CompanionLore.FuseGroup> groupsAfter = List.of();
                 Integer storageAfter = null;
                 if (fuseGuiOpen(client)) {
                     List<CompanionLore.Companion> cs = new ArrayList<>();
-                    for (Entry e : after) {
+                    for (GuiHuman.Item e : after) {
                         CompanionLore.Companion c = lore.companion(e.slot(), e.name(), e.lore());
                         if (c != null) cs.add(c);
                     }
@@ -801,7 +800,7 @@ public class CompanionController extends BotModule implements Module {
                 for (CompanionLore.FuseGroup g : groupsAfter) ga.add(g.summary());
                 // The server's own verdict replaces the Fuse All item ("No Companions fuseable").
                 String verdict = null;
-                for (Entry e : after) {
+                for (GuiHuman.Item e : after) {
                     if (e.name() != null && e.name().toLowerCase(Locale.ROOT).contains("fuseable")) {
                         verdict = e.name() + (e.lore() != null && !e.lore().isEmpty() ? " | " + String.join(" | ", e.lore()) : "");
                         break;
@@ -827,7 +826,7 @@ public class CompanionController extends BotModule implements Module {
                     return true;
                 }
                 if (now >= phaseUntil) {
-                    log("companion_return", "via", "retype", "afterMs", now - returnSince, "title", title(client));
+                    log("companion_return", "via", "retype", "afterMs", now - returnSince, "title", GuiHuman.title(client));
                     phase = Phase.TYPE_COMPANION;
                     phaseUntil = now + GuiHuman.betweenDelayMs(cfg);
                 }
@@ -889,7 +888,7 @@ public class CompanionController extends BotModule implements Module {
                     phase = Phase.BULK_READ;
                     phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion");
                 } else if (now >= phaseUntil) {
-                    log("companion_bulk_menu_skip", "reason", "timeout", "title", title(client));
+                    log("companion_bulk_menu_skip", "reason", "timeout", "title", GuiHuman.title(client));
                     bulkDumpDone = true;
                     if (companionsGuiOpen(client)) { phase = Phase.COMP_LOOK; phaseUntil = now + GuiHuman.lookDelayMs(cfg, "companion"); }
                     else beginReturn(client, now);
@@ -897,8 +896,8 @@ public class CompanionController extends BotModule implements Module {
             }
             case BULK_READ -> {
                 if (now < phaseUntil) return true;
-                List<Entry> items = client.currentScreen != null ? containerItems(client) : List.of();
-                log("companion_gui", "which", "bulk-delete", "title", title(client), "items", describe(items));
+                List<GuiHuman.Item> items = client.currentScreen != null ? GuiHuman.items(client) : List.of();
+                log("companion_gui", "which", "bulk-delete", "title", GuiHuman.title(client), "items", GuiHuman.describe(items));
                 bulkDumpDone = true;
                 beginReturn(client, now);
             }
@@ -1451,15 +1450,15 @@ public class CompanionController extends BotModule implements Module {
      * prepareDeletes plan a bulk delete over a pair an equipped companion held. The slot
      * list is the fallback for a layout with no un-equip line.
      */
-    private void readCompanions(List<Entry> entries, boolean before) {
+    private void readCompanions(List<GuiHuman.Item> entries, boolean before) {
         List<CompanionLore.Companion> eq = new ArrayList<>();
         List<CompanionLore.Companion> st = new ArrayList<>();
         Set<Integer> equipSlots = new HashSet<>();
         if (cfg.companionEquipSlots != null) equipSlots.addAll(cfg.companionEquipSlots);
         boolean anyUnequip = false;
-        for (Entry e : entries) if (lore.isEquipped(e.lore())) { anyUnequip = true; break; }
+        for (GuiHuman.Item e : entries) if (lore.isEquipped(e.lore())) { anyUnequip = true; break; }
         Integer maxZone = null;
-        for (Entry e : entries) {
+        for (GuiHuman.Item e : entries) {
             int[] sc = lore.storageCount(e.lore());
             if (sc != null) {
                 boolean changed = storageCount == null || storageCount != sc[0];
@@ -1518,7 +1517,7 @@ public class CompanionController extends BotModule implements Module {
     }
 
     private void onEggsGuiGone(MinecraftClient client, long now) {
-        log("companion_egg_gui_gone", "title", title(client), "eggs", eggsOpened, "opens", opensClicked);
+        log("companion_egg_gui_gone", "title", GuiHuman.title(client), "eggs", eggsOpened, "opens", opensClicked);
         if (client.currentScreen != null && !isOurGui(client)) EnchantScreens.closeGui(client);
         phase = Phase.CLOSE_EGG;
         phaseUntil = now + GuiHuman.closeDelayMs(cfg);
@@ -1555,38 +1554,16 @@ public class CompanionController extends BotModule implements Module {
 
     // ---------------------------------------------------------------- screens
 
-    private static String title(MinecraftClient client) {
-        if (client.currentScreen == null || client.currentScreen.getTitle() == null) return null;
-        return client.currentScreen.getTitle().getString();
-    }
-
     private boolean eggsGuiOpen(MinecraftClient client) {
-        return client.currentScreen instanceof HandledScreen && lore.isEggsTitle(title(client));
+        return client.currentScreen instanceof HandledScreen && lore.isEggsTitle(GuiHuman.title(client));
     }
 
     private boolean companionsGuiOpen(MinecraftClient client) {
-        return client.currentScreen instanceof HandledScreen && lore.isCompanionsTitle(title(client));
+        return client.currentScreen instanceof HandledScreen && lore.isCompanionsTitle(GuiHuman.title(client));
     }
 
     private boolean fuseGuiOpen(MinecraftClient client) {
-        return client.currentScreen instanceof HandledScreen && lore.isFuseTitle(title(client));
-    }
-
-    private static ScreenHandler handler(MinecraftClient client) {
-        return client.currentScreen instanceof HandledScreen<?> hs ? hs.getScreenHandler() : null;
-    }
-
-    /** Non-empty container slots (player inventory excluded), in slot order. */
-    private static List<Entry> containerItems(MinecraftClient client) {
-        List<Entry> out = new ArrayList<>();
-        for (GuiHuman.Item it : GuiHuman.items(client)) out.add(new Entry(it.slot(), it.name(), it.lore()));
-        return out;
-    }
-
-    private static List<String> describe(List<Entry> entries) {
-        List<String> out = new ArrayList<>();
-        for (Entry e : entries) out.add(e.slot() + ":" + e.name() + (e.lore().isEmpty() ? "" : " | " + String.join(" | ", e.lore())));
-        return out;
+        return client.currentScreen instanceof HandledScreen && lore.isFuseTitle(GuiHuman.title(client));
     }
 
     private static Double tenth(Double v) {

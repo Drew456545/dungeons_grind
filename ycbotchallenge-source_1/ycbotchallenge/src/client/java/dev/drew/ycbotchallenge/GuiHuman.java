@@ -38,8 +38,12 @@ public final class GuiHuman {
 
     /** Non-empty container slots (the player's 36 inventory slots excluded), in slot order. */
     public static List<Item> items(MinecraftClient client) {
+        return items(handler(client));
+    }
+
+    /** 0.9.62: the same walk over a handler (EnchantScreens.items carried its own copy). */
+    public static List<Item> items(ScreenHandler h) {
         List<Item> out = new ArrayList<>();
-        ScreenHandler h = handler(client);
         if (h == null || h.slots == null) return out;
         int chestEnd = Math.max(0, h.slots.size() - 36);
         for (int i = 0; i < chestEnd; i++) {

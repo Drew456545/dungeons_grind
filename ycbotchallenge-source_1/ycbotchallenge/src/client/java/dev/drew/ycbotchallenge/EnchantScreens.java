@@ -58,15 +58,7 @@ public final class EnchantScreens {
     /** Every non-empty container slot (player inventory excluded), in slot order. */
     public static List<SlotItem> items(ScreenHandler handler, EnchantLore lore) {
         List<SlotItem> out = new ArrayList<>();
-        if (handler == null || handler.slots == null) return out;
-        int chestEnd = Math.max(0, handler.slots.size() - 36);
-        for (int i = 0; i < chestEnd; i++) {
-            Slot slot = handler.slots.get(i);
-            if (slot == null) continue;
-            ItemStack stack = slot.getStack();
-            if (stack == null || stack.isEmpty()) continue;
-            out.add(new SlotItem(slot.id, lore.parse(name(stack), loreLines(stack))));
-        }
+        for (GuiHuman.Item it : GuiHuman.items(handler)) out.add(new SlotItem(it.slot(), lore.parse(it.name(), it.lore())));
         return out;
     }
 

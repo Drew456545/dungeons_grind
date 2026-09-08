@@ -86,14 +86,20 @@ public final class GuiFlow {
         /** A visit ended well. */
         public void finish() { count = 0; }
 
-        /** One abort; true when it tipped the module into suspension. */
-        public boolean abort(long now, String why, String phase, EventLogger logger) {
-            if (logger != null) logger.log(prefix + "_abort", "reason", why, "phase", phase);
+        /** One abort ({@code extra} = more key/value pairs for the row); true when it tipped the module into suspension. */
+        public boolean abort(long now, String why, String phase, EventLogger logger, Object... extra) {
+            if (logger != null) {
+                Object[] kv = new Object[4 + (extra == null ? 0 : extra.length)];
+                kv[0] = "reason"; kv[1] = why; kv[2] = "phase"; kv[3] = phase;
+                if (extra != null) System.arraycopy(extra, 0, kv, 4, extra.length);
+                logger.log(prefix + "_abort", kv);
+            }
             lastReason = why;
             if (++count >= Math.max(1, maxAborts.getAsInt())) {
                 suspended = true;
                 suspendedAt = now;
-                if (logger != null) logger.log(prefix + "_suspended", "aborts", count, "lastReason", why);
+                long ms = suspendMs.getAsLong();
+                if (logger != null) logger.log(prefix + "_suspended", "aborts", count, "lastReason", why, "resumeInMs", ms > 0 ? ms : null);
                 return true;
             }
             return false;
@@ -110,12 +116,17 @@ public final class GuiFlow {
         }
     }
 
+    /** The beat a sub-menu takes to give the parent menu back (Esc on it) - nine literals in the enchanter. */
+    public static final long SUBMENU_BEAT_MS = 1500;
+
     private final Aborts aborts;
     private final LongSupplier maxVisitMs;
     private final String timeoutReason;
     private final Ctx ctx = new Ctx();
     private Step step = null;
     private BiConsumer<MinecraftClient, String> onAbort;
+    private Function<Ctx, Step> onTimeout;
+    private Supplier<Object[]> abortFields;
 
     /** @param maxVisitMs the whole visit's limit (0 = none); past it the visit aborts with {@code timeoutReason}. */
     public GuiFlow(Aborts aborts, LongSupplier maxVisitMs, String timeoutReason) {
@@ -126,6 +137,16 @@ public final class GuiFlow {
 
     /** The owner's part of an abort: close its own menu, cancel its typer, reschedule. */
     public void onAbort(BiConsumer<MinecraftClient, String> hook) { this.onAbort = hook; }
+
+    /**
+     * What the visit limit does instead of aborting: the handler returns the step to jump to
+     * (the rebirth upgrades jump to their close), or null to carry on. Called every tick past
+     * the limit, so a handler that has already jumped returns null.
+     */
+    public void onTimeout(Function<Ctx, Step> handler) { this.onTimeout = handler; }
+
+    /** Extra key/value pairs for the {@code <prefix>_abort} row (the rebirth upgrades add their click count). */
+    public void abortFields(Supplier<Object[]> fields) { this.abortFields = fields; }
 
     public boolean isBusy() { return step != null; }
     public String phaseName() { return step == null ? "idle" : step.name(); }
@@ -152,8 +173,16 @@ public final class GuiFlow {
         ctx.now = now;
         long limit = maxVisitMs.getAsLong();
         if (limit > 0 && now - ctx.visitSince > limit) {
-            abort(client, timeoutReason, logger);
-            return false;
+            if (onTimeout == null) {
+                abort(client, timeoutReason, logger);
+                return false;
+            }
+            Step to = onTimeout.apply(ctx);
+            if (to != null && to != step) {
+                step = to;
+                ctx.stepSince = now;
+                ctx.until = 0;
+            }
         }
         Step next = step.tick(ctx);
         if (ctx.abortReason != null) {
@@ -179,7 +208,7 @@ public final class GuiFlow {
     public void abort(MinecraftClient client, String why, EventLogger logger) {
         String phase = phaseName();
         step = null;
-        aborts.abort(ctx.now, why, phase, logger);
+        aborts.abort(ctx.now, why, phase, logger, abortFields == null ? new Object[0] : abortFields.get());
         if (onAbort != null) onAbort.accept(client, why);
     }
 
