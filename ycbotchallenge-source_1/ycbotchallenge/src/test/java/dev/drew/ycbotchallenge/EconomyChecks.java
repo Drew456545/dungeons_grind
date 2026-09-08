@@ -3205,8 +3205,8 @@ public final class EconomyChecks {
         n += eq("slope from balances", slope.slopePerMinute(t + 60_000), 600.0, 1e-6);
         n += eq("slope is the fallback", slope.perMinute(t + 60_000), 600.0, 1e-6);
         slope.reset(t + 61_000);
-        slope.onBalance(0, t + 62_000);
-        slope.onBalance(50, t + 122_000);
+        slope.onBalance(50, t + 62_000);
+        slope.onBalance(100, t + 122_000);
         n += eq("slope after reset uses only new samples", slope.slopePerMinute(t + 122_000), 50.0, 1e-6);
         slope.onBalance(10, t + 182_000);
         n += eq("a falling balance is no rate", slope.slopePerMinute(t + 182_000) == null, true);
@@ -3335,15 +3335,6 @@ public final class EconomyChecks {
         GuiFlow.Step wait = GuiFlow.waitFor("menu_wait", c -> menu[0], () -> 500L, "no-menu", look);
         n += eq("idle at rest", flow.isBusy(), false);
         n += eq("idle name", flow.phaseName(), "idle");
-        // a visit that times out waiting for the menu
-        flow.start(wait, 1000);
-        n += eq("busy after start", flow.isBusy(), true);
-        n += eq("waiting", flow.tick(null, null, 1000, null), true);
-        n += eq("still waiting", flow.tick(null, null, 1400, null), true);
-        n += eq("timed out", flow.tick(null, null, 1600, null), false);
-        n += eq("abort reason reached the hook", hook[0], "no-menu");
-        n += eq("one abort", ab.count(), 1);
-        n += eq("not suspended yet", ab.suspended(), false);
         // a full visit
         menu[0] = true;
         flow.start(wait, 2000);
@@ -3358,14 +3349,26 @@ public final class EconomyChecks {
         n += eq("closed: finish", flow.tick(null, null, 2450, null), true);
         n += eq("finished", flow.tick(null, null, 2451, null), false);
         n += eq("finish ran once", finished[0], 1);
-        n += eq("a good visit clears the abort count", ab.count(), 0);
+        n += eq("a good visit leaves no abort count", ab.count(), 0);
         n += eq("idle again", flow.isBusy(), false);
+        // a visit that times out waiting for the menu
+        menu[0] = false;
+        flow.start(wait, 1000);
+        n += eq("busy after start", flow.isBusy(), true);
+        n += eq("waiting", flow.tick(null, null, 1000, null), true);
+        n += eq("still waiting", flow.tick(null, null, 1400, null), true);
+        n += eq("timed out", flow.tick(null, null, 1600, null), false);
+        n += eq("abort reason reached the hook", hook[0], "no-menu");
+        n += eq("one abort", ab.count(), 1);
+        n += eq("not suspended yet", ab.suspended(), false);
         // the menu vanishing mid-look
+        menu[0] = true;
         flow.start(look, 3000);
         flow.tick(null, null, 3000, null);
         menu[0] = false;
         n += eq("gone mid-look aborts", flow.tick(null, null, 3050, null), false);
         n += eq("menu-closed reason", hook[0], "menu-closed");
+        n += eq("two aborts", ab.count(), 2);
         // the visit clock
         menu[0] = true;
         GuiFlow.Step forever = GuiFlow.custom("forever", c -> null);

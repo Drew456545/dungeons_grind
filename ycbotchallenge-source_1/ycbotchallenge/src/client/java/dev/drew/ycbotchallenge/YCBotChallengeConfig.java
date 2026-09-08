@@ -2202,7 +2202,8 @@ public class YCBotChallengeConfig {
             // three minutes after the map and kicks about fifteen minutes after it, not 60 s.
             // Only the shipped values move; a hand-set cap or budget stays.
             if (captchaMaxAnswers == 2) captchaMaxAnswers = 3;
-            if (captchaBudgetMs == 45_000) captchaBudgetMs = 300_000;
+            // The blocks run newest first: a v54 file still carries the 25 s budget v55 moves to 45 s.
+            if (captchaBudgetMs == 45_000 || captchaBudgetMs == 25_000) captchaBudgetMs = 300_000;
             changed = true;
         }
         if (configVersion < 58) {
