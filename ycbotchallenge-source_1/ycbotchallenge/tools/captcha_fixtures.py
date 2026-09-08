@@ -2,7 +2,8 @@
 """Accepted captchas become fixtures, automatically (0.9.40).
 
 The server prints nothing when a captcha answer is accepted; the mod knows it was accepted
-because the map went away (`captcha_solved`). Every such solve is a certified fixture: the
+because the map went away (`captcha_solved` with `via=map-gone`, 0.9.62; a chat "correct" line
+confirmed a wrong answer on 2026-09-08). Every such solve is a certified fixture: the
 image the model actually read (the 128 px map dump next to the logs) and the answer the
 server took. This script walks the logs, pairs each `captcha_solved` with its capture, and
 adds anything new to tools/captcha-fixtures/fixtures.json - so the bench
@@ -87,13 +88,17 @@ def accepted_solves(logs_dir):
             elif t == "captcha_reprompted":
                 wrong.update(r.get("wrong") or [])
             elif t == "captcha_solved" and r.get("mode") == "map" and pending_png:
+                # 0.9.62: only a solve the map itself confirmed (via=map-gone). The 2026-09-08
+                # 06:48 "confirmed" solve was the unscramble minigame's "The correct answer was"
+                # line - its answer 8T9 was wrong (the map read BTq). Older rows carry no via and
+                # are skipped; everything accepted before 0.9.62 is already a fixture.
                 ans = r.get("answer")
-                if ans and ans not in wrong:
+                if ans and ans not in wrong and r.get("confirmed") is True and r.get("via") == "map-gone":
                     png = pending_png if os.path.isabs(pending_png) else os.path.join(logs_dir, os.path.basename(pending_png))
                     if os.path.exists(png):
                         out.append((ans, png, r.get("iso"), os.path.basename(path)))
                 pending_png = None
-            elif t == "captcha_failed":
+            elif t in ("captcha_failed", "captcha_unverified"):
                 pending_png = None
     return out
 

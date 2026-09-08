@@ -495,7 +495,8 @@ public class YCBotChallengeConfig {
      * Running ballot (0.9.26). The map is rendered once at every scale here ("x<scale>bil"
      * smoothed, "x<scale>near" nearest; smoothing only applies above x2) and one background
      * reader reads them in turn — the schedule at temperature 0, then again at
-     * captchaVoteTemperature — until the captcha is resolved or captchaVoteMaxReads. Every
+     * captchaVoteTemperature — until the captcha is resolved or captchaHedgeMax reads are out
+     * (captchaVoteMaxReads, which the solver never read, was dropped in 0.9.62). Every
      * reading is a vote; the first answer is the leader once the reading pause has passed
      * and captchaVoteMinReads votes are in (or captchaVoteMaxWaitMs later with at least
      * one); voting continues while the answer is verified, so a rejection sends the
@@ -506,7 +507,6 @@ public class YCBotChallengeConfig {
      */
     public List<String> captchaVoteRenders = List.of("x1");
     public double captchaVoteTemperature = 0;
-    public int captchaVoteMaxReads = 12;
     /** Votes to hold for before typing. 0.9.34: 2 — the hedge schedule fires two reads, not three. */
     public int captchaVoteMinReads = 2;
     public int captchaVoteMaxWaitMs = 3000;
@@ -580,6 +580,13 @@ public class YCBotChallengeConfig {
      * answer in chat to win!" for trivia). Logged as captcha_hint.
      */
     public List<String> captchaChatHintPatterns = List.of("type the", "verify", "prove you", "bot check", "captcha");
+    /**
+     * 0.9.62: lines that are not a captcha hint even though a hint pattern matches. "Type the
+     * answer in chat to win!" is the unscramble minigame's call (65 of the 68 captcha_hint rows
+     * of 2026-09-08); "The correct answer was ..." its resolution, which also confirmed a wrong
+     * captcha answer at 06:48.
+     */
+    public List<String> captchaHintExcludePatterns = List.of("type the answer in chat to win", "unscramble the word", "the correct answer was");
     /** Unclassified server lines are raw-logged (chat_raw) so new wording is captured; at most this many per minute, 0 = off. */
     public int chatRawPerMinute = 30;
     /**
@@ -2312,9 +2319,8 @@ public class YCBotChallengeConfig {
         if (captchaSecondScale > 8) captchaSecondScale = 8;
         if (captchaVoteRenders == null || captchaVoteRenders.isEmpty()) captchaVoteRenders = fresh.captchaVoteRenders;
         if (captchaVoteTemperature < 0 || captchaVoteTemperature > 1.5) captchaVoteTemperature = 0.6;
-        if (captchaVoteMaxReads < 1) captchaVoteMaxReads = 1;
         if (captchaVoteMinReads < 1) captchaVoteMinReads = 1;
-        if (captchaVoteMinReads > captchaVoteMaxReads) captchaVoteMinReads = captchaVoteMaxReads;
+        if (captchaVoteMinReads > 12) captchaVoteMinReads = 12;
         if (captchaVoteMaxWaitMs < 0) captchaVoteMaxWaitMs = 0;
         if (captchaMapHeldRejectMs < 0) captchaMapHeldRejectMs = 0;
         if (captchaMapGoneConfirmMs < 0) captchaMapGoneConfirmMs = 0;
@@ -2322,6 +2328,7 @@ public class YCBotChallengeConfig {
         if (captchaSolvedPatterns == null) captchaSolvedPatterns = fresh.captchaSolvedPatterns;
         if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
         if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;
+        if (captchaHintExcludePatterns == null) captchaHintExcludePatterns = fresh.captchaHintExcludePatterns;
         if (ignoreMobPatterns == null) ignoreMobPatterns = fresh.ignoreMobPatterns;
         if (plateOnlyTypes == null) plateOnlyTypes = fresh.plateOnlyTypes;
         if (ghostHurtGraceTicks < 0) ghostHurtGraceTicks = 0;

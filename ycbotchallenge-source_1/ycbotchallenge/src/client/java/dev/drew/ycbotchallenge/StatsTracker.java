@@ -595,6 +595,7 @@ public class StatsTracker {
     /** Last soft captcha hint line (captchaChatHintPatterns); the map detector confirms at once within 10s of it. */
     public volatile long captchaHintAt = 0;
     private final List<Pattern> captchaHintRes = new ArrayList<>();
+    private final List<Pattern> captchaHintExcludeRes = new ArrayList<>();
     /** 0.9.41: a server line that says we were sent to the hub/lobby (consumed by the client tick). */
     public volatile String hubMessage = null;
     private final List<Pattern> hubRes = new ArrayList<>();
@@ -793,6 +794,9 @@ public class StatsTracker {
         for (String p : cfg.captchaChatPatterns) captchaRes.add(compileLoose(p));
         if (cfg.captchaChatHintPatterns != null) {
             for (String p : cfg.captchaChatHintPatterns) captchaHintRes.add(compileLoose(p));
+        }
+        if (cfg.captchaHintExcludePatterns != null) {
+            for (String p : cfg.captchaHintExcludePatterns) captchaHintExcludeRes.add(compileLoose(p));
         }
         if (cfg.hubChatPatterns != null) for (String p : cfg.hubChatPatterns) hubRes.add(compileLoose(p));
         if (cfg.rebootChatPatterns != null) for (String p : cfg.rebootChatPatterns) rebootRes.add(compileLoose(p));
@@ -2423,12 +2427,10 @@ public class StatsTracker {
                 log("unknown_command", "raw", text);
             }
             if (!ChatClassifier.isPlayerOrBroadcast(text)) {
-                for (Pattern p : captchaHintRes) {
-                    if (p.matcher(text).find()) {
-                        captchaHintAt = now;
-                        log("captcha_hint", "raw", text);
-                        break;
-                    }
+                // 0.9.62: the unscramble minigame's "Type the answer in chat to win!" is not a hint.
+                if (ChatClassifier.captchaHintEligible(text, captchaHintRes, captchaHintExcludeRes)) {
+                    captchaHintAt = now;
+                    log("captcha_hint", "raw", text);
                 }
                 // 0.9.41: a server line sending us to the hub/lobby stops the bot (never a player's).
                 for (Pattern p : hubRes) {

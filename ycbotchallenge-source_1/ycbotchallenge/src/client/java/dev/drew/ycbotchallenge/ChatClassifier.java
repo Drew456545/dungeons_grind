@@ -120,6 +120,19 @@ public final class ChatClassifier {
         return null;
     }
 
+    /**
+     * 0.9.62: a soft captcha hint - a server line matching a hint pattern and none of the
+     * exclusions. "Type the answer in chat to win!" is the unscramble minigame's call (65 of
+     * the 68 captcha_hint rows of 2026-09-08), preceded by "first person to unscramble the
+     * word" and answered by "The correct answer was ...".
+     */
+    public static boolean captchaHintEligible(String text, List<Pattern> hintRes, List<Pattern> excludeRes) {
+        if (text == null || text.isBlank() || isPlayerOrBroadcast(text)) return false;
+        if (excludeRes != null) for (Pattern p : excludeRes) if (p.matcher(text).find()) return false;
+        if (hintRes != null) for (Pattern p : hintRes) if (p.matcher(text).find()) return true;
+        return false;
+    }
+
     /** Strip §/& formatting and collapse whitespace (same rules as the sidebar). */
     public static String clean(String raw) {
         return SidebarParser.strip(raw);

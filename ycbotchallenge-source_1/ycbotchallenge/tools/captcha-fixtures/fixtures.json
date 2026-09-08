@@ -58,5 +58,11 @@
     "answer": "ERL7",
     "kind": "map",
     "source": "hard: bot capture 2026-09-05 08:37 UTC (native 128 px map render); the green L overlaps the pink R and 3.6-flash, 3.8-flash and 3.8-max all read ER7 (10/10 in the 2026-09-07 duo bench); ER7 and eR7 rejected; Drew: the answer was ERL7. Kept out of --real (the single-read gate) on purpose."
+  },
+  {
+    "file": "BTq-map128.png",
+    "answer": "BTq",
+    "kind": "map",
+    "source": "unverified: bot capture 2026-09-08 06:47 UTC (native 128 px map render); qwen3.6-flash read BT9 (typed, map still held 20 s later), qwen3.8-max read BTq (never typed: captchaVoteRenders' x1 did not parse, so the ballot did not run and the re-read repeated BT9; the B/8 look-alike variant 8T9 was typed instead); the unscramble minigame's 'The correct answer was String.' then confirmed 8T9 falsely; the server re-prompted 3 min after the map and kicked 15 min after it. BTq is our read of the image, not server-accepted - kept out of --real."
   }
 ]

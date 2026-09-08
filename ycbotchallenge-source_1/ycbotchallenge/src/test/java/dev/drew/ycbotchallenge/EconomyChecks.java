@@ -107,6 +107,7 @@ public final class EconomyChecks {
         n += checks0961();
         n += checks0962a();
         n += checks0962b();
+        n += checks0962c();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -3129,6 +3130,35 @@ public final class EconomyChecks {
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
             System.err.println("FAIL v59 migration: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    /** 0.9.62c: the hint noise (65 of 68 captcha_hint rows were the unscramble minigame) and the dead vote knob. */
+    private static int checks0962c() {
+        int n = 0;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        List<Pattern> hints = looseAll(fresh.captchaChatHintPatterns);
+        List<Pattern> excl = looseAll(fresh.captchaHintExcludePatterns);
+        n += eq("minigame call is not a hint", ChatClassifier.captchaHintEligible("Type the answer in chat to win!", hints, excl), false);
+        n += eq("minigame answer is not a hint", ChatClassifier.captchaHintEligible("The correct answer was cobblestone.", hints, excl), false);
+        n += eq("minigame word is not a hint", ChatClassifier.captchaHintEligible("First person to unscramble the word: tgrSin", hints, excl), false);
+        n += eq("the server's re-prompt is a hint", ChatClassifier.captchaHintEligible("Please enter the captcha on the map.", hints, excl), true);
+        n += eq("a map-code line is a hint", ChatClassifier.captchaHintEligible("Type the code shown on the map", hints, excl), true);
+        n += eq("a player's hint is nothing", ChatClassifier.captchaHintEligible("[R1] [x]  Foo  \u00bb type the answer", hints, excl), false);
+        n += eq("no exclusions: the old rule", ChatClassifier.captchaHintEligible("Type the answer in chat to win!", hints, null), true);
+        n += eq("exclusions shipped", fresh.captchaHintExcludePatterns.isEmpty(), false);
+        n += eq("minReads bounded without the dead knob", fresh.captchaVoteMinReads <= 12, true);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg58c", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":58,\"captchaVoteMaxReads\":12,\"captchaVoteMinReads\":40}");
+            YCBotChallengeConfig c58 = YCBotChallengeConfig.load(tmp);
+            n += eq("v59 fills the exclusions", c58.captchaHintExcludePatterns, fresh.captchaHintExcludePatterns);
+            n += eq("stale vote knob ignored, minReads clamped", c58.captchaVoteMinReads, 12);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v59 hint: " + ex);
             n++;
         }
         return n;
