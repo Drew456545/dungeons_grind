@@ -1085,9 +1085,11 @@ public class StatsTracker {
                 log("suffix_confirmed", "suffix", key, "scale", e.scale, "raw", e.raw, "prevRaw", e.prevRaw);
             }
         } else {
-            // The earlier scale was a guess (a confirmed suffix never reaches here): every
-            // provisional rung above it was built on it, and every learned price expressed
-            // on it is wrong by the same factor. Forget both; prices relearn from the next fail line.
+            // The earlier scale was wrong: every provisional rung above it was built on it,
+            // and every learned price expressed on it is wrong by the same factor. Forget
+            // both; prices relearn from the next fail line. A sidebar crossing only ever
+            // brings a guess here, but an exponent reading (0.9.61) can overrule a
+            // confirmation too - it measures the rung rather than inferring it.
             List<String> forgotten = new ArrayList<>();
             for (Map.Entry<String, Amounts.Learned> le : Amounts.learned().entrySet()) {
                 if (le.getKey().equals(key) || le.getValue().confirmed || le.getValue().scale <= old.scale) continue;
