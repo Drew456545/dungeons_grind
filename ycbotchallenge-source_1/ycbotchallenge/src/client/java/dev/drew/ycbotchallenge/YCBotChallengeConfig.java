@@ -417,7 +417,7 @@ public class YCBotChallengeConfig {
      * rather than typing a guess that will land after the server's ~30s window closes —
      * the remainder is the human's room to type it themselves.
      */
-    public int captchaBudgetMs = 45_000; // 0.9.57: the server's window is 60 s (Drew); read 5 s + type 4 s + held-map 20 s + the second guess fit
+    public int captchaBudgetMs = 300_000; // 0.9.62: the server kicks ~15 min after the map (06:47 -> 07:02; 02:12 -> 02:27 on 09-07), not 60 s as 0.9.57 believed; five minutes holds three answers at the 20 s held-map cadence plus a re-read
     /**
      * Hedged reads (0.9.34): read A fires as soon as the map is captured, read B this
      * long after it WITHOUT waiting for A to fail, both voting into the same ballot.
@@ -444,10 +444,13 @@ public class YCBotChallengeConfig {
      */
     public int captchaMaxAttempts = 3;
     /**
-     * Hard cap on answers actually SENT TO CHAT per captcha. After this many
-     * rejections the bot stops and pauses for the human — it never spams guesses.
+     * Hard cap on answers actually SENT TO CHAT per captcha - never a guess spam. 0.9.62: 3.
+     * The server re-prompted after two wrong answers (2026-09-08 06:50) and kicked ~15 min
+     * after the map appeared; the third answer is the reading the other model gave, and at
+     * the cap the bot runs on with the map in hand (the hub stop takes the kick) - it never
+     * pauses, a paused bot misses the next captcha for the whole night.
      */
-    public int captchaMaxAnswers = 2;
+    public int captchaMaxAnswers = 3;
     /**
      * Human-ish pause between receiving a guess from the model and typing it
      * into chat (a person needs a moment to read the map and type). Applied to
@@ -521,6 +524,13 @@ public class YCBotChallengeConfig {
      * answer inside the server's 60 s.
      */
     public int captchaMapHeldRejectMs = 20_000;
+    /**
+     * 0.9.62: the map leaving the hand is the acceptance - the server says nothing on a right
+     * answer, and a chat "correct" can be the unscramble minigame's ("The correct answer was
+     * String." confirmed 8T9 on 2026-09-08 06:48 and the bot stopped watching the map). The map
+     * must be gone this long first, so an inventory blink does not count.
+     */
+    public int captchaMapGoneConfirmMs = 1000;
     /**
      * Look-alike pairs for the second guess when both renders agree: the alphabet mixes
      * letters and digits (17:38: read "pBb", answer "p8b"). First matching character is
@@ -1736,7 +1746,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 58;
+    public static final int CURRENT_CONFIG_VERSION = 59;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2156,6 +2166,14 @@ public class YCBotChallengeConfig {
             if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "ad,hn,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
             changed = true;
         }
+        if (configVersion < 59) {
+            // v59 (0.9.62): three answers and a five-minute budget - the server re-prompts about
+            // three minutes after the map and kicks about fifteen minutes after it, not 60 s.
+            // Only the shipped values move; a hand-set cap or budget stays.
+            if (captchaMaxAnswers == 2) captchaMaxAnswers = 3;
+            if (captchaBudgetMs == 45_000) captchaBudgetMs = 300_000;
+            changed = true;
+        }
         if (configVersion < 58) {
             // v58 (0.9.61): the server's ladder ends at NVG and above 1e92 it writes the
             // exponent instead ("1.03235E93"). The old amount token could not span that, so
@@ -2299,6 +2317,8 @@ public class YCBotChallengeConfig {
         if (captchaVoteMinReads > captchaVoteMaxReads) captchaVoteMinReads = captchaVoteMaxReads;
         if (captchaVoteMaxWaitMs < 0) captchaVoteMaxWaitMs = 0;
         if (captchaMapHeldRejectMs < 0) captchaMapHeldRejectMs = 0;
+        if (captchaMapGoneConfirmMs < 0) captchaMapGoneConfirmMs = 0;
+        if (captchaMapGoneConfirmMs > 10_000) captchaMapGoneConfirmMs = 10_000;
         if (captchaSolvedPatterns == null) captchaSolvedPatterns = fresh.captchaSolvedPatterns;
         if (captchaRetryPatterns == null) captchaRetryPatterns = fresh.captchaRetryPatterns;
         if (captchaChatHintPatterns == null) captchaChatHintPatterns = fresh.captchaChatHintPatterns;
@@ -2320,7 +2340,7 @@ public class YCBotChallengeConfig {
         if (captchaSettleMs < 0) captchaSettleMs = fresh.captchaSettleMs;
         if (captchaTimeoutMs < 1000) captchaTimeoutMs = fresh.captchaTimeoutMs;
         if (captchaBudgetMs < 10_000) captchaBudgetMs = 10_000;
-        if (captchaBudgetMs > 60_000) captchaBudgetMs = 60_000;
+        if (captchaBudgetMs > 900_000) captchaBudgetMs = 900_000; // 0.9.62: the server's window is ~15 min
         if (captchaHedgeMs < 500) captchaHedgeMs = 500;
         if (captchaHedgeMs > 15_000) captchaHedgeMs = 15_000;
         if (captchaHedgeMax < 1) captchaHedgeMax = 1;

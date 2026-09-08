@@ -249,6 +249,19 @@ public class YCBotChallengeClient implements ClientModInitializer {
         // answer it; the kick at 08:27. A map other than the one it paused on is a fresh
         // window - resume and solve it.
         if (!enabled && "captcha".equals(pausedReason) && config.captchaAutoSolve) {
+            // 0.9.62: the server's "Please enter the captcha on the map." for the map the bot
+            // paused on, with a reading still unsent - answer it (the kick comes ~15 min after
+            // the map, not 60 s: 06:47 map, 07:02 kick).
+            String reprompt = stats.captchaMessage;
+            if (reprompt != null) {
+                stats.captchaMessage = null;
+                if (captchaSolver.canContinueHeldMap(client)) {
+                    if (logger != null) logger.log("captcha_resume", "detail", reprompt, "pausedOn", lastCaptchaDetail, "via", "chat");
+                    setEnabled(client, true, true);
+                    beginCaptcha(client, "chat", reprompt);
+                    return;
+                }
+            }
             CaptchaDetector.Hit hit = captchaDetector.tick(client, System.currentTimeMillis());
             if (hit != null && !hit.detail().equals(lastCaptchaDetail)) {
                 if (logger != null) logger.log("captcha_resume", "detail", hit.detail(), "pausedOn", lastCaptchaDetail);

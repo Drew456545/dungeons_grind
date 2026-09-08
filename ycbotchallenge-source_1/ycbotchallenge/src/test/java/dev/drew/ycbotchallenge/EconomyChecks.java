@@ -106,6 +106,7 @@ public final class EconomyChecks {
         n += checks0960();
         n += checks0961();
         n += checks0962a();
+        n += checks0962b();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1259,7 +1260,7 @@ public final class EconomyChecks {
             c.captchaVoteMinReads <= c.captchaHedgeMax, true);
         n += eq("timeout leaves room for a hedge",
             c.captchaTimeoutMs + c.captchaHedgeMs < c.captchaBudgetMs, true);
-        n += eq("budget inside the server's 60 s window (0.9.57)", c.captchaBudgetMs <= 45_000, true);
+        n += eq("budget inside the server's ~15 min window (0.9.62)", c.captchaBudgetMs < 900_000, true);
         // The hedge must land inside the reading pause, or it is not free.
         n += eq("hedge hides inside the answer delay",
             c.captchaHedgeMs <= c.captchaAnswerDelayMaxMs, true);
@@ -1273,7 +1274,7 @@ public final class EconomyChecks {
             n += eq("v37 migrates to current", c37.configVersion, YCBotChallengeConfig.CURRENT_CONFIG_VERSION);
             n += eq("v38 takes the 8s read timeout", c37.captchaTimeoutMs, 8000);
             n += eq("v38 drops minReads to the hedge count", c37.captchaVoteMinReads, 2);
-            n += eq("v38 gains the budget (45 s since v55)", c37.captchaBudgetMs, 45_000);
+            n += eq("v38 gains the budget (300 s since v59)", c37.captchaBudgetMs, 300_000);
             n += eq("v38 gains the hedge stagger", c37.captchaHedgeMs, 3000);
             java.nio.file.Files.deleteIfExists(tmp);
         } catch (Exception ex) {
@@ -1799,7 +1800,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 58", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 58);
+        n += eq("config version 59", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 59);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -2967,14 +2968,14 @@ public final class EconomyChecks {
     private static int checks0957() {
         int n = 0;
         YCBotChallengeConfig fresh = new YCBotChallengeConfig();
-        n += eq("budget default 45 s", fresh.captchaBudgetMs, 45_000);
+        n += eq("budget default 300 s (v59)", fresh.captchaBudgetMs, 300_000);
         n += eq("read + type + held map + second guess fit", 5_000 + 4_000 + fresh.captchaMapHeldRejectMs + 8_000 <= fresh.captchaBudgetMs, true);
-        n += eq("budget under the server's 60 s", fresh.captchaBudgetMs < 60_000, true);
+        n += eq("budget under the server's ~15 min", fresh.captchaBudgetMs < 900_000, true);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg54", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":54,\"captchaBudgetMs\":25000}");
             YCBotChallengeConfig c54 = YCBotChallengeConfig.load(tmp);
-            n += eq("v55 moves the 25 s budget", c54.captchaBudgetMs, 45_000);
+            n += eq("v55 then v59 move the 25 s budget", c54.captchaBudgetMs, 300_000);
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":54,\"captchaBudgetMs\":30000}");
             YCBotChallengeConfig c54b = YCBotChallengeConfig.load(tmp);
             n += eq("v55 keeps a hand-set budget", c54b.captchaBudgetMs, 30_000);
@@ -3064,6 +3065,72 @@ public final class EconomyChecks {
             CaptchaSolver.rereadCandidates(List.of("BT9"), List.of(), List.of("BT9"), List.of()).isEmpty(), true);
         n += eq("re-read: nulls tolerated",
             CaptchaSolver.rereadCandidates(null, null, null, List.of("a", "a", "b")), List.of("a", "b"));
+        return n;
+    }
+
+    /**
+     * 0.9.62b: the 06:48 false confirmation and the 06:50 pause. "The correct answer was
+     * String." (the unscramble minigame) matched captchaSolvedPatterns' "correct" and confirmed
+     * a wrong answer; the server's re-prompt two minutes later met the answer cap and paused
+     * the bot with the map in hand; the kick came 15 min after the map, not 60 s.
+     */
+    private static int checks0962b() {
+        int n = 0;
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        List<Pattern> retry = looseAll(fresh.captchaRetryPatterns);
+        List<Pattern> solved = looseAll(fresh.captchaSolvedPatterns);
+        n += eq("minigame answer line is nothing on the map", CaptchaSolver.feedbackFor("The correct answer was String.", true, retry, solved) == null, true);
+        n += eq("a solved line still counts off the map", CaptchaSolver.feedbackFor("The correct answer was String.", false, retry, solved), "solved");
+        n += eq("re-prompt rejects on the map", CaptchaSolver.feedbackFor("Please enter the captcha on the map.", true, retry, solved), "retry");
+        n += eq("re-prompt rejects off the map", CaptchaSolver.feedbackFor("Please enter the captcha on the map.", false, retry, solved), "retry");
+        n += eq("a player's 'correct' is nothing", CaptchaSolver.feedbackFor("[R57] [love]  zTRIPOG_  \u00bb correct lol", false, retry, solved) == null, true);
+        n += eq("our own line is nothing", CaptchaSolver.feedbackFor("[YCBotChallenge] captcha solved - resuming.", false, retry, solved) == null, true);
+        n += eq("blank is nothing", CaptchaSolver.feedbackFor("  ", false, retry, solved) == null, true);
+        n += eq("map gone for the confirm window: solved", CaptchaSolver.verifyVerdict(true, false, 1200, 1000, 5000, 20000, null, false), "solved");
+        n += eq("map gone, not yet long enough: wait", CaptchaSolver.verifyVerdict(true, false, 300, 1000, 5000, 20000, null, false) == null, true);
+        n += eq("map held past the reject window: retry", CaptchaSolver.verifyVerdict(true, true, 0, 1000, 20100, 20000, null, false), "retry");
+        n += eq("map held inside the window: wait", CaptchaSolver.verifyVerdict(true, true, 0, 1000, 5000, 20000, null, false) == null, true);
+        n += eq("deadline with the map held: retry", CaptchaSolver.verifyVerdict(true, true, 0, 1000, 30000, 20000, null, true), "retry");
+        n += eq("deadline, held-map rule off: solved (0.9.22)", CaptchaSolver.verifyVerdict(true, true, 0, 1000, 30000, 0, null, true), "solved");
+        n += eq("retry line beats everything", CaptchaSolver.verifyVerdict(true, false, 5000, 1000, 5000, 20000, "retry", false), "retry");
+        n += eq("a chat 'solved' never confirms a map answer", CaptchaSolver.verifyVerdict(true, true, 0, 1000, 5000, 20000, "solved", false) == null, true);
+        n += eq("off the map, silence to the deadline: unconfirmed", CaptchaSolver.verifyVerdict(false, false, 0, 1000, 30000, 20000, null, true), "solved-unconfirmed");
+        n += eq("off the map, solved line: solved", CaptchaSolver.verifyVerdict(false, false, 0, 1000, 3000, 20000, "solved", false), "solved");
+        n += eq("off the map, nothing yet: wait", CaptchaSolver.verifyVerdict(false, false, 0, 1000, 3000, 20000, null, false) == null, true);
+        n += eq("cap 3: second reading typed", Economy.rejectionAction(1, 3, true, 32_000, 300_000, true, true), "second-read");
+        n += eq("cap 3: two out, no second reading: re-read", Economy.rejectionAction(2, 3, true, 60_000, 300_000, true, false), "reread");
+        n += eq("cap 3: three out: stop", Economy.rejectionAction(3, 3, true, 60_000, 300_000, true, true), "stop");
+        n += eq("re-prompt with an answer left: next", Economy.repromptAction(2, 3, true), "next");
+        n += eq("re-prompt at the cap: resume, never pause", Economy.repromptAction(3, 3, true), "resume");
+        n += eq("re-prompt with nothing left: resume", Economy.repromptAction(2, 3, false), "resume");
+        n += eq("solve failure, nothing sent: retry", Economy.solveFailureAction(0, 1, 3, false), "retry");
+        n += eq("solve failure, nothing sent, attempts spent: pause", Economy.solveFailureAction(0, 3, 3, false), "pause");
+        n += eq("re-read failed, parked reading unsent: type it", Economy.solveFailureAction(1, 2, 3, true), "type-fallback");
+        n += eq("re-read failed, nothing parked, attempts left: retry", Economy.solveFailureAction(1, 2, 3, false), "retry");
+        n += eq("re-read failed, nothing parked, attempts spent: resume", Economy.solveFailureAction(1, 3, 3, false), "resume");
+        n += eq("three answers", fresh.captchaMaxAnswers, 3);
+        n += eq("five-minute budget", fresh.captchaBudgetMs, 300_000);
+        n += eq("three answers at the held-map cadence fit the budget",
+            3 * (5_000 + 4_000 + fresh.captchaMapHeldRejectMs) + 8_000 <= fresh.captchaBudgetMs, true);
+        n += eq("budget inside the server's ~15 min", fresh.captchaBudgetMs < 900_000, true);
+        n += eq("map-gone confirm window", fresh.captchaMapGoneConfirmMs, 1000);
+        n += eq("verify wait outlasts the held-map window", fresh.captchaVerifyWaitMs > fresh.captchaMapHeldRejectMs, true);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg58", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":58,\"captchaMaxAnswers\":2,\"captchaBudgetMs\":45000}");
+            YCBotChallengeConfig c58 = YCBotChallengeConfig.load(tmp);
+            n += eq("v59 moves the two-answer cap", c58.captchaMaxAnswers, 3);
+            n += eq("v59 moves the 45 s budget (normalize no longer caps it at 60 s)", c58.captchaBudgetMs, 300_000);
+            n += eq("v59 fills the confirm window", c58.captchaMapGoneConfirmMs, 1000);
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":58,\"captchaMaxAnswers\":4,\"captchaBudgetMs\":120000}");
+            YCBotChallengeConfig c58b = YCBotChallengeConfig.load(tmp);
+            n += eq("v59 keeps a hand-set cap", c58b.captchaMaxAnswers, 4);
+            n += eq("v59 keeps a hand-set budget", c58b.captchaBudgetMs, 120_000);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v59 migration: " + ex);
+            n++;
+        }
         return n;
     }
 
@@ -3224,7 +3291,7 @@ public final class EconomyChecks {
         n += eq("reader is 3.6-flash", fresh.captchaVlmModel, "qwen3.6-flash");
         n += eq("second model is 3.8-max", fresh.captchaVlmModelSecond, "qwen3.8-max");
         n += eq("re-read budget is 256 tokens", fresh.captchaRetryMaxTokens, 256);
-        n += eq("two guesses still", fresh.captchaMaxAnswers, 2);
+        n += eq("three guesses since v59", fresh.captchaMaxAnswers, 3);
         // The 08:12 map: max's reply lands first, flash's reading is still typed first (order 0).
         CaptchaBallot b = new CaptchaBallot();
         b.cast("2VnD", "x1", 0.0, 1, "qwen3.8-max");

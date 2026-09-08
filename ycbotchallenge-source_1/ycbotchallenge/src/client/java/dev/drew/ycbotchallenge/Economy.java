@@ -1241,6 +1241,28 @@ public final class Economy {
         return "stop";
     }
 
+    /**
+     * 0.9.62: what the server's re-prompt for a map already answered from leads to. {@code next}
+     * types the next unsent reading while answers remain; otherwise {@code resume} - the bot
+     * runs on with the map in hand (the 06:50 pause at the cap cost the night: kick at 07:02,
+     * off until 11:07). Never a pause.
+     */
+    public static String repromptAction(int answersSent, int maxAnswers, boolean candidateLeft) {
+        return answersSent < Math.max(1, maxAnswers) && candidateLeft ? "next" : "resume";
+    }
+
+    /**
+     * 0.9.62: what a failed solve cycle (capture, model) leads to. Nothing sent yet: {@code retry}
+     * until {@code maxAttempts}, then {@code pause} (a person is needed and nothing is in chat).
+     * An answer already out: {@code type-fallback} while a reading parked at the rejection is
+     * unsent, else {@code retry} while attempts remain, else {@code resume}.
+     */
+    public static String solveFailureAction(int answersSent, int attempt, int maxAttempts, boolean candidateLeft) {
+        if (answersSent <= 0) return attempt >= Math.max(1, maxAttempts) ? "pause" : "retry";
+        if (candidateLeft) return "type-fallback";
+        return attempt >= Math.max(1, maxAttempts) ? "resume" : "retry";
+    }
+
     /** 0.9.47: a container title the server owns (Heroes, Crafting): left open for a person, never a captcha. */
     public static boolean isServerMenu(String title, java.util.List<String> titles) {
         if (title == null || titles == null) return false;

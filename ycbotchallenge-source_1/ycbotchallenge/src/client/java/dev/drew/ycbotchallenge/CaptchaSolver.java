@@ -158,6 +158,8 @@ public class CaptchaSolver {
     private final AtomicReference<String> voteError = new AtomicReference<>();
     private boolean ballotActive = false;
     private long answerSentAt = 0;
+    /** 0.9.62: when the answered map left the hand (0 while held) - gone for captchaMapGoneConfirmMs is the acceptance. */
+    private long mapGoneSince = 0;
     private final AtomicReference<String> vlmSecond = new AtomicReference<>();
     /** The map we last answered from, its readings and how many answers went out for it: a server
      *  re-prompt for the same map continues with the next guess instead of re-reading. */
@@ -290,6 +292,7 @@ public class CaptchaSolver {
             attempt = 1;
             answersSent = mapAnswersSent;
             feedback = null;
+            mapGoneSince = 0;
             pendingAnswer = null;
             pendingOut = null;
             // A re-prompt is a fresh window from the server, so the budget restarts too.
@@ -302,9 +305,14 @@ public class CaptchaSolver {
             // The re-prompt is the server's "no": the guess that went out is spent.
             if (lastSentAnswer != null && !wrongAnswers.contains(lastSentAnswer)) wrongAnswers.add(lastSentAnswer);
             log("captcha_reprompted", "mapId", heldId, "answersSent", answersSent, "candidates", candidates, "wrong", wrongAnswers);
-            if (answersSent >= cfg.captchaMaxAnswers) {
+            boolean candidateLeft = candidates.stream().anyMatch(c -> !wrongAnswers.contains(c));
+            String action = Economy.repromptAction(answersSent, cfg.captchaMaxAnswers, candidateLeft);
+            if (!"next".equals(action)) {
+                // 0.9.62: never a pause with the map in hand (06:50: paused at the cap, kicked at
+                // 07:02, off until 11:07). The bot runs on; the hub stop takes the kick (0.9.42).
                 phase = Phase.SETTLING;
-                fail(client, "answers-exhausted", "server re-prompted after " + answersSent + " answer(s) for map " + heldId);
+                unverified(client, "answers-exhausted", "server re-prompted after " + answersSent + " answer(s) for map " + heldId
+                    + (candidateLeft ? "" : ", nothing left to try"));
                 return;
             }
             phase = Phase.SOLVING;
@@ -315,6 +323,7 @@ public class CaptchaSolver {
         attempt = 1;
         answersSent = 0;
         feedback = null;
+        mapGoneSince = 0;
         lastSentAnswer = null;
         captureMode = null;
         captureWhere = null;
@@ -381,13 +390,53 @@ public class CaptchaSolver {
 
     /** Wire to ClientReceiveMessageEvents.GAME (any thread). */
     public void onGameMessage(String text) {
-        if (phase != Phase.AWAITING_RESULT || text == null || text.isBlank()) return;
-        for (Pattern p : retryRes) {
-            if (p.matcher(text).find()) { feedback = "retry"; return; }
+        if (phase != Phase.AWAITING_RESULT) return;
+        String fb = feedbackFor(text, "map".equals(captureMode), retryRes, solvedRes);
+        if (fb != null) feedback = fb;
+    }
+
+    /**
+     * 0.9.62: what a chat line means for the answer just sent. Retry lines count in every mode;
+     * a "solved" line only off the map - the server says nothing on a right map answer, and
+     * "The correct answer was String." (the unscramble minigame, 2026-09-08 06:48) confirmed a
+     * wrong one; a player's or a broadcast line never counts. Null = nothing. Pure, for the checks.
+     */
+    public static String feedbackFor(String text, boolean mapMode, List<Pattern> retryRes, List<Pattern> solvedRes) {
+        if (text == null || text.isBlank()) return null;
+        String clean = ChatClassifier.clean(text);
+        if (!ChatClassifier.captchaLineEligible(clean, false)) return null;
+        for (Pattern p : retryRes) if (p.matcher(clean).find()) return "retry";
+        if (mapMode) return null;
+        for (Pattern p : solvedRes) if (p.matcher(clean).find()) return "solved";
+        return null;
+    }
+
+    /**
+     * 0.9.62: the verdict on a sent answer, taken every tick. On the map: the map gone from the
+     * hand for {@code goneConfirmMs} is the acceptance (the only positive signal the server
+     * gives); a map still held {@code heldRejectMs} after the answer is the rejection (0.9.26);
+     * the deadline with the map held is a rejection too (an acceptance with the held-map rule
+     * off, the 0.9.22 rule). Off the map: a retry line rejects, a solved line accepts, silence
+     * to the deadline is {@code solved-unconfirmed}. Null = keep waiting. Pure, for the checks.
+     */
+    public static String verifyVerdict(boolean mapMode, boolean mapHeld, long mapGoneMs, int goneConfirmMs,
+                                       long sinceAnswerMs, int heldRejectMs, String feedback, boolean deadlinePassed) {
+        if ("retry".equals(feedback)) return "retry";
+        if (mapMode) {
+            if (!mapHeld && mapGoneMs >= Math.max(0, goneConfirmMs)) return "solved";
+            if (mapHeld && heldRejectMs > 0 && sinceAnswerMs >= heldRejectMs) return "retry";
+            if (deadlinePassed) return mapHeld && heldRejectMs > 0 ? "retry" : "solved";
+            return null;
         }
-        for (Pattern p : solvedRes) {
-            if (p.matcher(text).find()) { feedback = "solved"; return; }
-        }
+        if ("solved".equals(feedback)) return "solved";
+        return deadlinePassed ? "solved-unconfirmed" : null;
+    }
+
+    /** 0.9.62: a server re-prompt for the map already answered from can go on - answers left and a reading unsent. */
+    public boolean canContinueHeldMap(MinecraftClient client) {
+        int held = heldMapId(client);
+        return held >= 0 && held == solvedMapId && mapAnswersSent < cfg.captchaMaxAnswers
+            && mapCandidates.stream().anyMatch(c -> !wrongAnswers.contains(c) && !c.equals(lastSentAnswer));
     }
 
     // ---------------------------------------------------------------- health
@@ -626,8 +675,8 @@ public class CaptchaSolver {
                             log("captcha_reread_repeat", "got", got, "wrong", wrongAnswers, "fallback", fallbackCandidates);
                         }
                     }
-                    log("captcha_candidates", "candidates", candidates, "raw", vlmRaw.getAndSet(null),
-                        "second", vlmSecond.getAndSet(null), "secondScale", secondPng != null ? cfg.captchaSecondScale : null,
+                    log("captcha_candidates", "candidates", candidates, "via", attempt > 1 ? "reread" : "single",
+                        "raw", vlmRaw.getAndSet(null), "second", vlmSecond.getAndSet(null), "secondScale", secondPng != null ? cfg.captchaSecondScale : null,
                         "model", cfg.captchaVlmModel, "secondModel", secondPng != null || hasSecondModel() ? secondModel() : null,
                         "prompt", mapPromptUsed ? "map" : "sonar",
                         "preserveCase", mapPromptUsed && cfg.captchaPreserveCase, "attempt", attempt);
@@ -694,17 +743,25 @@ public class CaptchaSolver {
                 // has its alternative; shouldHedge's budget guard stops it in time.
                 if (ballotActive) tickHedges(now);
                 // The server says nothing either way (19:43 log); on a right answer the map
-                // leaves the hand (Drew), so a map still held this long after the answer is
-                // the rejection (0.9.26).
-                if (feedback == null && "map".equals(captureMode) && captureMapId >= 0 && answerSentAt > 0
-                    && cfg.captchaMapHeldRejectMs > 0 && now - answerSentAt >= cfg.captchaMapHeldRejectMs
-                    && heldMapId(client) == captureMapId) {
-                    log("captcha_map_persists", "mapId", captureMapId, "afterMs", now - answerSentAt,
-                        "answer", lastSentAnswer, "answersSent", answersSent);
-                    feedback = "retry";
+                // leaves the hand (Drew): gone for captchaMapGoneConfirmMs is the acceptance
+                // (0.9.62 - a chat "correct" was the unscramble minigame's, 06:48), a map still
+                // held captchaMapHeldRejectMs after the answer is the rejection (0.9.26).
+                boolean mapMode = "map".equals(captureMode) && captureMapId >= 0;
+                boolean held = mapMode && heldMapId(client) == captureMapId;
+                if (mapMode) {
+                    if (held) mapGoneSince = 0;
+                    else if (mapGoneSince == 0) mapGoneSince = now;
                 }
+                long goneMs = mapGoneSince == 0 ? 0 : now - mapGoneSince;
                 String fb = feedback;
-                if ("retry".equals(fb)) {
+                String verdict = verifyVerdict(mapMode, held, goneMs, cfg.captchaMapGoneConfirmMs,
+                    answerSentAt > 0 ? now - answerSentAt : 0, cfg.captchaMapHeldRejectMs, fb, now >= phaseDeadline);
+                if (verdict == null) return;
+                if ("retry".equals(verdict)) {
+                    if (!"retry".equals(fb) && held) {
+                        log("captcha_map_persists", "mapId", captureMapId, "afterMs", now - answerSentAt,
+                            "answer", lastSentAnswer, "answersSent", answersSent);
+                    }
                     if (lastSentAnswer != null && !wrongAnswers.contains(lastSentAnswer)) {
                         wrongAnswers.add(lastSentAnswer);
                     }
@@ -743,6 +800,10 @@ public class CaptchaSolver {
                             attempt++;
                             log("captcha_reprompt", "rejected", wrongAnswers, "attempt", attempt,
                                 "fallback", fallbackCandidates, "atMs", elapsedMs(now), "budgetLeftMs", budgetDeadline - now);
+                            // 0.9.62: the ballot is done with - a live one made the SOLVING tick take
+                            // the ballot branch and never read the re-read's vlmCandidates.
+                            stopVoting();
+                            ballotActive = false;
                             startSolve(lastPng);
                         }
                         case "variant" -> submitNextCandidate(client, now);
@@ -754,11 +815,12 @@ public class CaptchaSolver {
                             }
                         }
                     }
-                } else if ("solved".equals(fb) || now >= phaseDeadline) {
+                } else {
                     stopVoting();
                     phase = Phase.IDLE;
+                    String via = mapMode ? "map-gone" : "solved".equals(fb) ? "chat" : "silence";
                     log("captcha_solved", "attempt", attempt, "answer", lastSentAnswer,
-                        "confirmed", "solved".equals(fb), "mode", captureMode, "source", source,
+                        "confirmed", !"solved-unconfirmed".equals(verdict), "via", via, "mode", captureMode, "source", source,
                         "answersSent", answersSent);
                     say(client, "§a[YCBotChallenge] captcha solved — resuming.");
                     callbacks.onSolved(client);
@@ -808,7 +870,28 @@ public class CaptchaSolver {
         if ("server".equals(stage) && lastSentAnswer != null && !wrongAnswers.contains(lastSentAnswer)) {
             wrongAnswers.add(lastSentAnswer);
         }
-        if (attempt >= cfg.captchaMaxAttempts) { fail(client, stage, why); return; }
+        // 0.9.62: with an answer already out, a failed re-read types the reading parked at the
+        // rejection rather than giving up with the map in hand; nothing is ever paused with a
+        // reading unsent.
+        boolean candidateLeft = fallbackCandidates.stream().anyMatch(c -> !wrongAnswers.contains(c))
+            || candidates.stream().anyMatch(c -> !wrongAnswers.contains(c));
+        String action = Economy.solveFailureAction(answersSent, attempt, cfg.captchaMaxAttempts, candidateLeft);
+        switch (action) {
+            case "pause" -> { fail(client, stage, why); return; }
+            case "resume" -> { unverified(client, stage, why); return; }
+            case "type-fallback" -> {
+                log("captcha_retry", "stage", stage, "why", why, "attempt", attempt, "via", "fallback", "fallback", fallbackCandidates);
+                List<String> merged = rereadCandidates(candidates, fallbackCandidates, wrongAnswers, List.of());
+                candidates.clear();
+                candidates.addAll(merged);
+                vlmCandidates.set(null);
+                vlmError.set(null);
+                phase = Phase.SOLVING;
+                submitNextCandidate(client, System.currentTimeMillis());
+                return;
+            }
+            default -> { }
+        }
         attempt++;
         log("captcha_retry", "stage", stage, "why", why, "attempt", attempt);
         candidates.clear();
@@ -836,7 +919,7 @@ public class CaptchaSolver {
         phase = Phase.IDLE;
         log("captcha_unverified", "stage", stage, "why", why, "attempts", attempt, "answersSent", answersSent,
             "answer", lastSentAnswer, "wrong", wrongAnswers, "source", source, "mode", captureMode);
-        say(client, "§e[YCBotChallenge] captcha: answers spent, map still held - resuming (a wrong answer is a kick within 60 s).");
+        say(client, "§e[YCBotChallenge] captcha: answers spent, map still held - resuming (the kick, if it comes, is ~15 min after the map).");
         callbacks.onSolved(client);
     }
 
@@ -1414,6 +1497,7 @@ public class CaptchaSolver {
             "directWhy", directWhy, "answersSent", answersSent, "attempt", attempt, "source", source,
             "mode", captureMode);
         feedback = null;
+        mapGoneSince = 0;
         phase = Phase.AWAITING_RESULT;
         phaseDeadline = now + cfg.captchaVerifyWaitMs;
     }
