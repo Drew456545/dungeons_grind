@@ -163,11 +163,12 @@ public class CompanionController extends BotModule implements Module {
     private Integer currentZone;
     private Integer visitStage;
 
-    private int consecutiveAborts;
-    private boolean suspended;
+    /** 0.9.62: the abort and suspension bookkeeping, shared (companion_abort / companion_suspended). */
+    private GuiFlow.Aborts aborts;
 
     public CompanionController(YCBotChallengeConfig cfg, StatsTracker stats, UpgradeController upgrades) {
         this.cfg = cfg;
+        this.aborts = new GuiFlow.Aborts("companion", () -> cfg.companionMaxConsecutiveAborts, () -> 0L);
         this.stats = stats;
         this.upgrades = upgrades;
         this.lore = new CompanionLore(cfg);
@@ -178,7 +179,7 @@ public class CompanionController extends BotModule implements Module {
     public boolean isBusy() { return phase != Phase.IDLE; }
 
     /** 0.9.30 HUD chip: suspended after repeated aborts (toggle to reset). */
-    public boolean isSuspended() { return suspended; }
+    public boolean isSuspended() { return aborts.suspended(); }
 
     /** The egg GUI, the Companions GUI and the fuse GUI are ours (or hand-opened), never a captcha. */
     public boolean isOurGui(MinecraftClient client) {
@@ -237,7 +238,7 @@ public class CompanionController extends BotModule implements Module {
     public String hudLine() {
         if (!cfg.companionsEnabled) return null;
         if (phase == Phase.IDLE) {
-            if (suspended) return "companions: suspended after repeated aborts (toggle to reset)";
+            if (aborts.suspended()) return "companions: suspended after repeated aborts (toggle to reset)";
             if (plannedAt != 0) return "companions: visit in " + Math.max(0, (plannedAt - System.currentTimeMillis() + 999) / 1000) + "s (" + planVia + ")";
             return eggsLine();
         }
@@ -247,8 +248,7 @@ public class CompanionController extends BotModule implements Module {
     }
 
     public void onEnable(long now, int kills) {
-        suspended = false;
-        consecutiveAborts = 0;
+        aborts.onEnable();
         lastRebirthSeen = stats.lastRebirthAt;
         killsAtStage = kills;
         stageEnteredAt = now;
@@ -917,7 +917,7 @@ public class CompanionController extends BotModule implements Module {
                     "storage", storageCount, "visitMs", now - visitStartedAt,
                     "visitsThisRebirth", stats.companionVisitsThisRebirth(),
                     "saturatedStage", stats.companionSaturatedStage, "persisted", true);
-                consecutiveAborts = 0;
+                aborts.finish();
                 if (eggsOpened > 0 && gainBefore != null) {
                     gainEggs = eggsOpened;
                     gainBatch = batchEggs;
@@ -938,7 +938,7 @@ public class CompanionController extends BotModule implements Module {
     // ---------------------------------------------------------------- trigger
 
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
-        if (suspended) return false;
+        if (aborts.suspended()) return false;
         long rb = stats.lastRebirthAt;
         if (rb != lastRebirthSeen) {
             boolean first = lastRebirthSeen == -1;
@@ -1124,7 +1124,7 @@ public class CompanionController extends BotModule implements Module {
     /** Why a visit cannot run right now, or null when it can. */
     public String blockedReason(long now) {
         if (!cfg.companionsEnabled) return "disabled";
-        if (suspended) return "suspended";
+        if (aborts.suspended()) return "suspended";
         if (now < blockedUntil) return "abort-cooldown";
         if (phase != Phase.IDLE || plannedAt != 0) return "busy";
         // 0.9.36: the previous batch's income window is still open - a second visit inside it
@@ -1538,7 +1538,7 @@ public class CompanionController extends BotModule implements Module {
         // visits on lvl19 (02:40, 02:51, 03:03) each bought again because none was counted.
         boolean counted = eggsOpened > 0;
         if (counted) stats.noteCompanionVisit(visitStage, true, true);
-        log("companion_abort", "reason", why, "phase", phase.name().toLowerCase(Locale.ROOT), "eggs", eggsOpened,
+        aborts.abort(System.currentTimeMillis(), why, phase.name().toLowerCase(Locale.ROOT), logger, "eggs", eggsOpened,
             "opens", opensClicked, "visitMs", System.currentTimeMillis() - visitStartedAt, "counted", counted,
             "visitsThisStage", stats.companionVisitsThisStage(visitStage));
         if (isOurGui(client)) EnchantScreens.closeGui(client);
@@ -1546,10 +1546,6 @@ public class CompanionController extends BotModule implements Module {
         // The economy keeps asking every eval; without this it live-locks on a buy that
         // cannot run (and canVisitNow would keep saying yes).
         blockedUntil = System.currentTimeMillis() + cfg.companionRetryAfterAbortMs;
-        if (++consecutiveAborts >= Math.max(1, cfg.companionMaxConsecutiveAborts)) {
-            suspended = true;
-            log("companion_suspended", "aborts", consecutiveAborts);
-        }
     }
 
     // ---------------------------------------------------------------- screens

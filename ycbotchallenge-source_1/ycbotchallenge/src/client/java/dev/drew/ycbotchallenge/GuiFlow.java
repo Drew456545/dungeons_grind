@@ -105,6 +105,19 @@ public final class GuiFlow {
             return false;
         }
 
+        /** An abort the owner logged itself (the boss event's window rows): the count and the suspension only. */
+        public boolean count(long now, String why, EventLogger logger) {
+            lastReason = why;
+            if (++count >= Math.max(1, maxAborts.getAsInt())) {
+                suspended = true;
+                suspendedAt = now;
+                long ms = suspendMs.getAsLong();
+                if (logger != null) logger.log(prefix + "_suspended", "aborts", count, "lastReason", why, "resumeInMs", ms > 0 ? ms : null);
+                return true;
+            }
+            return false;
+        }
+
         /** Lifts a suspension once {@code suspendMs} has passed (never when it is 0); true when it did. */
         public boolean maybeUnsuspend(long now, EventLogger logger) {
             long ms = suspendMs.getAsLong();

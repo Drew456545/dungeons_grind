@@ -105,8 +105,8 @@ public class BossEventController extends BotModule implements Module {
     private static final float[][] AIM_OFFSETS = {
         {0f, 0f}, {4f, 0f}, {-4f, 0f}, {0f, 4f}, {0f, -4f}, {8f, 0f}, {-8f, 0f}, {4f, 4f}, {4f, -4f}, {-4f, 4f}, {-4f, -4f}, {12f, 0f}};
 
-    private int consecutiveAborts;
-    private boolean suspended;
+    /** 0.9.62: the abort and suspension bookkeeping, shared (boss_suspended). */
+    private GuiFlow.Aborts aborts;
     // 0.9.42: retries inside one bar window, the walk to the body when no marker is in reach.
     // 0.9.44: the retries happen inside the module (phase WAIT), so the window is never handed
     // back to combat and the visits between two targets: a gone marker is waited out on the
@@ -126,6 +126,7 @@ public class BossEventController extends BotModule implements Module {
 
     public BossEventController(YCBotChallengeConfig cfg, StatsTracker stats, UpgradeController upgrades) {
         this.cfg = cfg;
+        this.aborts = new GuiFlow.Aborts("boss", () -> cfg.bossMaxConsecutiveAborts, () -> 0L);
         this.stats = stats;
         this.upgrades = upgrades;
     }
@@ -133,12 +134,12 @@ public class BossEventController extends BotModule implements Module {
 
     public boolean isBusy() { return phase != Phase.IDLE; }
 
-    public boolean isSuspended() { return suspended; }
+    public boolean isSuspended() { return aborts.suspended(); }
 
     public String hudLine() {
         if (!cfg.bossEventEnabled) return null;
         if (phase == Phase.IDLE) {
-            if (suspended) return "boss: suspended after repeated aborts (toggle to reset)";
+            if (aborts.suspended()) return "boss: suspended after repeated aborts (toggle to reset)";
             return null;
         }
         Integer c = stats.bossEventCount;
@@ -148,8 +149,7 @@ public class BossEventController extends BotModule implements Module {
     }
 
     public void onEnable(long now, int kills) {
-        suspended = false;
-        consecutiveAborts = 0;
+        aborts.onEnable();
         seqSeen = stats.bossEventSeq;
         killedSeqSeen = stats.bossKilledUsSeq;
         startPendingSince = 0;
@@ -370,7 +370,7 @@ public class BossEventController extends BotModule implements Module {
     // ---------------------------------------------------------------- trigger
 
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
-        if (suspended) return false;
+        if (aborts.suspended()) return false;
         int seq = stats.bossEventSeq;
         boolean fresh = seq != seqSeen;
         boolean live = stats.bossEventBarPresent || (stats.bossTitleStartAt != 0 && now - stats.bossTitleStartAt < 15_000);
@@ -733,7 +733,7 @@ public class BossEventController extends BotModule implements Module {
         log("boss_done", "via", via, "hits", hits, "count", count, "targetsHit", stats.bossTargetsHit,
             "targets", targets, "rescans", rescans, "eventMs", now - eventStartedAt, "complete", complete,
             "markerType", markerType, "windowHits", windowHits, "retries", windowRetries);
-        if ("killed".equals(via) || windowHits > 0) consecutiveAborts = 0;
+        if ("killed".equals(via) || windowHits > 0) aborts.finish();
         else endWindow(via);
         finish(client, combat);
     }
@@ -773,12 +773,9 @@ public class BossEventController extends BotModule implements Module {
     /** 0.9.42: a bar window is over without a kill: one abort when nothing in it landed a hit. */
     private void endWindow(String why) {
         boolean counted = windowHits == 0;
-        if (counted && ++consecutiveAborts >= Math.max(1, cfg.bossMaxConsecutiveAborts)) {
-            suspended = true;
-            log("boss_suspended", "aborts", consecutiveAborts);
-        }
+        if (counted) aborts.count(System.currentTimeMillis(), why, logger);
         log("boss_window_end", "reason", why, "hits", windowHits, "retries", windowRetries,
-            "windowMs", System.currentTimeMillis() - windowStartedAt, "counted", counted, "aborts", consecutiveAborts);
+            "windowMs", System.currentTimeMillis() - windowStartedAt, "counted", counted, "aborts", aborts.count());
     }
 
     private void finish(MinecraftClient client, CombatController combat) {
