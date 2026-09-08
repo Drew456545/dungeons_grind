@@ -314,7 +314,7 @@ public class CompanionController {
                 double dist = Math.sqrt(dx * dx + dz * dz);
                 if (dist <= cfg.companionEggReach) {
                     releaseWalkKeys(client);
-                    log("companion_walk", "blocks", Math.round(bestDistStart - dist), "ms", now - walkStartAt, "left", Math.round(dist * 10.0) / 10.0);
+                    log("companion_walk", "blocks", Math.round(bestDistStart - dist), "ms", now - walkStartAt, "left", Num.r1(dist));
                     phase = Phase.AIM;
                     aimTry = 0;
                     aimIssuedAt = 0;
@@ -334,7 +334,7 @@ public class CompanionController {
                 if (stuck && sidestepTicks == 0) {
                     sidestepTicks = 12;
                     lastProgressAt = now;
-                    log("companion_walk_stuck", "dist", Math.round(dist * 10.0) / 10.0);
+                    log("companion_walk_stuck", "dist", Num.r1(dist));
                 }
                 boolean side = sidestepTicks > 0;
                 if (side) sidestepTicks--;
@@ -376,13 +376,13 @@ public class CompanionController {
                     onEgg = eggAimEntity && hitDist <= cfg.companionEggHitRadius;
                 }
                 if (onEgg) {
-                    log("companion_aim", "hit", what, "hitDist", Math.round(hitDist * 100.0) / 100.0, "try", aimTry);
+                    log("companion_aim", "hit", what, "hitDist", Num.r2(hitDist), "try", aimTry);
                     EnchantScreens.pressUse(client, false);
                     phase = Phase.OPEN_WAIT;
                     phaseUntil = now + cfg.companionOpenTimeoutMs;
                     return true;
                 }
-                log("companion_aim_miss", "try", aimTry, "hit", what, "hitDist", hitDist < 0 ? null : Math.round(hitDist * 100.0) / 100.0,
+                log("companion_aim_miss", "try", aimTry, "hit", what, "hitDist", hitDist < 0 ? null : Num.r2(hitDist),
                     "pitchOff", AIM_OFFSETS[aimTry][0], "yawOff", AIM_OFFSETS[aimTry][1]);
                 aimTry++;
                 aimIssuedAt = 0;
@@ -1014,7 +1014,7 @@ public class CompanionController {
                     "batch", batch != null ? Amounts.format(batch) : null,
                     "batchEggs", stats.companionBatchEggs(stage), "batchVia", stats.companionBatchVia(stage),
                     "perEgg", stats.companionEggPriceEstimate(stage) != null ? Amounts.format(stats.companionEggPriceEstimate(stage)) : null,
-                    "gain", Math.round(stats.companionGain() * 100.0) / 100.0, "gainVia", stats.companionGainVia(),
+                    "gain", Num.r2(stats.companionGain()), "gainVia", stats.companionGainVia(),
                     "incomePerMin", stats.incomePerMinute() != null ? Amounts.format(stats.incomePerMinute()) : null,
                     "visitsThisStage", stats.companionVisitsThisStage(stage),
                     "visitsThisRebirth", stats.companionVisitsThisRebirth(), "lastBoughtStage", stats.companionLastBoughtStage);
@@ -1078,7 +1078,7 @@ public class CompanionController {
         hatchRetries = 0;
         hatchConfirmed = false;
         log("companion_visit", "via", visitVia, "stage", visitStage, "eggsTarget", eggsTarget, "batchVia", batchVia,
-            "dist", Math.round(hit.dist() * 10.0) / 10.0, "price", hit.price() != null ? Amounts.format(hit.price()) : null,
+            "dist", Num.r1(hit.dist()), "price", hit.price() != null ? Amounts.format(hit.price()) : null,
             "eggVia", hit.via(), "x", Math.round(hit.aim().x), "y", Math.round(hit.aim().y), "z", Math.round(hit.aim().z),
             "lines", hit.lines());
         combat.releaseKeys(client);
@@ -1184,7 +1184,7 @@ public class CompanionController {
         if (before == null || before <= 0 || after == null || after <= 0) return;
         double ratio = after / before;
         log("companion_gain", "before", Amounts.format(before), "after", Amounts.format(after),
-            "ratio", Math.round(ratio * 100.0) / 100.0, "eggs", gainEggs, "stage", gainStage,
+            "ratio", Num.r2(ratio), "eggs", gainEggs, "stage", gainStage,
             "windowMs", cfg.companionGainWindowMs, "at", at,
             "equippedMultBefore", multSum(equippedBefore), "equippedMultAfter", multSum(equippedAfter),
             "equippedMaxBefore", multMax(equippedBefore), "equippedMaxAfter", multMax(equippedAfter));
@@ -1594,6 +1594,6 @@ public class CompanionController {
     }
 
     private static Double tenth(Double v) {
-        return v == null ? null : Math.round(v * 10.0) / 10.0;
+        return v == null ? null : Num.r1(v);
     }
 }

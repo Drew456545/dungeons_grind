@@ -36,6 +36,15 @@ public final class Amounts {
       + "(?:[Ee](?<exp>[+-]?\\d{1,3})|\\s*(?<sfx>[A-Za-z]{1,4}))?(?![A-Za-z])");
 
     /**
+     * 0.9.62: the amount token for a pattern that captures one amount inside a larger line -
+     * the sidebar rows, the boss-bar heart, the multiplier and hero-plate patterns. The same
+     * shape as {@link #TOKEN} without the group names, with the leading guard so a capture can
+     * never start mid-number (the $93 of 0.9.60), and without the trailing guard so
+     * {@code (?<x>AMOUNT)x} still reads "597.66Mx". Whatever it captures, {@link #parse} reads.
+     */
+    public static final String AMOUNT_RE = "(?<![\\w.])[\\d,]+(?:\\.\\d+)?(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4})";
+
+    /**
      * The server's own ceiling: above this it stops using the suffix ladder and writes
      * the exponent instead ("1.03235E93"). Observed 2026-09-07 between 97.9NVG (9.79e91)
      * and 1.03615E92, with the two forms alternating as the balance crosses back.

@@ -1263,6 +1263,18 @@ public final class Economy {
         return attempt >= Math.max(1, maxAttempts) ? "resume" : "retry";
     }
 
+    /**
+     * 0.9.62: a money row that dropped 99 % yet stayed above the collapse ceiling is a suffix
+     * read 1000x too small (the config's moneyCollapseMaxValue rule) - unless it is a purchase
+     * (the two rows of 2026-09-08 came right after a sword buy), a provisional rung reading, or
+     * an exponent reading (exact, and the sci crossing judges it). Pure, for the checks.
+     */
+    public static boolean suffixScaleSuspect(Double prev, double value, double collapseMax, long sinceSpendMs,
+                                             boolean provisional, boolean scientific) {
+        return prev != null && prev >= 1e9 && value <= prev * 0.01 && value >= collapseMax
+            && sinceSpendMs > 10_000 && !provisional && !scientific;
+    }
+
     /** 0.9.47: a container title the server owns (Heroes, Crafting): left open for a person, never a captcha. */
     public static boolean isServerMenu(String title, java.util.List<String> titles) {
         if (title == null || titles == null) return false;

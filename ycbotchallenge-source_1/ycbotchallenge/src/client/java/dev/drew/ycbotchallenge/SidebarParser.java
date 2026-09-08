@@ -117,7 +117,7 @@ public final class SidebarParser {
     private static Pattern[] compile(Collection<String> currencies) {
         String alt = String.join("|", quoteNames(currencies));
         if (alt.isEmpty()) alt = "money";
-        String token = "(?<token>(?<![\\w.])[\\d,]+(?:\\.\\d+)?(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{1,4})?)";
+        String token = "(?<token>" + Amounts.AMOUNT_RE + ")";
         return new Pattern[] {
             Pattern.compile("(?i)" + token + "\\s+(?<name>" + alt + ")\\b"),
             Pattern.compile("(?i)\\b(?<name>" + alt + ")\\s*:?\\s*" + token)

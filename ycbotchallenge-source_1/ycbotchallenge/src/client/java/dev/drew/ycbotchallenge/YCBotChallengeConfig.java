@@ -818,7 +818,7 @@ public class YCBotChallengeConfig {
      * is the rebirth income modifier").
      */
     public String rebirthRequiredPattern = "/\\brequired:?\\s*\\$?(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*money/";
-    public String rebirthMultiplierPattern = "/\\bmultiplier:?\\s*(?<from>[\\d,.]+\\s*[A-Za-z]{0,3})x\\s*-+>\\s*(?<to>[\\d,.]+\\s*[A-Za-z]{0,3})x/";
+    public String rebirthMultiplierPattern = "/\\bmultiplier:?\\s*(?<from>" + Amounts.AMOUNT_RE + ")x\\s*-+>\\s*(?<to>" + Amounts.AMOUNT_RE + ")x/"; // 0.9.62: exponent-aware
     /** Title of the menu the star opens (screenshot: "Upgrades"). */
     public String rebirthUpgradesTitlePattern = "/^upgrades\\b/";
     /** Tooltip patterns for the upgrade items (unverified until the first rebirth_upgrade_menu log; tune from it). */
@@ -867,7 +867,7 @@ public class YCBotChallengeConfig {
      * logged none. Anchored on "money" so the trailing x is unambiguous; Amounts.parse
      * already handles "1.02K".
      */
-    public String companionMultiplierPattern = "/multiplier:\\s*(?<x>[\\d,.]+\\s*[A-Za-z]{0,3})x\\s*money/";
+    public String companionMultiplierPattern = "/multiplier:\\s*(?<x>" + Amounts.AMOUNT_RE + ")x\\s*money/"; // 0.9.62: exponent-aware
     /** "| Rarity: Rare (NORMAL)". */
     public String companionRarityPattern = "/rarity:\\s*(?<r>[A-Za-z]+)/";
     public String companionEquipBestPattern = "/equip best/";
@@ -1306,7 +1306,7 @@ public class YCBotChallengeConfig {
      * server line with "hero" in it.
      */
     public boolean heroTrackEnabled = true;
-    public String heroPlatePattern = "/^(?<name>archer queen|barbarian king|war medic|royal champion|grand warden)\\s*\\u2764\\s*(?<hp>[\\d.,]+\\s*[a-z]{0,4})/";
+    public String heroPlatePattern = "/^(?<name>archer queen|barbarian king|war medic|royal champion|grand warden)\\s*\\u2764\\s*(?<hp>" + Amounts.AMOUNT_RE + ")/"; // 0.9.62: exponent-aware
     public String heroSpawnPattern = "/your hero has been spawned/";
     public String heroChatPattern = "/\\bhero(?:es)?\\b/";
     public int heroScanEveryTicks = 100;
@@ -1389,7 +1389,7 @@ public class YCBotChallengeConfig {
     /** "Rebirth: 21" - the rebirth floor. */
     public String enchantPrestigeRebirthPattern = "/\\brebirth:?\\s*(?<n>[\\d,]+)/";
     /** "Multiplier: 13.30x DMG" - evidence only. */
-    public String enchantPrestigeMultiplierPattern = "/\\bmultiplier:?\\s*(?<x>[\\d,.]+\\s*[A-Za-z]{0,3})x/";
+    public String enchantPrestigeMultiplierPattern = "/\\bmultiplier:?\\s*(?<x>" + Amounts.AMOUNT_RE + ")x/"; // 0.9.62: exponent-aware
     /** Clicks on one beacon in one visit (each read again before the next), and Upgrade menus opened only for the beacon per visit. */
     public int enchantPrestigeMaxPerVisit = 10;
     public int enchantPrestigeOpensPerVisit = 6;
@@ -1753,7 +1753,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 59;
+    public static final int CURRENT_CONFIG_VERSION = 60;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1792,6 +1792,11 @@ public class YCBotChallengeConfig {
     private static String upgradeAmountToken(String pattern) {
         if (pattern == null) return null;
         return pattern.replace(AMT_OLD, AMT_NEW).replace(AMT_OLD_CUR, AMT_NEW_CUR);
+    }
+
+    /** The shipped literal of an older version becomes the fresh one; a hand-edited pattern stays. */
+    private static String replaced(String current, String old, String fresh) {
+        return old.equals(current) ? fresh : current;
     }
 
     /** Same, for a list of patterns. */
@@ -2171,6 +2176,16 @@ public class YCBotChallengeConfig {
             if ("qwen3.8-flash".equals(captchaVlmModelSecond)) captchaVlmModelSecond = "";
             if ("\nIMPORTANT: these readings were already REJECTED as wrong: {rejected}. Look again, check the case of every letter and whether two letters touch, and give a different reading.".equals(captchaMapRetryPrompt)) captchaMapRetryPrompt = fresh.captchaMapRetryPrompt;
             if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "ad,hn,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
+            changed = true;
+        }
+        if (configVersion < 60) {
+            // v60 (0.9.62): four amount tokens the v58 migration missed - the rebirth, companion
+            // and prestige multipliers and the hero plate - learn the exponent form (the
+            // multipliers passed 1e92 with the money). Only the shipped literals move.
+            rebirthMultiplierPattern = replaced(rebirthMultiplierPattern, "/\\bmultiplier:?\\s*(?<from>[\\d,.]+\\s*[A-Za-z]{0,3})x\\s*-+>\\s*(?<to>[\\d,.]+\\s*[A-Za-z]{0,3})x/", fresh.rebirthMultiplierPattern);
+            companionMultiplierPattern = replaced(companionMultiplierPattern, "/multiplier:\\s*(?<x>[\\d,.]+\\s*[A-Za-z]{0,3})x\\s*money/", fresh.companionMultiplierPattern);
+            heroPlatePattern = replaced(heroPlatePattern, "/^(?<name>archer queen|barbarian king|war medic|royal champion|grand warden)\\s*\\u2764\\s*(?<hp>[\\d.,]+\\s*[a-z]{0,4})/", fresh.heroPlatePattern);
+            enchantPrestigeMultiplierPattern = replaced(enchantPrestigeMultiplierPattern, "/\\bmultiplier:?\\s*(?<x>[\\d,.]+\\s*[A-Za-z]{0,3})x/", fresh.enchantPrestigeMultiplierPattern);
             changed = true;
         }
         if (configVersion < 59) {

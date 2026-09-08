@@ -97,8 +97,8 @@ public record Decision(
         out.add("stageKills"); out.add(stageKills);
         out.add("zoneGap"); out.add(zoneGap != null ? Amounts.format(zoneGap) : null);
         out.add("zoneGapVia"); out.add(zoneGapVia);
-        out.add("swordPct"); out.add(swordPct != null ? Math.round(swordPct * 10.0) / 10.0 : null);
-        out.add("gain"); out.add(gain != null ? Math.round(gain * 100.0) / 100.0 : null);
+        out.add("swordPct"); out.add(swordPct != null ? Num.r1(swordPct) : null);
+        out.add("gain"); out.add(gain != null ? Num.r2(gain) : null);
         out.add("gainVia"); out.add(gainVia);
         out.add("waitMs"); out.add(waitMs != null ? Math.round(waitMs) : null);
         out.add("eggs"); out.add(eggs);

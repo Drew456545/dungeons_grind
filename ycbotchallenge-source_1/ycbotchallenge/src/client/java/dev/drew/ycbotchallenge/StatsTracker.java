@@ -448,8 +448,8 @@ public class StatsTracker {
         boolean ok = Economy.growthAccepted(ratio, cfg.companionPriceGrowth, cfg.priceGrowthLearnBandPct);
         if (ok) companionPriceGrowthLearned = Economy.blendGrowth(companionPriceGrowthLearned, ratio, 0.3);
         log("companion_price_ratio", "stage", stage, "previous", Amounts.format(prev),
-            "actual", Amounts.format(price), "ratio", Math.round(ratio * 100.0) / 100.0,
-            "accepted", ok, "growth", Math.round(companionPriceGrowth() * 100.0) / 100.0);
+            "actual", Amounts.format(price), "ratio", Num.r2(ratio),
+            "accepted", ok, "growth", Num.r2(companionPriceGrowth()));
     }
 
     /** The income multiplier one batch brought (prior until a visit has been measured). */
@@ -479,9 +479,9 @@ public class StatsTracker {
         boolean onCount = eggs * 2 >= Math.max(1, batchEggs);
         boolean ok = inBand && onCount;
         if (ok) companionGainLearned = Economy.blendGrowth(companionGainLearned, ratio, 0.3);
-        log("companion_ratio", "ratio", Math.round(ratio * 100.0) / 100.0, "eggs", eggs, "batchEggs", batchEggs, "stage", stage,
+        log("companion_ratio", "ratio", Num.r2(ratio), "eggs", eggs, "batchEggs", batchEggs, "stage", stage,
             "accepted", ok, "inBand", inBand, "onCount", onCount,
-            "gain", Math.round(companionGain() * 100.0) / 100.0, "via", companionGainVia());
+            "gain", Num.r2(companionGain()), "via", companionGainVia());
         markStateDirty();
     }
 
@@ -507,9 +507,10 @@ public class StatsTracker {
     private long stateDirtyAt = 0;
     /** Why the next expected teleport happens ("zone" advance or "rebirth") — picks the settle length. */
     private String expectTeleportReason = "zone";
-    /** Trailing income rate from "Reward Summary" money lines (EMA, per ms) and the window they cover. */
-    private double summaryRatePerMs = 0;
-    private long summaryWindowMs = 60_000;
+    /** 0.9.62: the earning rate - summary EMA first, balance slope second - reset on every rebirth. */
+    private final IncomeEstimator income = new IncomeEstimator();
+    /** 0.9.62: the stage record was closed by a rebirth; none reopens until the zone changes (or 30 s pass). */
+    private long stageRecordHeldUntil = 0;
     /** Live parsed sidebar amounts (updated every poll). Canonical snapshot is published on an interval. */
     private final Map<String, Double> liveBals = new LinkedHashMap<>();
     private final Map<String, String> liveRaw = new LinkedHashMap<>();
@@ -645,7 +646,7 @@ public class StatsTracker {
             if (rate > 0 && rate < 30) {
                 heroRegenPerMin = heroRegenPerMin == null ? rate : 0.5 * heroRegenPerMin + 0.5 * rate;
                 heroRegenSamples++;
-                log("hero_regen", "perMin", Math.round(rate * 100.0) / 100.0, "ema", Math.round(heroRegenPerMin * 100.0) / 100.0,
+                log("hero_regen", "perMin", Num.r2(rate), "ema", Num.r2(heroRegenPerMin),
                     "samples", heroRegenSamples, "from", heroLastHp, "to", hp, "overMs", at - heroLastHpAt, "via", via);
             }
         }
@@ -758,8 +759,6 @@ public class StatsTracker {
     private Double lastBenchmarkLogged = null;
     private long lastBenchmarkLogAt = 0;
     private long lastIncomeLogAt = 0;
-    /** (timeMs, balance) samples from /bal replies and sidebar changes, for the income rate. */
-    private final ArrayDeque<double[]> incomeSamples = new ArrayDeque<>();
 
     public StatsTracker(YCBotChallengeConfig cfg) {
         this.cfg = cfg;
@@ -847,9 +846,11 @@ public class StatsTracker {
 
     /** Earning rate: exact summary-window rate when seen, else the balance-delta slope. */
     public Double incomePerMinute() {
-        if (summaryRatePerMs > 0) return summaryRatePerMs * 60_000.0;
-        return moneyPerMinute();
+        return income.perMinute(System.currentTimeMillis());
     }
+
+    /** 0.9.62: when the income estimators were last reset (a rebirth); 0 = never this session. */
+    public long incomeResetAt() { return income.resetAt(); }
 
     /** Effective TTK for the zone gate: DPS-predicted for the mob being cooked when available, else the kill median. */
     public Double effectiveTtkMs(Double predictedMs) {
@@ -1009,9 +1010,7 @@ public class StatsTracker {
      * corrects; no fit on a suffix the table lacks takes the rung guess so money()
      * never goes stale.
      */
-    private void noteMoneySuffix(String raw) {
-        String prevRaw = liveRaw.get(moneyKey());
-        long age = lastSidebarMoneyAt == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - lastSidebarMoneyAt;
+    private void noteMoneySuffix(String prevRaw, long age, String raw) {
         // Above the server's ceiling the row carries its own exponent. That reading is exact,
         // so it proves the rung it just left instead of introducing one of its own (0.9.61).
         if (Amounts.scientific(raw)) {
@@ -1026,7 +1025,7 @@ public class StatsTracker {
         boolean fit = c.learned() != null;
         log("suffix_crossing", "from", prevSfx.isEmpty() ? null : prevSfx, "to", sfx, "raw", raw, "prevRaw", prevRaw,
             "verdict", fit ? "fit" : "rejected", "reason", c.reason(),
-            "ratio", Math.round(c.ratio() * 1000.0) / 1000.0,
+            "ratio", Num.r3(c.ratio()),
             "scale", fit ? c.learned().scale : null, "known", Amounts.confidence(sfx));
         if (!cfg.suffixLearningEnabled || Amounts.confirmed(sfx)) return;
         if (fit) {
@@ -1059,7 +1058,7 @@ public class StatsTracker {
         if (!settled || sciCrossingSeen.add(s1)) {
             log("suffix_crossing", "from", s1, "to", null, "via", "sci", "raw", raw, "prevRaw", prevRaw,
                 "verdict", fit ? "fit" : "rejected", "reason", c.reason(),
-                "ratio", Math.round(c.ratio() * 1000.0) / 1000.0,
+                "ratio", Num.r3(c.ratio()),
                 "scale", fit ? c.learned().scale : null, "known", Amounts.confidence(s1));
         }
         if (!cfg.suffixLearningEnabled || !fit || settled) return;
@@ -1237,7 +1236,7 @@ public class StatsTracker {
             rebirthMultiplierNext = multTo;
             rebirthMultiplierAtRebirths = rebirths;
             if (changed) log("rebirth_multiplier", "from", Amounts.format(multFrom), "to", Amounts.format(multTo),
-                "ratio", Math.round(multTo / multFrom * 1000.0) / 1000.0, "rebirths", rebirths);
+                "ratio", Num.r3(multTo / multFrom), "rebirths", rebirths);
             markStateDirty();
         }
     }
@@ -1315,7 +1314,7 @@ public class StatsTracker {
         if (next == null) return;
         if ("zone".equals(kind)) { zoneTarget = next; zoneTargetPredicted = true; zonePriceSeenAt = now; }
         else { swordTarget = next; swordTargetPredicted = true; swordPriceSeenAt = now; }
-        log("price_predicted", "kind", kind, "from", Amounts.format(last), "growth", Math.round(priceGrowth(kind) * 1000.0) / 1000.0,
+        log("price_predicted", "kind", kind, "from", Amounts.format(last), "growth", Num.r3(priceGrowth(kind)),
             "target", Amounts.format(next), "learned", "zone".equals(kind) ? zoneGrowthLearned != null : swordGrowthLearned != null);
     }
 
@@ -1324,7 +1323,7 @@ public class StatsTracker {
         if ("rebirth".equals(kind)) return;
         if (predicted != null) {
             log("price_check", "kind", kind, "predicted", Amounts.format(predicted), "actual", Amounts.format(actual),
-                "errPct", Math.round(1000.0 * (predicted - actual) / actual) / 10.0);
+                "errPct", Num.r1(100.0 * (predicted - actual) / actual));
         }
         if (previous != null && previous > 0 && cfg.pricePredictionEnabled) {
             double ratio = actual / previous;
@@ -1338,8 +1337,8 @@ public class StatsTracker {
                 else swordGrowthLearned = Economy.blendGrowth(swordGrowthLearned, ratio, 0.3);
             }
             log("price_ratio", "kind", kind, "previous", Amounts.format(previous), "actual", Amounts.format(actual),
-                "ratio", Math.round(ratio * 1000.0) / 1000.0, "accepted", ok, "deltaBased", deltaBased ? true : null,
-                "growth", Math.round(priceGrowth(kind) * 1000.0) / 1000.0);
+                "ratio", Num.r3(ratio), "accepted", ok, "deltaBased", deltaBased ? true : null,
+                "growth", Num.r3(priceGrowth(kind)));
         }
     }
 
@@ -1495,11 +1494,12 @@ public class StatsTracker {
             pendingZoneAdvanceAt = 0;
             onZoneAdvance("zone-buy");
         }
-        if (currentStage == null && zone != null) openStageRecord();
+        if (currentStage == null && zone != null && nowMs >= stageRecordHeldUntil) openStageRecord();
         if (currentStage != null) {
             if (currentStage.stage == null && bossLevel != null) currentStage.stage = bossLevel;
             if (currentStage.stage != null && (topStageThisCycle == null || currentStage.stage > topStageThisCycle)) topStageThisCycle = currentStage.stage;
-            if (rate != null && (currentStage.peakPerMin == null || rate > currentStage.peakPerMin)) currentStage.peakPerMin = rate;
+            // 0.9.62: no peak from the first window after a reset (the summary may still be the old cycle's).
+            if (rate != null && income.settled(nowMs) && (currentStage.peakPerMin == null || rate > currentStage.peakPerMin)) currentStage.peakPerMin = rate;
         }
         flushState(nowMs);
         long incomeEvery = botActive.getAsBoolean() ? 15_000 : Math.max(15_000, cfg.offBotLogIntervalMs);
@@ -1531,6 +1531,11 @@ public class StatsTracker {
         // Currency rows land as `balance` events; raw-logging every new value was 80% of a
         // 38 MB bot-off log (0.9.33).
         for (String line : lines) handleSidebarProgress(line, currencyRows.contains(line));
+        // 0.9.62: the previous money row is taken before any currency row lands in liveRaw - on
+        // a board whose money row the currency parser also matches, applyCurrency overwrote it
+        // first and both crossing rules compared the row with itself.
+        String prevMoneyRaw = liveRaw.get(moneyKey());
+        long prevMoneyAge = lastSidebarMoneyAt == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - lastSidebarMoneyAt;
         for (SidebarParser.Hit hit : hits.values()) applyCurrency(hit.currency(), hit.rawAmount(), hit.value(), hit.line());
         if (sidebarMoneyRe != null) {
             for (String line : lines) {
@@ -1541,7 +1546,7 @@ public class StatsTracker {
                     if (mm.group(g) != null) { raw = mm.group(g); break; }
                 }
                 if (raw == null) continue;
-                noteMoneySuffix(raw);
+                noteMoneySuffix(prevMoneyRaw, prevMoneyAge, raw);
                 Double v = Amounts.parse(raw);
                 if (v == null) {
                     // A money row we can see but cannot read. Silence here is exactly what let
@@ -1591,7 +1596,7 @@ public class StatsTracker {
         // followed, so a wrong scale in the table shows up as a 1000x jump in the log.
         String sfx = Amounts.suffixOf(raw).toUpperCase(Locale.ROOT);
         boolean prov = Amounts.provisional(sfx);
-        if (!sfx.isEmpty() && suffixesSeen.add(sfx)) {
+        if (!sfx.isEmpty() && suffixesSeen.add(key + ":" + sfx)) {
             log("amount_suffix", "currency", key, "suffix", sfx, "raw", raw, "parsed", Amounts.format(value),
                 "prevRaw", prevRaw, "prevParsed", prev != null ? Amounts.format(prev) : null,
                 "scale", Amounts.scaleFor(sfx), "confidence", Amounts.confidence(sfx), "provisional", prov ? true : null);
@@ -1630,9 +1635,14 @@ public class StatsTracker {
             // that follows is a rebirth, not a staff pull.
             if (cfg.serverAutoRebirth && rebirthTarget != null && value >= rebirthTarget) {
                 armTeleport(cfg.expectedTeleportAfterRebirthMs);
-            } else if (prev != null && prev >= 1e9 && value <= prev * 0.01 && value >= cfg.moneyCollapseMaxValue) {
+            }
+            // 0.9.62: its own test, with the spend and provisional guards the collapse branch has
+            // (2.23468E98 -> 7.33567E95 right after a sword buy was flagged twice on 09-08), and
+            // the confidence of the rung that could be wrong - the one just left.
+            if (Economy.suffixScaleSuspect(prev, value, cfg.moneyCollapseMaxValue, nowMs - lastSpendAt, prov, Amounts.scientific(raw))) {
                 log("suffix_scale_suspect", "raw", raw, "prevRaw", prevRaw, "parsed", Amounts.format(value),
-                    "prevParsed", Amounts.format(prev), "confidence", Amounts.confidence(sfx));
+                    "prevParsed", Amounts.format(prev), "confidence", Amounts.confidence(Amounts.suffixOf(prevRaw)),
+                    "newConfidence", Amounts.confidence(sfx), "sinceSpendMs", nowMs - lastSpendAt);
             }
         }
         boolean changed = prev == null || Math.abs(prev - value) > 1e-6;
@@ -1650,7 +1660,7 @@ public class StatsTracker {
             }
         }
         if (changed) {
-            if (key.equals(moneyKey())) noteBalance(value);
+            if (key.equals(moneyKey())) income.onBalance(value, System.currentTimeMillis());
             boolean on = botActive.getAsBoolean();
             boolean drop = prev != null && value < prev * 0.5;
             boolean sfxChanged = prevRaw == null || !Amounts.suffixOf(prevRaw).equalsIgnoreCase(Amounts.suffixOf(raw));
@@ -1753,7 +1763,7 @@ public class StatsTracker {
         closeStageRecord("rebirth");
         double onMin = cycleOnMs / 60_000.0;
         boolean measured = onMin >= 5.0;
-        if (measured) lastCycleOnMin = Math.round(onMin * 10.0) / 10.0;
+        if (measured) lastCycleOnMin = Num.r1(onMin);
         int[] stages = new int[cycleStages.size()];
         double[] mins = new double[cycleStages.size()];
         int[] kills = new int[cycleStages.size()];
@@ -1770,19 +1780,19 @@ public class StatsTracker {
         double[] split = Economy.cycleSplit(stages, mins, kills, topStageThisCycle);
         Double cost = rebirthTarget != null ? rebirthTarget : cycleRebirthCost;
         Double topZone = zoneTarget != null ? zoneTarget : cycleTopZonePrice;
-        Double ratio = cost != null && topZone != null && topZone > 0 ? Math.round(cost / topZone * 100.0) / 100.0 : null;
+        Double ratio = cost != null && topZone != null && topZone > 0 ? Num.r2(cost / topZone) : null;
         cycleRebirthCost = null;
         cycleTopZonePrice = null;
         StateStore.CycleEntry c = new StateStore.CycleEntry();
         c.rebirths = rebirthsNow - 1;
         c.endedAt = System.currentTimeMillis();
-        c.onMin = Math.round(onMin * 10.0) / 10.0;
+        c.onMin = Num.r1(onMin);
         c.wallMin = wallMs != null ? Math.round(wallMs / 6000.0) / 10.0 : null;
-        c.toLvl14OnMin = to14 != null ? Math.round(to14 * 10.0) / 10.0 : null;
+        c.toLvl14OnMin = to14 != null ? Num.r1(to14) : null;
         c.topStage = topStageThisCycle;
         c.stages = new ArrayList<>(cycleStages);
-        c.climbMin = Math.round(split[0] * 10.0) / 10.0;
-        c.farmMin = Math.round(split[1] * 10.0) / 10.0;
+        c.climbMin = Num.r1(split[0]);
+        c.farmMin = Num.r1(split[1]);
         c.farmKills = (int) split[2];
         c.rebirthCost = cost;
         c.topZonePrice = topZone;
@@ -1822,6 +1832,16 @@ public class StatsTracker {
             log("economy_reset_dedup", "via", via, "sinceMs", nowMs - lastRebirthAt);
             return;
         }
+        // 0.9.62: the income estimators and the stage memory belong to the old cycle. The
+        // summary EMA carried 1.39E100 into a cycle whose balance was 0 (05:39:30 -> 05:40:05)
+        // and every zone_back_candidate of the climb compared its stage against it; the
+        // previous-stage record was cleared only by the sidebar counter, which that cycle
+        // never showed. Nothing reopens a stage record until the zone changes.
+        income.reset(nowMs);
+        closeStageRecord(via);
+        previousStage = null;
+        stageRecordHeldUntil = nowMs + 30_000;
+        suffixesSeen.clear();
         // The rebirth cost only grows, so the price we just paid (or last learned) is a
         // floor for the next one — kept so the controller retries the GUI at a sane point
         // instead of re-probing /rebirth seconds after rebirthing.
@@ -1866,7 +1886,7 @@ public class StatsTracker {
         zoneKills = 0;
         lastBenchmarkLogged = null;
         lastEffectiveTtkMs = null;
-        log("economy_reset", "via", via);
+        log("economy_reset", "via", via, "incomeReset", true, "stageClosed", true);
     }
 
     private void pollBossBars(MinecraftClient client) {
@@ -2138,7 +2158,7 @@ public class StatsTracker {
             "previous", swordLastPrice != null ? Amounts.format(swordLastPrice) : null,
             "verdict", verdict, "applied", applied, "promotion", promotion ? true : null,
             "errPct", nextPrice != null && reference != null && reference > 0
-                ? Math.round(1000.0 * (nextPrice - reference) / reference) / 10.0 : null,
+                ? Num.r1(100.0 * (nextPrice - reference) / reference) : null,
             "tier", tier, "tierMax", tierMax, "skin", skin);
     }
 
@@ -2205,6 +2225,7 @@ public class StatsTracker {
             return;
         }
         lastZoneChangeAt = now;
+        stageRecordHeldUntil = 0;
         // 0.9.37: a mob respawn on the same stage keeps the stage record open.
         boolean rolls = Economy.stageRecordRolls(via, currentStage != null ? currentStage.stage : null, bossLevel);
         if (rolls) closeStageRecord(via);
@@ -2458,17 +2479,19 @@ public class StatsTracker {
         // They feed only the income RATE; the balance itself is always the sidebar row.
         Integer windowS = ChatClassifier.summaryWindowSeconds(text, summaryHeaderRe);
         if (windowS != null) {
-            if (windowS > 0) summaryWindowMs = windowS * 1000L;
+            income.onSummaryWindow(windowS);
             known = true;
         }
         Double earned = ChatClassifier.summaryMoney(text, summaryMoneyRe);
         if (earned != null) {
-            double sample = earned / Math.max(1, summaryWindowMs);
-            summaryRatePerMs = summaryRatePerMs <= 0 ? sample : 0.5 * summaryRatePerMs + 0.5 * sample;
+            // 0.9.62: a window that spans a rebirth carries the old cycle's kills (05:40:03 put
+            // 2.78E100 into a cycle whose balance was 0) and is discarded.
+            Double sample = income.onSummaryMoney(earned, now);
             Double bal = money();
             log("income_summary", "earned", Amounts.format(earned),
-                "windowS", summaryWindowMs / 1000,
-                "balance", bal != null ? Amounts.format(bal) : null);
+                "windowS", income.summaryWindowMs() / 1000,
+                "balance", bal != null ? Amounts.format(bal) : null,
+                "discarded", sample == null ? "spans-reset" : null);
             known = true;
         }
         // Upgrade responses: strict gate — only within the window after our own
@@ -2945,28 +2968,7 @@ public class StatsTracker {
 
     /** Earning slope (money/min) over the trailing ~5 min of balance samples; null when unknown. */
     public Double moneyPerMinute() {
-        long now = System.currentTimeMillis();
-        while (incomeSamples.size() > 2 && now - incomeSamples.peekFirst()[0] > 300_000) {
-            incomeSamples.removeFirst();
-        }
-        if (incomeSamples.size() < 2) return null;
-        double[] f = incomeSamples.peekFirst();
-        double[] l = incomeSamples.peekLast();
-        double dtMin = (l[0] - f[0]) / 60_000.0;
-        if (dtMin < 0.5) return null;
-        double slope = (l[1] - f[1]) / dtMin;
-        // purchases create negative steps; report only the positive earning rate
-        return slope > 0 ? slope : null;
-    }
-
-    private void noteBalance(double bal) {
-        long now = System.currentTimeMillis();
-        if (!incomeSamples.isEmpty()) {
-            double[] last = incomeSamples.peekLast();
-            if (Math.abs(last[1] - bal) < 1e-9 && now - last[0] < 5_000) return;
-        }
-        incomeSamples.addLast(new double[]{now, bal});
-        while (incomeSamples.size() > 100) incomeSamples.removeFirst();
+        return income.slopePerMinute(System.currentTimeMillis());
     }
 
     public double killsPerMinute(long windowMs) {

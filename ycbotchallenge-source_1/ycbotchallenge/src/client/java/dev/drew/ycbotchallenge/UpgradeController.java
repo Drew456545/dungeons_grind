@@ -298,7 +298,7 @@ public class UpgradeController {
                             "before", gainBefore != null ? Amounts.format(gainBefore) : null,
                             "after", after != null ? Amounts.format(after) : null,
                             "ratio", gainBefore != null && after != null && gainBefore > 0
-                                ? Math.round(100.0 * after / gainBefore) / 100.0 : null,
+                                ? Num.r2(100.0 * after / gainBefore) : null,
                             "kills", combat.kills - gainKillsAt,
                             "windowMs", cfg.rebirthHorizonGainWindowMs);
                     }
@@ -910,7 +910,7 @@ public class UpgradeController {
             "blocked", companions != null ? companions.blockedReason(now) : "no-controller",
             "stage", stage,
             "batch", batch != null ? Amounts.format(batch) : null,
-            "batchPct", batch != null && batch > 0 && bal != null ? Math.round(1000.0 * bal / batch) / 10.0 : null,
+            "batchPct", batch != null && batch > 0 && bal != null ? Num.r1(100.0 * bal / batch) : null,
             "gapZone", zoneGap != null ? Amounts.format(zoneGap) : null,
             "gapRebirth", rebirthGap != null ? Amounts.format(rebirthGap) : null,
             "soonerZone", Economy.companionSoonerTo(batch, zoneGap, gain),
@@ -919,7 +919,7 @@ public class UpgradeController {
             "delayMin", tenth(delay),
             "budgetMin", tenth(Economy.companionPersistBudgetMin(gain, cycle, cfg.companionPaybackFraction, cfg.companionMaxRebirthDelayMin)),
             "cycleMin", tenth(cycle), "cycleVia", stats.lastCycleOnMin() != null ? "measured" : "prior",
-            "companionGain", Math.round(gain * 100.0) / 100.0, "companionGainVia", stats.companionGainVia(),
+            "companionGain", Num.r2(gain), "companionGainVia", stats.companionGainVia(),
             "visitsThisStage", stats.companionVisitsThisStage(stage),
             "visitsThisRebirth", stats.companionVisitsThisRebirth(),
             "lastBoughtStage", stats.companionLastBoughtStage));
@@ -977,13 +977,17 @@ public class UpgradeController {
             "stageKills", here != null ? here.kills : null,
             "herePerMin", zb != null ? Amounts.format(zb.herePerMin()) : null,
             "therePerMin", there != null ? Amounts.format(there) : null,
-            "ratio", zb != null && zb.ratio() != null ? Math.round(zb.ratio() * 100.0) / 100.0 : null,
+            "ratio", zb != null && zb.ratio() != null ? Num.r2(zb.ratio()) : null,
             "margin", cfg.zoneBackMargin,
             "wouldRetreat", zb != null ? zb.wouldRetreat() : null,
             "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
             "swordEtaHereMin", zb != null && swordNeed != null && zb.herePerMin() > 0 ? tenth(swordNeed / zb.herePerMin()) : null,
             "swordEtaThereMin", there != null && swordNeed != null && there > 0 ? tenth(swordNeed / there) : null,
-            "swordBuysThisZone", stats.swordBuysThisZone());
+            "swordBuysThisZone", stats.swordBuysThisZone(),
+            // 0.9.62: what "there" rests on, and how fresh the income behind it is.
+            "thereStageOnMin", prev != null ? Num.r1(prev.onMs / 60_000.0) : null,
+            "thereKills", prev != null ? prev.kills : null,
+            "incomeResetAgoMin", stats.incomeResetAt() != 0 ? Num.r1((System.currentTimeMillis() - stats.incomeResetAt()) / 60_000.0) : null);
     }
 
     /**
@@ -1002,8 +1006,8 @@ public class UpgradeController {
             "priority", kind,
             "target", price != null ? Amounts.format(price) : null,
             "bal", bal != null ? Amounts.format(bal) : null,
-            "pct", price != null && price > 0 && bal != null ? Math.round(1000.0 * bal / price) / 10.0 : null,
-            "gain", d.gain() != null ? Math.round(gain * 100.0) / 100.0 : null,
+            "pct", price != null && price > 0 && bal != null ? Num.r1(100.0 * bal / price) : null,
+            "gain", d.gain() != null ? Num.r2(gain) : null,
             "incomePerMin", income != null ? Amounts.format(income) : null,
             "predictedMs", evalPredictedMs != null ? Math.round(evalPredictedMs) : null,
             "stageMaxTtkMs", stats.stageMaxTtkMs() != null ? Math.round(stats.stageMaxTtkMs()) : null,
@@ -1017,7 +1021,7 @@ public class UpgradeController {
             "rebirthEtaMin", tenth(Economy.rebirthEtaMin(bal, stats.rebirthTarget, income)),
             "buyEtaMin", price == null ? null : tenth(Economy.buyEtaMin(price, bal, stats.rebirthTarget, income, gain)),
             "gapPct", price != null && bal != null && stats.rebirthTarget != null && stats.rebirthTarget - bal > 0
-                ? Math.round(1000.0 * price / (stats.rebirthTarget - bal)) / 10.0 : null);
+                ? Num.r1(100.0 * price / (stats.rebirthTarget - bal)) : null);
         java.util.Collections.addAll(out, extra);
         return out.toArray();
     }
@@ -1186,7 +1190,7 @@ public class UpgradeController {
     }
 
     private static Double tenth(Double v) {
-        return v == null ? null : Math.round(v * 10.0) / 10.0;
+        return v == null ? null : Num.r1(v);
     }
 
     private void begin(MinecraftClient client, CombatController combat, long now, PendingCmd cmd) {

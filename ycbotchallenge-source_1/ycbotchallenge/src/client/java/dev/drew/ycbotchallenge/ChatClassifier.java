@@ -145,7 +145,7 @@ public final class ChatClassifier {
      * 999 → 8 across a K→M boundary, so the DPS slope went negative.
      */
     private static final Pattern BOSS_HP = Pattern.compile(
-        "[❤♥]️?\\s*([\\d,]+(?:\\.\\d+)?(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))");
+        "[❤♥]️?\\s*(" + Amounts.AMOUNT_RE + ")");
 
     public static Double bossBarHp(String title) {
         if (title == null || title.isEmpty()) return null;

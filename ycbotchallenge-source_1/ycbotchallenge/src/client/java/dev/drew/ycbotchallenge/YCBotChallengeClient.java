@@ -485,10 +485,10 @@ public class YCBotChallengeClient implements ClientModInitializer {
                 "ascensions", stats.ascensions,
                 "rebirthProgressPct", stats.rebirthProgressPct,
                 "kills", combat.kills,
-                "killsPerMin", Math.round(stats.killsPerMinute(60_000) * 10.0) / 10.0,
+                "killsPerMin", Num.r1(stats.killsPerMinute(60_000)),
                 "multiplier", stats.multiplier,
                 "bals", stats.formattedBalances(),
-                "zoneReady", Math.round(1000.0 * stats.zoneReadiness()) / 10.0);
+                "zoneReady", Num.r1(100.0 * stats.zoneReadiness()));
         }
     }
 

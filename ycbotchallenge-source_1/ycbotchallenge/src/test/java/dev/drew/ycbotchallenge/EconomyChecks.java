@@ -108,6 +108,7 @@ public final class EconomyChecks {
         n += checks0962a();
         n += checks0962b();
         n += checks0962c();
+        n += checks0962d();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1801,7 +1802,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 59", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 59);
+        n += eq("config version 60", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 60);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -3162,6 +3163,109 @@ public final class EconomyChecks {
             n++;
         }
         return n;
+    }
+
+    /**
+     * 0.9.62d: the income that leaked across the 05:39 rebirth (1.39E100 against a balance of
+     * 0, halving per "+ 0 Money" window, every zone_back_candidate of the climb comparing
+     * against it), the ratio that printed 9.223372036854776E16, the suffix_scale_suspect rows
+     * a sword buy set off, and the four amount tokens the v58 migration missed.
+     */
+    private static int checks0962d() {
+        int n = 0;
+        n += eq("r2 leaves a huge ratio alone", Num.r2(1.39e100), 1.39e100, 0);
+        n += eq("r2 rounds", Num.r2(9.87654), 9.88, 1e-9);
+        n += eq("r1 rounds", Num.r1(0.96), 1.0, 1e-9);
+        n += eq("r3 rounds", Num.r3(1.23456), 1.235, 1e-9);
+        n += eq("r1 does not saturate", Num.r1(1.7e17), 1.7e17, 0);
+        n += eq("r2 of Long.MAX territory is not 9.22E16", Num.r2(2.8e52) == 9.223372036854776E16, false);
+        n += eq("r2 null", Num.r2((Double) null) == null, true);
+        n += eq("r2 NaN stays NaN", Double.isNaN(Num.r2(Double.NaN)), true);
+        n += eq("r2 infinity stays", Double.isInfinite(Num.r2(Double.POSITIVE_INFINITY)), true);
+
+        IncomeEstimator inc = new IncomeEstimator();
+        long t = 1_000_000L;
+        n += eq("no income yet", inc.perMinute(t) == null, true);
+        inc.onSummaryWindow(60);
+        n += eq("first summary is the rate", inc.onSummaryMoney(17.19e9, t) != null, true);
+        n += eq("rate per minute", inc.perMinute(t), 17.19e9, 1e3);
+        inc.onSummaryMoney(17.19e9, t + 60_000);
+        n += eq("steady rate", inc.perMinute(t + 60_000), 17.19e9, 1e3);
+        inc.onSummaryMoney(0, t + 120_000);
+        n += eq("an empty window halves the rate", inc.perMinute(t + 120_000), 17.19e9 / 2, 1e3);
+        inc.reset(t + 130_000);
+        n += eq("reset clears the rate", inc.perMinute(t + 131_000) == null, true);
+        n += eq("not settled inside the window", inc.settled(t + 150_000), false);
+        n += eq("a summary spanning the reset is discarded", inc.onSummaryMoney(2.78e100, t + 160_000) == null, true);
+        n += eq("still no rate", inc.perMinute(t + 160_000) == null, true);
+        n += eq("settled after a window", inc.settled(t + 190_000), true);
+        n += eq("the next window counts", inc.onSummaryMoney(3.0e9, t + 220_000) != null, true);
+        n += eq("fresh cycle rate", inc.perMinute(t + 220_000), 3.0e9, 1e3);
+        IncomeEstimator slope = new IncomeEstimator();
+        slope.onBalance(100, t);
+        slope.onBalance(700, t + 60_000);
+        n += eq("slope from balances", slope.slopePerMinute(t + 60_000), 600.0, 1e-6);
+        n += eq("slope is the fallback", slope.perMinute(t + 60_000), 600.0, 1e-6);
+        slope.reset(t + 61_000);
+        slope.onBalance(0, t + 62_000);
+        slope.onBalance(50, t + 122_000);
+        n += eq("slope after reset uses only new samples", slope.slopePerMinute(t + 122_000), 50.0, 1e-6);
+        slope.onBalance(10, t + 182_000);
+        n += eq("a falling balance is no rate", slope.slopePerMinute(t + 182_000) == null, true);
+
+        n += eq("suspect: a purchase is not a suspect", Economy.suffixScaleSuspect(1e12, 5e9, 1e6, 2_000, false, false), false);
+        n += eq("suspect: quiet 99 % drop above the ceiling", Economy.suffixScaleSuspect(1e12, 5e9, 1e6, 20_000, false, false), true);
+        n += eq("suspect: provisional reading is not judged", Economy.suffixScaleSuspect(1e12, 5e9, 1e6, 20_000, true, false), false);
+        n += eq("suspect: an exponent reading is the sci crossing's", Economy.suffixScaleSuspect(2.23468e98, 7.33567e95, 1e12, 20_000, false, true), false);
+        n += eq("suspect: a collapse below the ceiling is a rebirth", Economy.suffixScaleSuspect(1e12, 5e5, 1e6, 20_000, false, false), false);
+        n += eq("suspect: no previous", Economy.suffixScaleSuspect(null, 5e9, 1e6, 20_000, false, false), false);
+
+        YCBotChallengeConfig fresh = new YCBotChallengeConfig();
+        Pattern amt = Pattern.compile(Amounts.AMOUNT_RE);
+        n += eq("token reads an exponent", find(amt, "bal 1.5E93 money"), "1.5E93");
+        n += eq("token reads a rung", find(amt, "71.21K"), "71.21K");
+        n += eq("token is greedy on its own (the row patterns anchor the currency word)", find(amt, "235 SHARDS"), "235 SHAR");
+        n += eq("token never starts mid-number", find(amt, "x1.03235E93"), null);
+        n += eq("token parses through Amounts", Amounts.parse(find(amt, "+ 2.53912E92 Money")), 2.53912e92, 1e86);
+        String[] hp = HeroTracker.parsePlate(loose(fresh.heroPlatePattern), "Archer Queen \u2764" + "1.2E93");
+        n += eq("hero plate exponent", hp != null ? hp[1] : null, "1.2E93");
+        hp = HeroTracker.parsePlate(loose(fresh.heroPlatePattern), "Archer Queen \u2764" + "86");
+        n += eq("hero plate plain", hp != null ? hp[1] : null, "86");
+        hp = HeroTracker.parsePlate(loose(fresh.heroPlatePattern), "Archer Queen \u2764" + "33.5K");
+        n += eq("hero plate rung", hp != null ? hp[1] : null, "33.5K");
+        java.util.regex.Matcher m = loose(fresh.companionMultiplierPattern).matcher("Multiplier: 1.2E93x Money");
+        n += eq("companion multiplier exponent", m.find() ? Amounts.parse(m.group("x")) : null, 1.2e93, 1e87);
+        m = loose(fresh.companionMultiplierPattern).matcher("Multiplier: 2.39Qx Money");
+        n += eq("companion multiplier rung", m.find() ? Amounts.parse(m.group("x")) : null, 2.39e15, 1);
+        m = loose(fresh.rebirthMultiplierPattern).matcher("Multiplier: 597.66Mx ---> 836.73Mx");
+        n += eq("rebirth multiplier from", m.find() ? Amounts.parse(m.group("from")) : null, 597.66e6, 1);
+        n += eq("rebirth multiplier to", Amounts.parse(m.group("to")), 836.73e6, 1);
+        m = loose(fresh.rebirthMultiplierPattern).matcher("Multiplier: 1.03E92x --> 1.44E92x");
+        n += eq("rebirth multiplier exponent", m.find() ? Amounts.parse(m.group("to")) : null, 1.44e92, 1e86);
+        m = loose(fresh.enchantPrestigeMultiplierPattern).matcher("Multiplier: 1.93x");
+        n += eq("prestige multiplier plain", m.find() ? Amounts.parse(m.group("x")) : null, 1.93, 1e-9);
+        n += eq("boss hp exponent", ChatClassifier.bossBarHp("LVL50 Wither \u2764" + "1.5E93"), 1.5e93, 1e87);
+        n += eq("boss hp rung still", ChatClassifier.bossBarHp("LVL5 Goat \u2764" + "82.04M"), 82.04e6, 1);
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg59", ".json");
+            java.nio.file.Files.writeString(tmp, "{\"configVersion\":59,\"heroPlatePattern\":\""
+                + "/^(?<name>archer queen|barbarian king|war medic|royal champion|grand warden)\\\\s*\\\\u2764\\\\s*(?<hp>[\\\\d.,]+\\\\s*[a-z]{0,4})/"
+                + "\",\"companionMultiplierPattern\":\"/mine/\"}");
+            YCBotChallengeConfig c59 = YCBotChallengeConfig.load(tmp);
+            n += eq("v60 moves the shipped hero plate", c59.heroPlatePattern, fresh.heroPlatePattern);
+            n += eq("v60 keeps a hand-set pattern", c59.companionMultiplierPattern, "/mine/");
+            n += eq("v60 moves the shipped rebirth multiplier", c59.rebirthMultiplierPattern, fresh.rebirthMultiplierPattern);
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception ex) {
+            System.err.println("FAIL v60 migration: " + ex);
+            n++;
+        }
+        return n;
+    }
+
+    private static String find(Pattern p, String s) {
+        java.util.regex.Matcher m = p.matcher(s);
+        return m.find() ? m.group() : null;
     }
 
     /**
