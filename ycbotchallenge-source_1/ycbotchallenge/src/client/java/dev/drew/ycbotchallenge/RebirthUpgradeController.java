@@ -23,7 +23,8 @@ import net.minecraft.screen.slot.Slot;
  * item's tooltip changed: unchanged = nothing bought, stop. A sub-menu opening
  * from the click is logged and closed, never clicked into blind.
  */
-public class RebirthUpgradeController extends BotModule {
+public class RebirthUpgradeController extends BotModule implements Module {
+    @Override public String name() { return "rebirth_upgrade"; }
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, GUI_WAIT, LOOK, STAR_CLICK, MENU_WAIT, SCAN, CLICK, AFTER, CLOSE, CLOSE_RETURN }
 
     private record Entry(int slot, String name, List<String> lore) {}

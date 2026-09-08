@@ -23,7 +23,8 @@ import net.minecraft.util.math.Vec3d;
  * kill, or the mob being cooked already past the patience), the sword only when it is,
  * or while it is cheap against the zone gap; the same object feeds the log and the HUD.
  */
-public class UpgradeController extends BotModule {
+public class UpgradeController extends BotModule implements Module {
+    @Override public String name() { return "upgrade"; }
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
     private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY, CHAT, GG }
 

@@ -69,6 +69,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
     private long pauseScreenSince = 0;
     private long pauseScreenCloseAt = 0;
     private BossEventController bossEvent;
+    /** 0.9.62: the turn-taking controllers, in priority order (see the constructor). */
+    private List<Module> modules = List.of();
     /** 0.9.38: the title overlay, handed over by InGameHudMixin and read on the client tick. */
     private static volatile String titleText = null;
     private static volatile String subtitleText = null;
@@ -114,6 +116,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
         heroSpawns = new HeroController(config, stats, upgrades, heroes);
         bossEvent = new BossEventController(config, stats, upgrades);
         stats.bossEventBusy = () -> bossEvent.isBusy();
+        // 0.9.62: the one order. The boss outranks every buy (0.9.38); the hero spawner waits
+        // for everything else (it only ever opens a menu between fights).
+        modules = List.of(bossEvent, upgrades, enchants, rebirthUpgrades, companions, heroSpawns);
         MouseDriver.INSTANCE.configure(config, null);
         captchaSolver = new CaptchaSolver(config, new CaptchaSolver.Callbacks() {
             @Override public void onSolved(MinecraftClient client) {
@@ -334,40 +339,14 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
         captchaSolver.tickIdle(nowMs);
-        // 0.9.38: a live zone boss outranks every buy - it is gone in five minutes.
-        if (bossEvent.isBusy()) {
-            bossEvent.tick(client, combat);
-            if (combat.stopRequest != null) {
-                String reason = combat.stopRequest;
-                combat.stopRequest = null;
-                emergencyStop(client, reason);
+        // 0.9.38: a live zone boss outranks every buy - it is gone in five minutes; a module
+        // mid-visit keeps the tick until it is done (0.9.62: one list, one order).
+        for (Module m : modules) {
+            if (m.isBusy()) {
+                m.tick(client, combat);
+                takeStopRequest(client);
+                return;
             }
-            return;
-        }
-        if (upgrades.isBusy()) {
-            upgrades.tick(client, combat);
-            return;
-        }
-        if (enchants.isBusy()) {
-            enchants.tick(client, combat);
-            return;
-        }
-        if (rebirthUpgrades.isBusy()) {
-            rebirthUpgrades.tick(client, combat);
-            return;
-        }
-        if (heroSpawns.isBusy()) {
-            heroSpawns.tick(client, combat);
-            return;
-        }
-        if (companions.isBusy()) {
-            companions.tick(client, combat);
-            if (combat.stopRequest != null) {
-                String reason = combat.stopRequest;
-                combat.stopRequest = null;
-                emergencyStop(client, reason);
-            }
-            return;
         }
         // The SWORD ENCHANTER's title is formatting-only (font glyph), so it is
         // recognised by its contents — which arrive a tick after the screen opens, hence
@@ -386,8 +365,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
         // (07:18 and 07:20: stray-closed after 8 s, the dump empty because it ran before the
         // items arrived).
         boolean knownServerMenu = handled && Economy.isServerMenu(screenTitle, config.serverMenuTitles);
-        boolean ownGui = handled && !knownServerMenu && (RebirthScreens.isRebirthGui(screenTitle) || enchants.isOurGui(client)
-            || rebirthUpgrades.isOurGui(client) || companions.isOurGui(client));
+        boolean ownGui = handled && !knownServerMenu && (RebirthScreens.isRebirthGui(screenTitle) || anyOurGui(client));
         // 0.9.54: a captcha has never come as a menu here (every real one was a map or a chat
         // line; all 24 menu detections ever were Drew's own menus, 6 of them a pause) - with
         // pauseOnContainerScreen off, every menu that is not ours is the server's.
@@ -445,23 +423,8 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
 
-        if (bossEvent.tick(client, combat)) {
-            return;
-        }
-        if (upgrades.tick(client, combat)) {
-            return;
-        }
-        if (enchants.tick(client, combat)) {
-            return;
-        }
-        if (rebirthUpgrades.tick(client, combat)) {
-            return;
-        }
-        if (companions.tick(client, combat)) {
-            return;
-        }
-        if (heroSpawns.tick(client, combat)) {
-            return;
+        for (Module m : modules) {
+            if (m.tick(client, combat)) return;
         }
         transcend.tick(client, combat);
 
@@ -701,6 +664,21 @@ public class YCBotChallengeClient implements ClientModInitializer {
         }
     }
 
+    /** 0.9.62: a stop the combat controller requested during a module's tick (the boss and the companion walk used to check it by hand). */
+    private void takeStopRequest(MinecraftClient client) {
+        if (combat.stopRequest != null) {
+            String reason = combat.stopRequest;
+            combat.stopRequest = null;
+            emergencyStop(client, reason);
+        }
+    }
+
+    /** The open screen is one of our modules' own menus. */
+    private boolean anyOurGui(MinecraftClient client) {
+        for (Module m : modules) if (m.isOurGui(client)) return true;
+        return false;
+    }
+
     private void beginCaptcha(MinecraftClient client, String source, String detail) {
         lastCaptchaDetail = detail;
         if (!config.captchaAutoSolve) {
@@ -708,12 +686,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
         combat.reset(client);
-        upgrades.reset(client);
-        enchants.reset(client);
-        rebirthUpgrades.reset(client);
-        companions.reset(client);
-        heroSpawns.reset(client);
-        bossEvent.reset(client);
+        for (Module m : modules) m.reset(client);
         MouseDriver.INSTANCE.cancel();
         if ("gui".equals(source)) {
             // if this screen (or a sibling) is still around after the solve, next
@@ -837,14 +810,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
                     config.runLabel, () -> stats.context(), YCBotChallengeClient::botFlag);
                 stats.setLogger(logger);
                 combat.setLogger(logger);
-                upgrades.setLogger(logger);
-                enchants.setLogger(logger);
-                rebirthUpgrades.setLogger(logger);
-                companions.setLogger(logger);
-                bossEvent.setLogger(logger);
+                for (Module m : modules) m.setLogger(logger);
                 transcend.setLogger(logger);
                 heroes.setLogger(logger);
-                heroSpawns.setLogger(logger);
                 captchaSolver.setLogger(logger);
                 captchaDetector.setLogger(logger);
                 MouseDriver.INSTANCE.configure(config, logger);
@@ -858,11 +826,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
             // Maps already in the hotbar are not a captcha; only a new one is.
             captchaDetector.onEnable(client);
             captchaSolver.checkHealth(System.currentTimeMillis());
-            rebirthUpgrades.onEnable(System.currentTimeMillis(), combat.kills);
-            companions.onEnable(System.currentTimeMillis(), combat.kills);
-            heroSpawns.onEnable(System.currentTimeMillis(), combat.kills);
-            bossEvent.onEnable(System.currentTimeMillis(), combat.kills);
-            transcend.onEnable(System.currentTimeMillis(), combat.kills);
+            long nowEnable = System.currentTimeMillis();
+            for (Module m : modules) m.onEnable(nowEnable, combat.kills);
+            transcend.onEnable(nowEnable, combat.kills);
             // 0.9.41: a toggle is a screen edge too (no swing in the first beat), and a saved
             // auto-disconnect timer arms on the session's first enable.
             if (client != null) {
@@ -879,12 +845,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
             stats.onDisable();
             if (client != null) {
                 combat.reset(client);
-                upgrades.reset(client);
-                enchants.reset(client);
-                rebirthUpgrades.reset(client);
-                companions.reset(client);
-                heroSpawns.reset(client);
-                bossEvent.reset(client);
+                for (Module m : modules) m.reset(client);
             }
             MouseDriver.INSTANCE.cancel();
             captchaSolver.cancel();
@@ -902,14 +863,9 @@ public class YCBotChallengeClient implements ClientModInitializer {
             logger = null;
             stats.setLogger(null);
             combat.setLogger(null);
-            upgrades.setLogger(null);
-            enchants.setLogger(null);
-            rebirthUpgrades.setLogger(null);
-            companions.setLogger(null);
-            bossEvent.setLogger(null);
+            for (Module m : modules) m.setLogger(null);
             transcend.setLogger(null);
             heroes.setLogger(null);
-            heroSpawns.setLogger(null);
             captchaSolver.setLogger(null);
             captchaDetector.setLogger(null);
             MouseDriver.INSTANCE.configure(config, null);

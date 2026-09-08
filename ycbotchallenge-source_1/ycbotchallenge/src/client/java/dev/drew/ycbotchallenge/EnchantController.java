@@ -27,7 +27,8 @@ import net.minecraft.util.hit.HitResult;
  * purchase in flight completes and the menu closes; nothing is ever left open
  * while combat should be running.
  */
-public class EnchantController extends BotModule {
+public class EnchantController extends BotModule implements Module {
+    @Override public String name() { return "enchant"; }
     private enum Phase {
         IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_PRESS, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
         MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, PRESTIGE_CLICK, PRESTIGE_SETTLE, CLOSE_RETURN,

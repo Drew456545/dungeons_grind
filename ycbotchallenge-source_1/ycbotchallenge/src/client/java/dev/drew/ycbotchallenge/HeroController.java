@@ -25,7 +25,8 @@ import net.minecraft.client.MinecraftClient;
  * (hero_regen) for the next estimate. The nameplate tracker ({@link HeroTracker})
  * supplies the decay rate and the alive/gone state.
  */
-public class HeroController extends BotModule {
+public class HeroController extends BotModule implements Module {
+    @Override public String name() { return "hero"; }
     private enum Phase { IDLE, TYPE, MENU_WAIT, LOOK, CLICK, CONFIRM, CLOSE, DONE }
 
     private final YCBotChallengeConfig cfg;

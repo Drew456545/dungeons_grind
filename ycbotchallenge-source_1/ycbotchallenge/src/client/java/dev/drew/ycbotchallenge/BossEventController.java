@@ -52,7 +52,8 @@ import net.minecraft.util.math.Vec3d;
  * abort with time left waits {@code bossRescanMs} on the spot, and the bot leaves only
  * when the window is spent, the bar is gone or the boss is dead.
  */
-public class BossEventController extends BotModule {
+public class BossEventController extends BotModule implements Module {
+    @Override public String name() { return "boss"; }
     private enum Phase { IDLE, SCAN, WALK, AIM, HIT, WAIT, DONE }
 
     private record Candidate(Entity e, String type, int rank, double dBody, double volume, String plate) {}

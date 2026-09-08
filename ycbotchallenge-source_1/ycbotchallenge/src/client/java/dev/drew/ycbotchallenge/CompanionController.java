@@ -36,7 +36,8 @@ import net.minecraft.util.math.Vec3d;
  *
  * Every GUI is dumped verbatim (companion_gui) — the fixture net for the next version.
  */
-public class CompanionController extends BotModule {
+public class CompanionController extends BotModule implements Module {
+    @Override public String name() { return "companion"; }
     private enum Phase { IDLE, WALK, AIM, OPEN_WAIT, EGG_LOOK, BUY, BUY_CLICK, BUY_SETTLE, CLOSE_EGG, TYPE_COMPANION, COMP_WAIT,
         COMP_LOOK, COMP_RETURN, EQUIP, EQUIP_SETTLE, FUSE_CLICK, FUSE_WAIT, FUSE_LOG, FUSE_ALL_CLICK, FUSE_ALL_SETTLE, DELETE, DELETE_TYPE, DELETE_WAIT,
         BULK_CLICK, BULK_WAIT, BULK_READ, DONE }
