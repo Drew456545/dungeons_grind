@@ -110,6 +110,7 @@ public final class EconomyChecks {
         n += checks0962c();
         n += checks0962d();
         n += checksInfra();
+        n += checksGuiFlow();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -3315,6 +3316,90 @@ public final class EconomyChecks {
             System.err.println("FAIL throttle: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /** 0.9.62: the shared menu-visit driver, run on a fake clock with no Minecraft behind it. */
+    private static int checksGuiFlow() {
+        int n = 0;
+        final boolean[] menu = {false};
+        final int[] finished = {0};
+        GuiFlow.Aborts ab = new GuiFlow.Aborts("t", () -> 3, () -> 1000L);
+        GuiFlow flow = new GuiFlow(ab, () -> 10_000L, "visit-timeout");
+        final String[] hook = {null};
+        flow.onAbort((client, why) -> hook[0] = why);
+        GuiFlow.Step done = GuiFlow.custom("finish", c -> { finished[0]++; return GuiFlow.DONE; });
+        GuiFlow.Step close = GuiFlow.close("close", c -> false, () -> 100L, "t", done);
+        GuiFlow.Step look = GuiFlow.look("look", c -> menu[0], () -> 200L, "menu-closed", c -> close);
+        GuiFlow.Step wait = GuiFlow.waitFor("menu_wait", c -> menu[0], () -> 500L, "no-menu", look);
+        n += eq("idle at rest", flow.isBusy(), false);
+        n += eq("idle name", flow.phaseName(), "idle");
+        // a visit that times out waiting for the menu
+        flow.start(wait, 1000);
+        n += eq("busy after start", flow.isBusy(), true);
+        n += eq("waiting", flow.tick(null, null, 1000, null), true);
+        n += eq("still waiting", flow.tick(null, null, 1400, null), true);
+        n += eq("timed out", flow.tick(null, null, 1600, null), false);
+        n += eq("abort reason reached the hook", hook[0], "no-menu");
+        n += eq("one abort", ab.count(), 1);
+        n += eq("not suspended yet", ab.suspended(), false);
+        // a full visit
+        menu[0] = true;
+        flow.start(wait, 2000);
+        n += eq("menu found: look", flow.tick(null, null, 2000, null), true);
+        n += eq("look phase", flow.phaseName(), "look");
+        n += eq("looking", flow.tick(null, null, 2100, null), true);
+        n += eq("look not due yet", flow.tick(null, null, 2250, null), true);
+        n += eq("still looking", flow.phaseName(), "look");
+        n += eq("looked: close", flow.tick(null, null, 2300, null), true);
+        n += eq("close phase", flow.phaseName(), "close");
+        n += eq("closing", flow.tick(null, null, 2350, null), true);
+        n += eq("closed: finish", flow.tick(null, null, 2450, null), true);
+        n += eq("finished", flow.tick(null, null, 2451, null), false);
+        n += eq("finish ran once", finished[0], 1);
+        n += eq("a good visit clears the abort count", ab.count(), 0);
+        n += eq("idle again", flow.isBusy(), false);
+        // the menu vanishing mid-look
+        flow.start(look, 3000);
+        flow.tick(null, null, 3000, null);
+        menu[0] = false;
+        n += eq("gone mid-look aborts", flow.tick(null, null, 3050, null), false);
+        n += eq("menu-closed reason", hook[0], "menu-closed");
+        // the visit clock
+        menu[0] = true;
+        GuiFlow.Step forever = GuiFlow.custom("forever", c -> null);
+        flow.start(forever, 4000);
+        n += eq("running", flow.tick(null, null, 9000, null), true);
+        n += eq("visit timeout", flow.tick(null, null, 14_001, null), false);
+        n += eq("visit-timeout reason", hook[0], "visit-timeout");
+        n += eq("third abort suspends", ab.suspended(), true);
+        n += eq("suspended count", ab.count(), 3);
+        n += eq("not un-suspended early", ab.maybeUnsuspend(14_500, null), false);
+        n += eq("un-suspended after suspendMs", ab.maybeUnsuspend(15_100, null), true);
+        n += eq("clean after resume", ab.count(), 0);
+        // an abort from a custom step, and cancel
+        GuiFlow.Step bad = GuiFlow.custom("bad", c -> { c.abort("nope"); return null; });
+        flow.start(bad, 20_000);
+        n += eq("custom abort ends the visit", flow.tick(null, null, 20_000, null), false);
+        n += eq("custom abort reason", hook[0], "nope");
+        flow.start(forever, 21_000);
+        flow.cancel();
+        n += eq("cancel is silent", flow.isBusy(), false);
+        n += eq("cancel counts nothing", ab.count(), 1);
+        ab.onEnable();
+        n += eq("enable clears", ab.count() == 0 && !ab.suspended(), true);
+        // pause and settle
+        final int[] settled = {0};
+        GuiFlow.Step settle = GuiFlow.settle("settle", () -> 300L, c -> { settled[0]++; return GuiFlow.DONE; });
+        GuiFlow.Step pause = GuiFlow.pause("pause", () -> 100L, false, settle);
+        flow.start(pause, 30_000);
+        n += eq("pausing", flow.tick(null, null, 30_050, null), true);
+        n += eq("paused: settle", flow.tick(null, null, 30_150, null), true);
+        n += eq("settle phase", flow.phaseName(), "settle");
+        n += eq("settling", flow.tick(null, null, 30_200, null), true);
+        n += eq("settled", flow.tick(null, null, 30_500, null), false);
+        n += eq("settle ran", settled[0], 1);
+        n += eq("a step with no clock is never due", new GuiFlow.Ctx().due(), false);
         return n;
     }
 
