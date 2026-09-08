@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -635,10 +636,10 @@ public class YCBotChallengeConfig {
     /** How often the canonical balance snapshot (HUD / logs / buy eval) is published. */
     public int scoreboardSnapshotMs = 5000;
     public List<String> balancePatterns = List.of(
-        "souls|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*SOULS\\b|SOULS\\s*:?\\s*.?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
-        "essence|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*ESSENCE\\b|ESSENCE\\s*:?\\s*.?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
-        "shards|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*SHARDS\\b|SHARDS\\s*:?\\s*.?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})",
-        "credits|(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*CREDITS\\b|CREDITS\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})"
+        "souls|(?i)((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*SOULS\\b|SOULS\\s*:?\\s*.?\\s*((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))",
+        "essence|(?i)((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*ESSENCE\\b|ESSENCE\\s*:?\\s*.?\\s*((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))",
+        "shards|(?i)((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*SHARDS\\b|SHARDS\\s*:?\\s*.?\\s*((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))",
+        "credits|(?i)((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*CREDITS\\b|CREDITS\\s*:?\\s*((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))"
     );
     public List<String> ascensionChatPatterns = List.of("ascend", "ascension");
     public List<String> prestigeChatPatterns = List.of("prestige");
@@ -799,7 +800,7 @@ public class YCBotChallengeConfig {
      * the permanent money multiplier now and after the rebirth (x1.40 a rebirth; Drew: "this
      * is the rebirth income modifier").
      */
-    public String rebirthRequiredPattern = "/\\brequired:?\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money/";
+    public String rebirthRequiredPattern = "/\\brequired:?\\s*\\$?(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*money/";
     public String rebirthMultiplierPattern = "/\\bmultiplier:?\\s*(?<from>[\\d,.]+\\s*[A-Za-z]{0,3})x\\s*-+>\\s*(?<to>[\\d,.]+\\s*[A-Za-z]{0,3})x/";
     /** Title of the menu the star opens (screenshot: "Upgrades"). */
     public String rebirthUpgradesTitlePattern = "/^upgrades\\b/";
@@ -834,7 +835,7 @@ public class YCBotChallengeConfig {
     /** The egg's hologram: matched on the tail only ("Western Companion Egg", "Farm Companion Egg"). */
     public String companionEggPattern = "/\\bcompanion egg\\b/";
     /** "| Price: $121.3300 Money" / "| Price: 363.9800 Money" → the amount (the first open is the probe for its scale). */
-    public String companionPricePattern = "/price:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money/";
+    public String companionPricePattern = "/price:\\s*\\$?(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*money/";
     /** A hologram with this is the other egg. */
     public String companionEggExcludePattern = "/credits/";
     /** "OPEN: [3x COMPANION EGG]" (name or lore) → 3. */
@@ -1062,9 +1063,9 @@ public class YCBotChallengeConfig {
     public String swordSkinsButtonLorePattern = "/click to view your swords/";
     public String swordSkinsTitlePattern = "/^sword skins\\b/";
     public String swordSkinSignaturePattern = "/^sword skin$/";
-    public String swordSkinPricePattern = "/price:\\s*\\$?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money/";
+    public String swordSkinPricePattern = "/price:\\s*\\$?(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*money/";
     public String swordSkinTierPattern = "/tier:\\s*(?<cur>\\d+)\\s*\\/\\s*(?<max>\\d+)/";
-    public String swordSkinDamagePattern = "/damage:\\s*(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*dmg/";
+    public String swordSkinDamagePattern = "/damage:\\s*(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*dmg/";
     public String swordSkinEquippedPattern = "/^equipped\\b/";
     public String swordSkinLockedPattern = "/^locked\\b/";
     /**
@@ -1341,7 +1342,7 @@ public class YCBotChallengeConfig {
     public String enchantLevelPattern = "/\\blevel:\\s*(?<cur>[\\d,]+)\\s*\\/\\s*(?<max>[\\d,]+)/";
     /** "Price: 7,105,000 Souls" → amount + currency (the currency word is never swallowed as a suffix). */
     public String enchantPricePattern =
-        "/\\bprice:\\s*(?<amount>[\\d,.]+(?:\\s*(?!souls|essence|shards)[A-Za-z]{1,4})?)\\s*(?<currency>souls|essence|shards)/";
+        "/\\bprice:\\s*(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*(?!souls|essence|shards)[A-Za-z]{1,4})?)\\s*(?<currency>souls|essence|shards)/";
     /** "LOCKED (Requires Sword Level 50)" — never clicked. */
     public String enchantLockedPattern = "/^\\W*locked\\b/";
     /** Max Upgrade hopper lore "* Levels: 1" → levels the click would buy (0 = unaffordable). */
@@ -1367,7 +1368,7 @@ public class YCBotChallengeConfig {
     public String enchantPrestigeLevelPattern = "/\\bprestige:?\\s*(?<cur>[\\d,]+)[^\\d\\/]*?\\/\\s*(?<max>[\\d,]+)/";
     /** "Cost: 2.5T Souls" - amount with its suffix, then the currency word (never swallowed as a suffix). */
     public String enchantPrestigeCostPattern =
-        "/\\bcost:?\\s*\\$?(?<amount>[\\d,.]+(?:\\s*(?!souls|essence|shards|money)[A-Za-z]{1,4})?)\\s*(?<currency>souls|essence|shards|money)/";
+        "/\\bcost:?\\s*\\$?(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*(?!souls|essence|shards|money)[A-Za-z]{1,4})?)\\s*(?<currency>souls|essence|shards|money)/";
     /** "Rebirth: 21" - the rebirth floor. */
     public String enchantPrestigeRebirthPattern = "/\\brebirth:?\\s*(?<n>[\\d,]+)/";
     /** "Multiplier: 13.30x DMG" - evidence only. */
@@ -1382,7 +1383,7 @@ public class YCBotChallengeConfig {
      */
     public int enchantMaxedTabRescanMs = 600_000;
     /** The server's lines: success, the rebirth gate, the max - never counted as account prestiges. */
-    public String enchantPrestigeChatPattern = "/prestiged the (?<name>.+? enchant) enchant for (?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*(?<currency>souls|essence|shards|money)/";
+    public String enchantPrestigeChatPattern = "/prestiged the (?<name>.+? enchant) enchant for (?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*(?<currency>souls|essence|shards|money)/";
     public String enchantPrestigeGatePattern = "/at least (?<n>[\\d,]+) rebirths to prestige/";
     public String enchantPrestigeMaxPattern = "/already at the max prestige/";
     /** "YOUR SWORD IS NOW LEVEL 127!" - enchants unlock at sword levels; the next visit scans every tab again. */
@@ -1418,7 +1419,7 @@ public class YCBotChallengeConfig {
     );
     /** Extracts the gap amount from a fail line ("You need 781.04B Money ..." / "$29.99T"). */
     public String upgradeNeedAmountPattern =
-        "/(?i)you need\\s+\\$?\\(?(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\)?\\s*money\\b/";
+        "/(?i)you need\\s+\\$?\\(?(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\)?\\s*money\\b/";
     /**
      * Success chat, verified in logs. Sword prints one line PER LEVEL bought with the
      * exact price ("You have unlocked a new sword level for 6.43M!"); the amount group
@@ -1426,7 +1427,7 @@ public class YCBotChallengeConfig {
      * possibly several stages). Silence after the response window remains the fallback.
      */
     public List<String> upgradeSuccessPatterns = List.of(
-        "/(?i)you have unlocked a new sword level for\\s+(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})/",
+        "/(?i)you have unlocked a new sword level for\\s+(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))/",
         "/(?i)^you have purchased new stage/"
     );
     /** Response lines meaning the kind is fully upgraded (window-gated, anchored). */
@@ -1436,7 +1437,7 @@ public class YCBotChallengeConfig {
     /** Income summary header: "Reward Summary: (60s)" — exact earnings window. */
     public String summaryHeaderPattern = "/(?i)^\\s*reward summary:\\s*\\((?<seconds>\\d+)\\s*s\\)/";
     /** Summary money line: " + 17.19B Money" — exact earnings for that window. */
-    public String summaryMoneyPattern = "/(?i)^\\s*\\+\\s*(?<amount>[\\d,.]+\\s*[A-Za-z]{0,4})\\s*money\\s*$/";
+    public String summaryMoneyPattern = "/(?i)^\\s*\\+\\s*(?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*money\\s*$/";
     /** How long after our own send a reply is still attributable to it. */
     public int upgradeResponseWindowMs = 4000;
     /** No fail line this long after a send = the purchase succeeded (silence-success). */
@@ -1470,7 +1471,7 @@ public class YCBotChallengeConfig {
      * or the real EnchantedMC row "Your Balance 2.35T". First non-null group wins.
      */
     public String sidebarMoneyPattern =
-        "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})|YOUR\\s+BALANCE\\s*:?\\s*\\(?\\$?([\\d,.]+\\s*[A-Za-z]{0,4})\\)?/";
+        "/(?i)((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*MONEY\\b|MONEY\\s*:?\\s*((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))|YOUR\\s+BALANCE\\s*:?\\s*\\(?\\$?((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\)?/";
     /** Log every new/changed raw sidebar line (debug the scoreboard parse from the JSONL). Default on while we tune parsers from live evidence. */
     public boolean debugSidebar = true;
     /**
@@ -1617,6 +1618,14 @@ public class YCBotChallengeConfig {
     public boolean suffixLearningEnabled = true;
     /** A rung crossing is accepted only when the new value is at most this many times the previous poll. */
     public double suffixCrossingMaxJump = 20.0;
+    /**
+     * Where the server's ladder ends and it starts writing the exponent itself
+     * ("1.03235E93"). Observed 2026-09-07 between 97.9NVG (9.79e91) and 1.03615E92, with
+     * both forms alternating as the balance crosses back over a spend. Amounts reads
+     * either form regardless; this only decides where the bot's own HUD and log lines
+     * switch over, so a formatted value and a chat line are the same string.
+     */
+    public double moneySciFromValue = Amounts.DEFAULT_SCI_FROM;
 
     // --- Ninja humanization (single behavior set; ninja=false restores the old mechanical one) ---
 
@@ -1727,7 +1736,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 57;
+    public static final int CURRENT_CONFIG_VERSION = 58;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -1749,6 +1758,31 @@ public class YCBotChallengeConfig {
         YCBotChallengeConfig cfg = new YCBotChallengeConfig();
         cfg.save(file);
         return cfg;
+    }
+
+    /**
+     * The money-amount token as it was spelled before 0.9.61, and the shape that replaces
+     * it. The new one adds the exponent branch ("1.03235E93") and a leading guard so a
+     * capture can never start in the middle of a number - that guard is what turns the
+     * next server format change into a clean miss instead of a silent wrong value.
+     */
+    private static final String AMT_OLD = "[\\d,.]+\\s*[A-Za-z]{0,4}";
+    private static final String AMT_NEW = "(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4})";
+    private static final String AMT_OLD_CUR = "[\\d,.]+(?:\\s*(?!";
+    private static final String AMT_NEW_CUR = "(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*(?!";
+
+    /** Rewrite the amount token inside one stored pattern, leaving the rest of it alone. */
+    private static String upgradeAmountToken(String pattern) {
+        if (pattern == null) return null;
+        return pattern.replace(AMT_OLD, AMT_NEW).replace(AMT_OLD_CUR, AMT_NEW_CUR);
+    }
+
+    /** Same, for a list of patterns. */
+    private static List<String> upgradeAmountToken(List<String> patterns) {
+        if (patterns == null) return null;
+        List<String> out = new ArrayList<>(patterns.size());
+        for (String p : patterns) out.add(upgradeAmountToken(p));
+        return out;
     }
 
     /** Old configs keep stale server-specific patterns forever; replace them wholesale on version bumps. */
@@ -2122,6 +2156,26 @@ public class YCBotChallengeConfig {
             if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "ad,hn,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
             changed = true;
         }
+        if (configVersion < 58) {
+            // v58 (0.9.61): the server's ladder ends at NVG and above 1e92 it writes the
+            // exponent instead ("1.03235E93"). The old amount token could not span that, so
+            // the engine backtracked onto the bare exponent and the balance read as $93.
+            // Rewrite the token in place rather than replacing whole patterns, so a
+            // hand-edited pattern keeps its edits and still learns to read exponents.
+            balancePatterns = upgradeAmountToken(balancePatterns);
+            upgradeSuccessPatterns = upgradeAmountToken(upgradeSuccessPatterns);
+            enchantPricePattern = upgradeAmountToken(enchantPricePattern);
+            enchantPrestigeCostPattern = upgradeAmountToken(enchantPrestigeCostPattern);
+            enchantPrestigeChatPattern = upgradeAmountToken(enchantPrestigeChatPattern);
+            rebirthRequiredPattern = upgradeAmountToken(rebirthRequiredPattern);
+            companionPricePattern = upgradeAmountToken(companionPricePattern);
+            swordSkinPricePattern = upgradeAmountToken(swordSkinPricePattern);
+            swordSkinDamagePattern = upgradeAmountToken(swordSkinDamagePattern);
+            upgradeNeedAmountPattern = upgradeAmountToken(upgradeNeedAmountPattern);
+            summaryMoneyPattern = upgradeAmountToken(summaryMoneyPattern);
+            sidebarMoneyPattern = upgradeAmountToken(sidebarMoneyPattern);
+            changed = true;
+        }
         if (configVersion < 57) {
             // v57 (0.9.59): 3.6-flash reads first, 3.8-max is the second guess (Drew; the duo bench).
             // Only the 0.9.58 pair (3.8-max alone) moves; a hand-set reader or second model stays.
@@ -2298,6 +2352,7 @@ public class YCBotChallengeConfig {
         if (expectedTeleportAfterZoneMs < 0) expectedTeleportAfterZoneMs = 8000;
         if (suffixScales == null) suffixScales = Map.of();
         if (suffixCrossingMaxJump < 1.05) suffixCrossingMaxJump = 20.0;
+        if (!(moneySciFromValue > 0)) moneySciFromValue = Amounts.DEFAULT_SCI_FROM;
         if (rarityHpScale == null) rarityHpScale = Map.of("RARE", 0.15, "EPIC", 0.30, "LEGENDARY", 0.40);
         // migrate: 0.7.5 shipped an empty whitelist; fill it with the zone NPC's plate lines
         if (playerRadarWhitelist == null || playerRadarWhitelist.isEmpty()) {
@@ -2305,7 +2360,7 @@ public class YCBotChallengeConfig {
         }
         if (movingTargetPolicy == null) movingTargetPolicy = "ignore";
         if (sidebarMoneyPattern == null || sidebarMoneyPattern.isBlank()) {
-            sidebarMoneyPattern = "/(?i)([\\d,.]+\\s*[A-Za-z]{0,4})\\s*MONEY\\b|MONEY\\s*:?\\s*([\\d,.]+\\s*[A-Za-z]{0,4})/";
+            sidebarMoneyPattern = "/(?i)((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*MONEY\\b|MONEY\\s*:?\\s*((?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))/";
         }
         // 0.6.x shipped aimAgility 0.4 with a much slower duration law; migrate the exact
         // old default to the new one so existing configs get the faster flicks.

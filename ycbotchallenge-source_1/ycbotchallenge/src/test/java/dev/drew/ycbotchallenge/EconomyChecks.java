@@ -104,6 +104,7 @@ public final class EconomyChecks {
         n += checks0958();
         n += checks0959();
         n += checks0960();
+        n += checks0961();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -1797,7 +1798,7 @@ public final class EconomyChecks {
         n += eq("fresh ttkKeepOnReenableMs", CFG.ttkKeepOnReenableMs, 60_000);
         n += eq("fresh gateUsesPrediction off", CFG.gateUsesPrediction, false);
         n += eq("fresh stageProbeCommonKills", CFG.stageProbeCommonKills, 1);
-        n += eq("config version 57", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 57);
+        n += eq("config version 58", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 58);
         try {
             java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ycbot-cfg", ".json");
             java.nio.file.Files.writeString(tmp, "{\"configVersion\":36,\"gateUsesPrediction\":true,\"zoneMinStageKills\":-3}");
@@ -3023,6 +3024,134 @@ public final class EconomyChecks {
 
     /** 0.9.59: flash first, max second, both fired at once; ties by launch order; a second reading beats a re-read. */
     /** 0.9.60: the plate window grows with the mob; reach is measured to the hitbox surface. */
+    /**
+     * 0.9.61: the server's ladder ends at NVG (1e90); above 1e92 it drops suffixes and
+     * writes the exponent itself ("1.03235E93"). Both forms are live at once - after a
+     * spend the row falls back to "90.36NVG" - so every reader has to take either.
+     *
+     * The old amount token could not span an exponent, so the engine backtracked onto the
+     * bare "93" sitting in front of MONEY and the balance read as $93: 19 % of the rows in
+     * the 2026-09-07 log, four phantom money-collapse rebirths, 79 skipped upgrades, and an
+     * income estimate halving every 90 s because the summary line matched nothing at all.
+     * Every amount string below is verbatim from that log.
+     */
+    private static int checks0961() {
+        int n = 0;
+        Amounts.resetLearned();
+        Amounts.configure(Map.of());
+        int gap = 5000;
+        double jump = 20.0;
+
+        // The exponent form parses on its own: the scale is in the token, so it needs no rung.
+        n += eq("sword unlock 1.68717E92", Amounts.parse("1.68717E92"), 1.68717e92, 1e86);
+        n += eq("sword need 5.00155E92", Amounts.parse("5.00155E92"), 5.00155e92, 1e86);
+        n += eq("rebirth need $1.74448E93", Amounts.parse("$1.74448E93"), 1.74448e93, 1e87);
+        n += eq("zone need 4.19109E94", Amounts.parse("4.19109E94"), 4.19109e94, 1e88);
+        n += eq("summary 2.53912E92", Amounts.parse("2.53912E92"), 2.53912e92, 1e86);
+        n += eq("trailing-zero mantissa 5.9051E92", Amounts.parse("5.9051E92"), 5.9051e92, 1e86);
+        n += eq("explicit plus exponent", Amounts.parse("1.0E+93"), 1e93, 1e87);
+
+        // It carries no suffix, so it can never be taken for a rung, learned, or called provisional.
+        n += eq("exponent has no suffix", Amounts.suffixOf("1.03235E93"), "");
+        n += eq("exponent value", Amounts.exponentOf("1.03235E93"), Integer.valueOf(93));
+        n += eq("exponent mantissa", Amounts.mantissaOf("1.03235E93"), 1.03235, 1e-9);
+        n += eq("exponent is scientific", Amounts.scientific("1.03235E93"), true);
+        n += eq("a rung is not scientific", Amounts.scientific("97.9NVG"), false);
+        n += eq("exponent never provisional", Amounts.provisional(Amounts.suffixOf("1.03235E93")), false);
+
+        // The regression itself: nothing may fall through onto the bare exponent.
+        n += eq("parseAll takes one token", Amounts.parseAll("You need 4.19109E94 Money.").size(), 1);
+        n += eq("parseAll value, not the exponent",
+            Amounts.parseAll("You need 4.19109E94 Money.").get(0), 4.19109e94, 1e88);
+        // The guard that keeps "235 SHARDS" at 235 is untouched, and a bare E still fails safe.
+        n += eq("235 SHARDS still 235", Amounts.parse("235 SHARDS"), 235.0, 1e-9);
+        n += eq("a bare E is not an exponent", Amounts.parse("1.5E"), null);
+
+        // The extraction patterns, each on the line that defeated them.
+        Pattern moneyRe = loose(CFG.sidebarMoneyPattern);
+        n += eq("sidebar exponent row", firstGroup(moneyRe, "1.03235E93 money"), 1.03235e93, 1e87);
+        n += eq("sidebar exponent row, low mantissa", firstGroup(moneyRe, "1.6937E92 money"), 1.6937e92, 1e86);
+        n += eq("sidebar plain row still reads", firstGroup(moneyRe, "75.1B MONEY"), 75.1e9, 1e3);
+        Pattern need = loose(CFG.upgradeNeedAmountPattern);
+        n += eq("sword need line", ChatClassifier.needAmount(
+            "You need 5.00155E92 Money to purchase the next sword upgrade.", need), 5.00155e92, 1e86);
+        n += eq("rebirth need line", ChatClassifier.needAmount(
+            "You need $1.74448E93 Money to Rebirth.", need), 1.74448e93, 1e87);
+        n += eq("zone need line", ChatClassifier.needAmount(
+            "You do not have enough money to purchase the next stage. You need 4.19109E94 Money.",
+            need), 4.19109e94, 1e88);
+        n += eq("sword unlock line", ChatClassifier.successAmount(
+            "You have unlocked a new sword level for 5.9051E92!", looseAll(CFG.upgradeSuccessPatterns)),
+            5.9051e92, 1e86);
+        n += eq("summary money line", ChatClassifier.summaryMoney(
+            " + 2.53912E92 Money", loose(CFG.summaryMoneyPattern)), 2.53912e92, 1e86);
+        // The sidebar's own token, through the parser the tracker actually uses.
+        var hits = SidebarParser.parseCurrencies(
+            List.of("1.03235E93 MONEY", "110.51B SOULS"), List.of("money", "souls"));
+        n += eq("sidebar parser exponent", hits.get("money").value(), 1.03235e93, 1e87);
+        n += eq("sidebar parser raw token", hits.get("money").rawAmount(), "1.03235E93");
+        n += eq("sidebar parser souls unaffected", hits.get("souls").value(), 110.51e9, 1e3);
+
+        // Formatting out follows the server across the same boundary, so a formatted target
+        // and the chat line it came from are the same string.
+        Amounts.Learned nvg = new Amounts.Learned();
+        nvg.scale = 1e90;
+        nvg.confirmed = true;
+        nvg.via = "test";
+        nvg.basis = "OVG";
+        nvg.raw = "1.11NVG";
+        Amounts.learn("NVG", nvg);
+        n += eq("97.9NVG once the rung is known", Amounts.parse("97.9NVG"), 9.79e91, 1e86);
+        n += eq("format below the ceiling", Amounts.format(9.79e91), "97.9NVG");
+        n += eq("format at the ceiling", Amounts.format(1.03235e93), "1.03235E93");
+        n += eq("format matches the chat line", Amounts.format(4.19109e94), "4.19109E94");
+
+        // The exponent reading is exact, so it proves the rung the row just left - the
+        // healing a rung guess never had, since a guess always parses.
+        Amounts.Crossing sc = Amounts.sciCrossing("97.9NVG", "1.03615E92", 1000, gap, jump);
+        n += eq("sci fit", sc.reason(), "fit");
+        n += eq("sci scale", sc.learned() != null ? Double.valueOf(sc.learned().scale) : null, 1e90, 1e84);
+        n += eq("sci confirmed", sc.learned() != null && sc.learned().confirmed, true);
+        n += eq("sci via", sc.learned() != null ? sc.learned().via : null, "sci-crossing");
+        n += eq("sci proves the previous rung", sc.learned() != null ? sc.learned().basis : null, "NVG");
+        n += eq("sci ratio", sc.ratio(), 1.03615e92 / 9.79e91, 1e-6);
+
+        // A rung wrong by exactly 1000x - the only way a chained guess can be wrong - is corrected.
+        Amounts.Learned wrong = new Amounts.Learned();
+        wrong.scale = 1e87;
+        wrong.confirmed = false;
+        wrong.via = "rung";
+        wrong.basis = "OVG";
+        wrong.raw = "1.94ZZ";
+        Amounts.learn("ZZ", wrong);
+        Amounts.Crossing fix = Amounts.sciCrossing("97.9ZZ", "1.03615E92", 1000, gap, jump);
+        n += eq("sci corrects a wrong rung", fix.reason(), "fit");
+        n += eq("sci correction scale",
+            fix.learned() != null ? Double.valueOf(fix.learned().scale) : null, 1e90, 1e84);
+        n += eq("sci correction is confirmed", fix.learned() != null && fix.learned().confirmed, true);
+        Amounts.forget("ZZ");
+
+        // Everything a crossing rejects, sciCrossing rejects too - and it never solves freely,
+        // so an arbitrary factor is refused rather than written up as a new scale.
+        n += eq("sci stale", Amounts.sciCrossing("97.9NVG", "1.03615E92", 60_000, gap, jump).reason(), "stale");
+        n += eq("sci no prev", Amounts.sciCrossing(null, "1.03615E92", 1000, gap, jump).reason(), "no-prev");
+        n += eq("sci prev already an exponent",
+            Amounts.sciCrossing("1.6937E92", "1.03615E93", 1000, gap, jump).reason(), "no-prev");
+        n += eq("sci needs an exponent",
+            Amounts.sciCrossing("97.9NVG", "1.1NVG", 1000, gap, jump).reason(), "not-scientific");
+        n += eq("sci unknown basis",
+            Amounts.sciCrossing("97.9WAT", "1.03615E92", 1000, gap, jump).reason(), "unknown-basis");
+        n += eq("sci out of band",
+            Amounts.sciCrossing("97.9NVG", "1.03615E97", 1000, gap, jump).reason(), "out-of-band");
+
+        // A crossing hands the pair over rather than reading an exponent as a rung.
+        n += eq("crossing defers to sci",
+            Amounts.crossing("97.9NVG", 9.79e91, true, "1.03615E92", 1000, gap, jump).reason(), "scientific");
+
+        Amounts.resetLearned();
+        return n;
+    }
+
     private static int checks0960() {
         int n = 0;
         // A cow: the old window, unchanged (width 0.9, height 1.4).

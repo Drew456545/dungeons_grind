@@ -255,6 +255,44 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.61: the balance that read as $93 - money above the ladder
+
+2026-09-07 22:55 the balance stopped being money. The server's suffix ladder ends at NVG
+(1e90), and above 1e92 it drops suffixes and writes the exponent itself: `You need
+$1.74448E93 Money to Rebirth.`, ` + 2.53912E92 Money`, `You have unlocked a new sword level
+for 5.9051E92!`. Both forms are live at once - after a spend the row falls back to
+`90.36NVG` - so this is a second notation to read, not a new rung to learn.
+
+It failed two ways, and the second was the expensive one. `Amounts.parse` read the `E` as a
+one-letter suffix, found no scale and returned null: one WARN, value dropped. But the
+*extraction* patterns, `[\d,.]+\s*[A-Za-z]{0,4}`, could not span `1.03235E93` at all, so the
+engine backtracked and matched the bare `93` sitting in front of ` MONEY`. The balance
+became $93. For the next 45 minutes 4494 of 23322 rows carried `money: "93"`; four phantom
+`economy_reset via="money-collapse"` fired, because a 9e91 -> 93 drop is a 99.99 % collapse
+landing under `moneyCollapseMaxValue`; `swordFloor` and `zoneFloor` were poisoned to 93,
+`swordPct` blew up to 9.2e17 and `waitMs` to three hours, so the bot logged 79
+`sword-hard-unaffordable` and bought nothing. `summaryMoneyPattern` matched nothing at all
+on the new summary line, so income decayed by half every 90 s - 69.9NVG to 1.09NVG - against
+a balance that never moved. `rebirthTarget` stayed null the whole time.
+
+Now the amount token takes either form, exponent branch first so `1.03235E93` can never
+degrade to suffix `E`; and it carries a leading `(?<![\w.])` so a capture can never start in
+the middle of a number again. That guard is the real fix: the next time the server changes
+shape, the money row misses cleanly and says so (`money_row_unparsed`, once per shape)
+instead of quietly returning a two-digit balance. `Amounts.format` follows the server across
+the same boundary, so a formatted target and the chat line it came from are the same string.
+
+The exponent form is also the first ground truth the ladder has ever had. A rung guess
+(`suffix_guess`) always parses, so it could never fail its way to a correction - 14 of the
+24 learned rungs were still unconfirmed guesses. `Amounts.sciCrossing` reads the pair
+`97.9NVG` -> `1.03615E92` and judges the rung against what the table already believes: in
+band, the belief is proved and becomes confirmed; off by exactly 1000x - the only way a
+chained guess can be wrong - it is corrected; anything else is rejected out of band rather
+than written, because a free solve would confirm any suffix at all, and confidently.
+`tools/progress.py` gets the same ladder and the same exponent branch; its own hardcoded
+list had stopped at a rung the server does not have (`U` for 1e36, where it says `UN`), so
+every row above 1e33 had been reading as nothing.
+
 ### 0.9.60: the zone-50 giants - a plate window that grows with the mob, reach to the hitbox
 
 2026-09-07 19:53 the bot bought zone 50 and farmed nothing for an hour (momentum 2.00x ->

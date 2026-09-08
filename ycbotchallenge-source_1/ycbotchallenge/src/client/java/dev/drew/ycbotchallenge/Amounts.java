@@ -1,5 +1,7 @@
 package dev.drew.ycbotchallenge;
 
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,11 +26,27 @@ import java.util.regex.Pattern;
  */
 public final class Amounts {
     /**
-     * Number + optional short suffix, but do not swallow the following currency word.
-     * {@code 235 SHARDS} is 235 (not suffix {@code SHAR}); {@code 131.56B} is billions.
+     * Number, then either its own exponent or a short suffix. The exponent branch comes
+     * first so {@code 1.03235E93} cannot degrade to suffix {@code E} and leave the bare
+     * {@code 93} to be read as the amount (0.9.61). The trailing lookahead stays outside
+     * the group: it is what keeps {@code 235 SHARDS} at 235 (not suffix {@code SHAR}).
      */
     private static final Pattern TOKEN = Pattern.compile(
-        "([\\d,]+(?:\\.\\d+)?)(?:\\s*([A-Za-z]{1,4}))?(?![A-Za-z])");
+        "(?<num>[\\d,]+(?:\\.\\d+)?)"
+      + "(?:[Ee](?<exp>[+-]?\\d{1,3})|\\s*(?<sfx>[A-Za-z]{1,4}))?(?![A-Za-z])");
+
+    /**
+     * The server's own ceiling: above this it stops using the suffix ladder and writes
+     * the exponent instead ("1.03235E93"). Observed 2026-09-07 between 97.9NVG (9.79e91)
+     * and 1.03615E92, with the two forms alternating as the balance crosses back.
+     */
+    public static final double DEFAULT_SCI_FROM = 1e92;
+
+    /** Six significant figures, no {@code +} — the shape the server prints. */
+    private static final String SCI_PATTERN = "0.#####E0";
+
+    /** Value at or above which {@link #format} writes an exponent instead of a rung. */
+    private static volatile double sciFrom = DEFAULT_SCI_FROM;
 
     /**
      * Built-in suffix table (case-insensitive keys): only what EnchantedMC has printed,
@@ -88,6 +106,12 @@ public final class Amounts {
 
     /** Merge config-provided suffix overrides. Call after config load. */
     public static void configure(Map<String, Double> overrides) {
+        configure(overrides, DEFAULT_SCI_FROM);
+    }
+
+    /** As {@link #configure(Map)}, also setting the value above which the server writes exponents. */
+    public static void configure(Map<String, Double> overrides, double sciFromValue) {
+        if (sciFromValue > 0) sciFrom = sciFromValue;
         EXTRA.clear();
         warned.clear();
         if (overrides != null) {
@@ -167,24 +191,52 @@ public final class Amounts {
         return "provisional".equals(confidence(suffix));
     }
 
-    /** The suffix letters of an amount string ("1.25Qa" → "Qa", "58" → ""), for the evidence log. */
+    /**
+     * The suffix letters of an amount string ("1.25Qa" → "Qa", "58" → ""), for the
+     * evidence log. An exponent token has none ("1.03235E93" → ""), which is the right
+     * answer downstream: confidence("") is "builtin", so it is exactly known and never
+     * provisional.
+     */
     public static String suffixOf(String raw) {
         if (raw == null) return "";
         Matcher m = TOKEN.matcher(raw.replace("$", "").trim());
-        if (!m.find() || m.group(2) == null) return "";
-        return m.group(2);
+        if (!m.find() || m.group("sfx") == null) return "";
+        return m.group("sfx");
     }
 
-    /** The numeric part of an amount string ("903.74T" → 903.74), or null. */
+    /** The numeric part of an amount string ("903.74T" → 903.74, "1.03235E93" → 1.03235), or null. */
     public static Double mantissaOf(String raw) {
         if (raw == null) return null;
         Matcher m = TOKEN.matcher(raw.replace("$", "").trim());
         if (!m.find()) return null;
         try {
-            return Double.parseDouble(m.group(1).replace(",", ""));
+            return Double.parseDouble(m.group("num").replace(",", ""));
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /**
+     * The exponent of a self-describing amount ("1.03235E93" → 93), or null when the
+     * token rides the suffix ladder instead. Needs no table: the scale is in the token,
+     * so it can never be guessed wrong and never has to be learned.
+     */
+    public static Integer exponentOf(String raw) {
+        if (raw == null) return null;
+        Matcher m = TOKEN.matcher(raw.replace("$", "").trim());
+        if (!m.find()) return null;
+        String e = m.group("exp");
+        if (e == null) return null;
+        try {
+            return Integer.valueOf(Integer.parseInt(e));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /** True when the amount carries its own exponent - exact, and off the ladder. */
+    public static boolean scientific(String raw) {
+        return exponentOf(raw) != null;
     }
 
     /** True when {@link #parse} would understand the suffix (empty = a bare number). */
@@ -239,6 +291,8 @@ public final class Amounts {
      */
     public static Crossing crossing(String prevRaw, Double prevValue, boolean prevConfirmed,
                                     String raw, long prevAgeMs, int maxGapMs, double maxJump) {
+        // Above the ceiling there are no new rungs to find; sciCrossing reads that pair instead.
+        if (scientific(raw) || scientific(prevRaw)) return new Crossing(null, "scientific", 0);
         String s2 = suffixOf(raw);
         Double m2 = mantissaOf(raw);
         if (s2.isEmpty() || m2 == null) return new Crossing(null, "no-suffix", 0);
@@ -286,6 +340,57 @@ public final class Amounts {
         return l;
     }
 
+    /**
+     * The ladder's ceiling read against ground truth (0.9.61). The money row moves from a
+     * suffix token ({@code prevRaw}, suffix S1, mantissa m1) to an exponent token
+     * ({@code raw}) between two polls, because above {@link #DEFAULT_SCI_FROM} the server
+     * stops using suffixes and writes the exponent itself. That new value is exact, so it
+     * is a measurement of S1's scale rather than another inference from it.
+     *
+     * The verdict is judged against what the table already believes, never solved for
+     * freely: m1 x believedScale should sit within the same [0.95, maxJump] band
+     * {@link #crossing} uses. In band, the belief is proved and comes back confirmed - the
+     * one proof a rung guess could never get, since a guessed suffix always parses and so
+     * never fails its way to a correction ({@link #rungGuess}). A ratio near 1000x either
+     * way says the belief is off by exactly one rung, which is the only way a chained guess
+     * can be wrong, and that rung is corrected. Anything else is rejected out of band rather
+     * than written: a free solve would happily confirm any suffix at all, and confidently.
+     *
+     * The entry is keyed on S1 - the suffix being proved, not the token that proved it -
+     * and S1 is carried in {@code basis}.
+     */
+    public static Crossing sciCrossing(String prevRaw, String raw, long prevAgeMs,
+                                       int maxGapMs, double maxJump) {
+        Double v2 = scientific(raw) ? parse(raw) : null;
+        if (v2 == null || v2 <= 0) return new Crossing(null, "not-scientific", 0);
+        String s1 = suffixOf(prevRaw);
+        Double m1 = mantissaOf(prevRaw);
+        if (s1.isEmpty() || m1 == null || m1 <= 0) return new Crossing(null, "no-prev", 0);
+        if (maxGapMs > 0 && prevAgeMs > maxGapMs) return new Crossing(null, "stale", 0);
+        Double believed = scaleFor(s1);
+        if (believed == null || believed <= 0) return new Crossing(null, "unknown-basis", 0);
+        double hi = Math.max(0.95, maxJump);
+        double ratio = v2 / (m1 * believed);
+        double candidate = 0;
+        if (inBand(ratio, hi)) candidate = believed;
+        else if (inBand(ratio / 1000.0, hi)) candidate = believed * 1000.0;
+        else if (inBand(ratio * 1000.0, hi)) candidate = believed / 1000.0;
+        if (candidate <= 0) return new Crossing(null, "out-of-band", ratio);
+        Learned l = new Learned();
+        l.scale = candidate;
+        l.confirmed = true;
+        l.via = "sci-crossing";
+        l.basis = s1;
+        l.raw = raw;
+        l.prevRaw = prevRaw;
+        l.at = System.currentTimeMillis();
+        return new Crossing(l, "fit", v2 / (m1 * candidate));
+    }
+
+    private static boolean inBand(double ratio, double hi) {
+        return ratio >= 0.95 && ratio <= hi;
+    }
+
     public static Double parse(String raw) {
         if (raw == null || raw.isBlank()) return null;
         String s = raw.trim().replace("$", "");
@@ -308,11 +413,16 @@ public final class Amounts {
 
     private static Double tokenValue(Matcher m) {
         try {
-            double n = Double.parseDouble(m.group(1).replace(",", ""));
-            String suf = m.group(2);
-            Double scale = scaleFor(suf);
+            String num = m.group("num").replace(",", "");
+            String exp = m.group("exp");
+            if (exp != null) {
+                // Let parseDouble assemble it: n * Math.pow(10, e) rounds, the literal does not.
+                double v = Double.parseDouble(num + "E" + exp);
+                return Double.isFinite(v) ? Double.valueOf(v) : null;
+            }
+            Double scale = scaleFor(m.group("sfx"));
             if (scale == null) return null;
-            return n * scale;
+            return Double.parseDouble(num) * scale;
         } catch (NumberFormatException e) {
             return null;
         }
@@ -356,10 +466,19 @@ public final class Amounts {
         labels.add(label);
     }
 
-    /** Human form on the current ladder; above the top rung the mantissa grows ("2500QQ" until a rung above QQ is known). */
+    /**
+     * Human form on the current ladder ("2500QQ" while the mantissa still grows past the
+     * top known rung), switching to the server's own exponent form at {@link #sciFrom} so
+     * a formatted target and a chat line are the same string, character for character.
+     */
     public static String format(double v) {
         FormatTable t = formatTable;
         double a = Math.abs(v);
+        // DecimalFormat is not thread-safe and format() is called from the render and log
+        // threads; it is not hot enough for the instance to be worth sharing.
+        if (a >= sciFrom) {
+            return new DecimalFormat(SCI_PATTERN, DecimalFormatSymbols.getInstance(Locale.ROOT)).format(v);
+        }
         for (int i = 0; i < t.scales().length; i++) {
             if (a >= t.scales()[i]) return trim(v / t.scales()[i]) + t.labels()[i];
         }

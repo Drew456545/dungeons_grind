@@ -15,30 +15,49 @@ context's zone label; rows carry `bot` (on/off/paused) since 0.9.33 - older logs
 bot flag and are summed as wall time, marked "(wall)". Where the 0.9.36+ `stage_record`
 and `cycle_end` rows exist they are printed as the bot recorded them.
 
-Money strings are suffixed (K M B T Q QQ S SS O N ...); each rung is x1000.
+Money strings ride a x1000 ladder (K M B T Q QQ S SS O N ... NVG). Above 1e92 the server
+runs out of rungs and writes the exponent itself ("1.03235E93"), so both forms turn up in
+the same log and both are read here.
 """
 import argparse, glob, json, os, re, sys
 from collections import OrderedDict
 
 DEFAULT_LOGS = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), ".minecraft", "ycbotchallenge-logs")
-SUFFIX = ["", "K", "M", "B", "T", "Q", "QQ", "S", "SS", "O", "N", "D", "U"]
+# The server's ladder, as the mod learned it from the live sidebar (see
+# config/ycbotchallenge-suffixes.json). It ends at NVG: what used to sit here was a guess
+# that stopped at a rung the server does not have ("U" for 1e36, where it says "UN"), so
+# every row above 1e33 silently read as None.
+SUFFIX = ["", "K", "M", "B", "T", "Q", "QQ", "S", "SS", "O", "N", "D",
+          "UN", "DD", "TR", "QT", "QN", "SD", "SPD", "OD", "ND",
+          "VG", "UVG", "DVG", "TVG", "QTV", "QNV", "SEV", "SPV", "OVG", "NVG"]
 SCALE = {s: 1000.0 ** i for i, s in enumerate(SUFFIX)}
-AMOUNT = re.compile(r"^(-?[\d,]+(?:\.\d+)?)\s*([A-Za-z]*)$")
+UPPER = {s.upper(): v for s, v in SCALE.items()}   # the mod matches suffixes case-insensitively
+# Number, then either its own exponent or a rung. Mirrors Amounts.TOKEN in the mod.
+AMOUNT = re.compile(r"^(-?[\d,]+(?:\.\d+)?)(?:[Ee]([+-]?\d{1,3})|\s*([A-Za-z]*))$")
+SCI_FROM = 1e92   # where the server stops using rungs; Amounts.DEFAULT_SCI_FROM
 GAP_MS = 5 * 60 * 1000
 
 
 def money(v):
     if v is None:
         return None
-    m = AMOUNT.match(str(v).strip())
-    if not m or m.group(2) not in SCALE:
+    m = AMOUNT.match(str(v).strip().replace("$", ""))
+    if not m:
         return None
-    return float(m.group(1).replace(",", "")) * SCALE[m.group(2)]
+    num = m.group(1).replace(",", "")
+    if m.group(2) is not None:
+        return float(num + "E" + m.group(2))
+    scale = UPPER.get((m.group(3) or "").upper())
+    return None if scale is None else float(num) * scale
 
 
 def fmt(x):
     if x is None:
         return "-"
+    if abs(x) >= SCI_FROM:
+        # %G already drops trailing mantissa zeros, so this matches the mod's
+        # DecimalFormat("0.#####E0") and the server: 5.9051E92, not 5.90510E+92.
+        return f"{x:.6G}".replace("E+", "E")
     for s in reversed(SUFFIX):
         if s and abs(x) >= SCALE[s]:
             return f"{x / SCALE[s]:.3g}{s}"

@@ -94,7 +94,7 @@ public class YCBotChallengeClient implements ClientModInitializer {
     public void onInitializeClient() {
         configPath = FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge.json");
         config = YCBotChallengeConfig.load(configPath);
-        Amounts.configure(config.suffixScales);
+        Amounts.configure(config.suffixScales, config.moneySciFromValue);
         stats = new StatsTracker(config);
         stats.setStateStore(new StateStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-state.json")));
         stats.setSuffixStore(new SuffixStore(FabricLoader.getInstance().getConfigDir().resolve("ycbotchallenge-suffixes.json")));

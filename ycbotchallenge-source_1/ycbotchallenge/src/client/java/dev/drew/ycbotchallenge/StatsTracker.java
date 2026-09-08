@@ -979,6 +979,10 @@ public class StatsTracker {
     private SuffixStore suffixStore;
     /** A rung crossing is judged against the previous poll only while it is this fresh. */
     private static final int SUFFIX_CROSSING_MAX_GAP_MS = 5000;
+    /** Rungs an exponent reading has already settled; keeps a re-crossing from re-logging. */
+    private final Set<String> sciCrossingSeen = new HashSet<>();
+    /** Suffix shapes of money rows we could see but not read; one line each, ever. */
+    private final Set<String> unreadableMoneyShapes = new HashSet<>();
 
     /** Load the suffixes the sidebar taught us in earlier sessions (config overrides stay on top). */
     public void setSuffixStore(SuffixStore store) {
@@ -1002,11 +1006,17 @@ public class StatsTracker {
      * never goes stale.
      */
     private void noteMoneySuffix(String raw) {
-        String sfx = Amounts.suffixOf(raw);
         String prevRaw = liveRaw.get(moneyKey());
+        long age = lastSidebarMoneyAt == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - lastSidebarMoneyAt;
+        // Above the server's ceiling the row carries its own exponent. That reading is exact,
+        // so it proves the rung it just left instead of introducing one of its own (0.9.61).
+        if (Amounts.scientific(raw)) {
+            noteSciCrossing(prevRaw, raw, age);
+            return;
+        }
+        String sfx = Amounts.suffixOf(raw);
         String prevSfx = Amounts.suffixOf(prevRaw);
         if (sfx.isEmpty() || sfx.equalsIgnoreCase(prevSfx)) return;
-        long age = lastSidebarMoneyAt == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - lastSidebarMoneyAt;
         Amounts.Crossing c = Amounts.crossing(prevRaw, liveBals.get(moneyKey()), Amounts.confirmed(prevSfx),
             raw, age, SUFFIX_CROSSING_MAX_GAP_MS, cfg.suffixCrossingMaxJump);
         boolean fit = c.learned() != null;
@@ -1027,6 +1037,31 @@ public class StatsTracker {
      * 0.9.31: a rung proven by a GUI count ratio (the Companion Eggs menu's 250× line) —
      * same learning path as a sidebar crossing, confirmed, persisted.
      */
+    /**
+     * 0.9.61: the money row stepped onto the server's exponent form ("1.03235E93"), which is
+     * exact. That pins the scale of the suffix it just left - the one proof a rung guess could
+     * never get from a crossing, since a guessed suffix always parses and so never fails its
+     * way to a correction. Confirms or corrects the previous rung; never learns one of its own.
+     */
+    private void noteSciCrossing(String prevRaw, String raw, long age) {
+        String s1 = Amounts.suffixOf(prevRaw);
+        if (s1.isEmpty()) return;
+        Amounts.Crossing c = Amounts.sciCrossing(prevRaw, raw, age, SUFFIX_CROSSING_MAX_GAP_MS,
+            cfg.suffixCrossingMaxJump);
+        boolean fit = c.learned() != null;
+        Double known = Amounts.scaleFor(s1);
+        boolean settled = fit && Amounts.confirmed(s1) && known != null
+            && Math.abs(known - c.learned().scale) <= c.learned().scale * 1e-9;
+        if (!settled || sciCrossingSeen.add(s1)) {
+            log("suffix_crossing", "from", s1, "to", null, "via", "sci", "raw", raw, "prevRaw", prevRaw,
+                "verdict", fit ? "fit" : "rejected", "reason", c.reason(),
+                "ratio", Math.round(c.ratio() * 1000.0) / 1000.0,
+                "scale", fit ? c.learned().scale : null, "known", Amounts.confidence(s1));
+        }
+        if (!cfg.suffixLearningEnabled || !fit || settled) return;
+        applyLearned(s1, c.learned(), "sidebar-sci", c.reason());
+    }
+
     public boolean learnSuffixFromGui(String sfx, Amounts.Learned e, String source) {
         if (!cfg.suffixLearningEnabled || sfx == null || e == null || Amounts.confirmed(sfx)) return false;
         applyLearned(sfx, e, source, "count-ratio");
@@ -1502,7 +1537,15 @@ public class StatsTracker {
                 if (raw == null) continue;
                 noteMoneySuffix(raw);
                 Double v = Amounts.parse(raw);
-                if (v == null) continue;
+                if (v == null) {
+                    // A money row we can see but cannot read. Silence here is exactly what let
+                    // the 0.9.60 exponent break run for 45 minutes; say it once per shape.
+                    String shape = Amounts.suffixOf(raw);
+                    if (unreadableMoneyShapes.add(shape)) {
+                        log("money_row_unparsed", "raw", raw, "line", line, "suffix", shape);
+                    }
+                    continue;
+                }
                 applyCurrency(moneyKey(), raw, v, line);
                 break;
             }
