@@ -30,6 +30,17 @@ import net.minecraft.text.Text;
  */
 public class StatsTracker extends BotModule {
     private final YCBotChallengeConfig cfg;
+    /** 0.9.62: the hero pool model (spawn/despawn lines, the HP anchor, the learned rates) - only the hero spawner reads it. */
+    public final HeroPool hero;
+    /** 0.9.62: the money-suffix ladder learning (sidebar crossings, the exponent proof, GUI count ratios). */
+    public final SuffixLearner suffixes;
+
+    @Override
+    public void setLogger(EventLogger logger) {
+        super.setLogger(logger);
+        hero.setLogger(logger);
+        suffixes.setLogger(logger);
+    }
 
     public Integer rebirths = null;
     public int ascensions = 0;
@@ -599,99 +610,12 @@ public class StatsTracker extends BotModule {
     /** 0.9.41: a server line that says we were sent to the hub/lobby (consumed by the client tick). */
     public volatile String hubMessage = null;
     private final List<Pattern> hubRes = new ArrayList<>();
-    /** 0.9.47: "Your hero has been spawned." and any other server line about a hero (evidence). */
-    public volatile long heroSpawnedAt = 0;
-    private Pattern heroSpawnRe;
-    private Pattern heroChatRe;
-    /** 0.9.48: the hero pool model - despawn/needs lines, the last HP read and when, the learned rates. */
     /** 0.9.52: "You bulk deleted 250 companions!" and "Unknown command." - the two answers a bulk-delete command can get. */
     public volatile long companionBulkDeletedAt = 0;
     public volatile Integer companionBulkDeletedCount = null;
     public volatile long unknownCommandAt = 0;
     private Pattern companionBulkDeletedRe;
     private Pattern unknownCommandRe;
-    public volatile long heroDespawnedAt = 0;
-    public volatile long heroNeedsAt = 0;
-    public volatile Integer heroNeedsHp = null;
-    public volatile Double heroLastHp = null;
-    public volatile long heroLastHpAt = 0;
-    public volatile Double heroHpAtSpawn = null;
-    public volatile Double heroRegenPerMin = null;
-    public volatile Double heroDecayPerMin = null;
-    private int heroRegenSamples = 0;
-    private Pattern heroDespawnRe;
-    private Pattern heroNeedsRe;
-
-    /** The hero is out: spawned after it last despawned, and not longer ago than its pool could last. */
-    public boolean heroAlive(long now) {
-        if (heroSpawnedAt == 0 || heroSpawnedAt <= heroDespawnedAt) return false;
-        double decay = heroDecayPerMin != null ? heroDecayPerMin : 6.9;
-        double hp = heroHpAtSpawn != null ? heroHpAtSpawn : 100;
-        return now - heroSpawnedAt < hp / Math.max(0.1, decay) * 60_000.0 + 60_000;
-    }
-
-    /** The pool now, from the last read and the regen rate (null before any read); 0 while the hero is out. */
-    public Double heroPredictedHp(long now, double maxHp) {
-        if (heroAlive(now)) return 0.0;
-        if (heroLastHp == null || heroLastHpAt == 0) return null;
-        double regen = heroRegenPerMin != null ? heroRegenPerMin : 1.95;
-        return Economy.heroPredictedHp(heroLastHp, (now - heroLastHpAt) / 60_000.0, regen, maxHp);
-    }
-
-    /** A menu read of the pool while the hero is down: the model's anchor, and a regen sample against the previous anchor. */
-    public void noteHeroHp(double hp, Double max, long at, String via) {
-        if (heroLastHp != null && heroLastHpAt != 0 && heroSpawnedAt < heroLastHpAt && at - heroLastHpAt >= 60_000 && hp > heroLastHp) {
-            double rate = (hp - heroLastHp) / ((at - heroLastHpAt) / 60_000.0);
-            if (rate > 0 && rate < 30) {
-                heroRegenPerMin = heroRegenPerMin == null ? rate : 0.5 * heroRegenPerMin + 0.5 * rate;
-                heroRegenSamples++;
-                log("hero_regen", "perMin", Num.r2(rate), "ema", Num.r2(heroRegenPerMin),
-                    "samples", heroRegenSamples, "from", heroLastHp, "to", hp, "overMs", at - heroLastHpAt, "via", via);
-            }
-        }
-        heroLastHp = hp;
-        heroLastHpAt = at;
-    }
-
-    /** The hero lines: spawn, despawn (the pool at 0), the needs-N refusal, anything else with "hero". */
-    private boolean heroLine(String text, long now) {
-        if (heroSpawnRe != null && heroSpawnRe.matcher(text).find()) {
-            heroSpawnedAt = now;
-            log("hero_spawned", "raw", text, "sinceDespawnMs", heroDespawnedAt != 0 ? now - heroDespawnedAt : null);
-            return true;
-        }
-        if (heroDespawnRe != null && heroDespawnRe.matcher(text).find()) {
-            // 0.9.48: the pool is empty now - the model's best anchor.
-            heroDespawnedAt = now;
-            heroLastHp = 0.0;
-            heroLastHpAt = now;
-            log("hero_despawned", "raw", text, "lifetimeMs", heroSpawnedAt != 0 ? now - heroSpawnedAt : null, "hpAtSpawn", heroHpAtSpawn);
-            return true;
-        }
-        if (heroNeedsRe != null) {
-            Matcher hm = heroNeedsRe.matcher(text);
-            if (hm.find()) {
-                heroNeedsAt = now;
-                try { heroNeedsHp = Integer.parseInt(hm.group("n").replace(",", "")); } catch (RuntimeException ignored) { }
-                log("hero_needs", "hp", heroNeedsHp, "raw", text);
-                return true;
-            }
-        }
-        if (heroChatRe != null && heroChatRe.matcher(text).find()) {
-            log("hero_chat", "raw", text);
-            return true;
-        }
-        return false;
-    }
-
-    public void noteHeroSpawned(Double hp, long at) {
-        if (hp != null) heroHpAtSpawn = hp;
-        if (heroSpawnedAt < at) heroSpawnedAt = at;
-    }
-
-    public void noteHeroDecay(double perMin, long at) {
-        heroDecayPerMin = heroDecayPerMin == null ? perMin : 0.7 * heroDecayPerMin + 0.3 * perMin;
-    }
     /** 0.9.46: the last server line about a reboot (restart countdown, the reboot kick, the auto-queue promise). */
     public volatile long rebootNoticeAt = 0;
     public volatile String rebootNotice = null;
@@ -761,6 +685,8 @@ public class StatsTracker extends BotModule {
 
     public StatsTracker(YCBotChallengeConfig cfg) {
         this.cfg = cfg;
+        this.hero = new HeroPool(cfg);
+        this.suffixes = new SuffixLearner(cfg, scale -> dropPricesAbove(scale));
         this.rebirthsRe = Pattern.compile(cfg.rebirthsPattern, Pattern.CASE_INSENSITIVE);
         this.zoneRe = Pattern.compile(cfg.zonePattern, Pattern.CASE_INSENSITIVE);
         this.multiplierRe = Pattern.compile(cfg.multiplierPattern, Pattern.CASE_INSENSITIVE);
@@ -798,12 +724,8 @@ public class StatsTracker extends BotModule {
         }
         if (cfg.hubChatPatterns != null) for (String p : cfg.hubChatPatterns) hubRes.add(compileLoose(p));
         if (cfg.rebootChatPatterns != null) for (String p : cfg.rebootChatPatterns) rebootRes.add(compileLoose(p));
-        heroSpawnRe = compileLoose(cfg.heroSpawnPattern);
-        heroChatRe = compileLoose(cfg.heroChatPattern);
-        heroDespawnRe = compileLoose(cfg.heroDespawnPattern);
         companionBulkDeletedRe = compileLoose(cfg.companionBulkDeletedPattern);
         unknownCommandRe = compileLoose(cfg.unknownCommandPattern);
-        heroNeedsRe = compileLoose(cfg.heroNeedsPattern);
         rawNet = new RawChatNet(cfg.chatRawPerMinute);
         if (cfg.giveawayAnnouncePatterns != null) for (String p : cfg.giveawayAnnouncePatterns) giveawayAnnounceRes.add(compileLoose(p));
         if (cfg.giveawayJoinedPatterns != null) for (String p : cfg.giveawayJoinedPatterns) giveawayJoinedRes.add(compileLoose(p));
@@ -978,132 +900,16 @@ public class StatsTracker extends BotModule {
 
     public void setStateStore(StateStore store) { this.stateStore = store; }
 
-    // --- learned money suffixes (0.9.25) ---
+    // --- learned money suffixes (0.9.25; SuffixLearner since 0.9.62) ---
 
-    private SuffixStore suffixStore;
-    /** A rung crossing is judged against the previous poll only while it is this fresh. */
-    private static final int SUFFIX_CROSSING_MAX_GAP_MS = 5000;
-    /** Rungs an exponent reading has already settled; keeps a re-crossing from re-logging. */
-    private final Set<String> sciCrossingSeen = new HashSet<>();
     /** Suffix shapes of money rows we could see but not read; one line each, ever. */
     private final Set<String> unreadableMoneyShapes = new HashSet<>();
 
     /** Load the suffixes the sidebar taught us in earlier sessions (config overrides stay on top). */
-    public void setSuffixStore(SuffixStore store) {
-        this.suffixStore = store;
-        Map<String, Amounts.Learned> all = store != null ? store.all() : Map.of();
-        Amounts.loadLearned(all);
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, Amounts.Learned> e : all.entrySet()) {
-            if (sb.length() > 0) sb.append(',');
-            sb.append(e.getKey()).append('=').append(e.getValue().scale).append(e.getValue().confirmed ? "" : "/prov");
-        }
-        log("suffix_state_loaded", "count", all.size(), "suffixes", sb.length() > 0 ? sb.toString() : null);
-    }
-
-    /**
-     * Every change of the money row's suffix is judged as a rung crossing
-     * ({@link Amounts#crossing}) and logged (suffix_crossing) — on the known rungs too
-     * (T→Q, Q→QQ once per rebirth cycle), so the rule proves itself on the live board.
-     * Only an unconfirmed suffix is ever changed by it: a fit learns, confirms or
-     * corrects; no fit on a suffix the table lacks takes the rung guess so money()
-     * never goes stale.
-     */
-    private void noteMoneySuffix(String prevRaw, long age, String raw) {
-        // Above the server's ceiling the row carries its own exponent. That reading is exact,
-        // so it proves the rung it just left instead of introducing one of its own (0.9.61).
-        if (Amounts.scientific(raw)) {
-            noteSciCrossing(prevRaw, raw, age);
-            return;
-        }
-        String sfx = Amounts.suffixOf(raw);
-        String prevSfx = Amounts.suffixOf(prevRaw);
-        if (sfx.isEmpty() || sfx.equalsIgnoreCase(prevSfx)) return;
-        Amounts.Crossing c = Amounts.crossing(prevRaw, liveBals.get(moneyKey()), Amounts.confirmed(prevSfx),
-            raw, age, SUFFIX_CROSSING_MAX_GAP_MS, cfg.suffixCrossingMaxJump);
-        boolean fit = c.learned() != null;
-        log("suffix_crossing", "from", prevSfx.isEmpty() ? null : prevSfx, "to", sfx, "raw", raw, "prevRaw", prevRaw,
-            "verdict", fit ? "fit" : "rejected", "reason", c.reason(),
-            "ratio", Num.r3(c.ratio()),
-            "scale", fit ? c.learned().scale : null, "known", Amounts.confidence(sfx));
-        if (!cfg.suffixLearningEnabled || Amounts.confirmed(sfx)) return;
-        if (fit) {
-            applyLearned(sfx, c.learned(), "sidebar", c.reason());
-        } else if (!Amounts.knownSuffix(sfx)) {
-            boolean stale = age > SUFFIX_CROSSING_MAX_GAP_MS;
-            applyLearned(sfx, Amounts.rungGuess(sfx, raw), stale ? "sidebar-stale" : "sidebar", c.reason());
-        }
-    }
-
-    /**
-     * 0.9.31: a rung proven by a GUI count ratio (the Companion Eggs menu's 250× line) —
-     * same learning path as a sidebar crossing, confirmed, persisted.
-     */
-    /**
-     * 0.9.61: the money row stepped onto the server's exponent form ("1.03235E93"), which is
-     * exact. That pins the scale of the suffix it just left - the one proof a rung guess could
-     * never get from a crossing, since a guessed suffix always parses and so never fails its
-     * way to a correction. Confirms or corrects the previous rung; never learns one of its own.
-     */
-    private void noteSciCrossing(String prevRaw, String raw, long age) {
-        String s1 = Amounts.suffixOf(prevRaw);
-        if (s1.isEmpty()) return;
-        Amounts.Crossing c = Amounts.sciCrossing(prevRaw, raw, age, SUFFIX_CROSSING_MAX_GAP_MS,
-            cfg.suffixCrossingMaxJump);
-        boolean fit = c.learned() != null;
-        Double known = Amounts.scaleFor(s1);
-        boolean settled = fit && Amounts.confirmed(s1) && known != null
-            && Math.abs(known - c.learned().scale) <= c.learned().scale * 1e-9;
-        if (!settled || sciCrossingSeen.add(s1)) {
-            log("suffix_crossing", "from", s1, "to", null, "via", "sci", "raw", raw, "prevRaw", prevRaw,
-                "verdict", fit ? "fit" : "rejected", "reason", c.reason(),
-                "ratio", Num.r3(c.ratio()),
-                "scale", fit ? c.learned().scale : null, "known", Amounts.confidence(s1));
-        }
-        if (!cfg.suffixLearningEnabled || !fit || settled) return;
-        applyLearned(s1, c.learned(), "sidebar-sci", c.reason());
-    }
+    public void setSuffixStore(SuffixStore store) { suffixes.setSuffixStore(store); }
 
     public boolean learnSuffixFromGui(String sfx, Amounts.Learned e, String source) {
-        if (!cfg.suffixLearningEnabled || sfx == null || e == null || Amounts.confirmed(sfx)) return false;
-        applyLearned(sfx, e, source, "count-ratio");
-        return true;
-    }
-
-    /** The one place a suffix scale is learned, confirmed or corrected; persists and logs. */
-    private void applyLearned(String sfx, Amounts.Learned e, String source, String reason) {
-        String key = sfx.toUpperCase(Locale.ROOT);
-        Amounts.Learned old = Amounts.learn(key, e);
-        if (old == null) {
-            if ("rung".equals(e.via)) {
-                log("suffix_guess", "suffix", key, "scale", e.scale, "via", e.via, "basis", e.basis,
-                    "raw", e.raw, "source", source, "reason", reason);
-            } else {
-                log("suffix_learned", "suffix", key, "scale", e.scale, "via", e.via, "confirmed", e.confirmed,
-                    "basis", e.basis, "raw", e.raw, "prevRaw", e.prevRaw);
-            }
-        } else if (Math.abs(old.scale - e.scale) <= e.scale * 1e-9) {
-            if (!old.confirmed && e.confirmed) {
-                log("suffix_confirmed", "suffix", key, "scale", e.scale, "raw", e.raw, "prevRaw", e.prevRaw);
-            }
-        } else {
-            // The earlier scale was wrong: every provisional rung above it was built on it,
-            // and every learned price expressed on it is wrong by the same factor. Forget
-            // both; prices relearn from the next fail line. A sidebar crossing only ever
-            // brings a guess here, but an exponent reading (0.9.61) can overrule a
-            // confirmation too - it measures the rung rather than inferring it.
-            List<String> forgotten = new ArrayList<>();
-            for (Map.Entry<String, Amounts.Learned> le : Amounts.learned().entrySet()) {
-                if (le.getKey().equals(key) || le.getValue().confirmed || le.getValue().scale <= old.scale) continue;
-                Amounts.forget(le.getKey());
-                if (suffixStore != null) suffixStore.remove(le.getKey());
-                forgotten.add(le.getKey());
-            }
-            List<String> dropped = dropPricesAbove(old.scale);
-            log("suffix_corrected", "suffix", key, "oldScale", old.scale, "scale", e.scale, "via", e.via,
-                "raw", e.raw, "prevRaw", e.prevRaw, "forgotten", forgotten, "dropped", dropped);
-        }
-        if (suffixStore != null) suffixStore.put(key, e);
+        return suffixes.learnSuffixFromGui(sfx, e, source);
     }
 
     /** Learned prices at or above a corrected rung were computed on the wrong scale: forget them. */
@@ -1150,9 +956,9 @@ public class StatsTracker extends BotModule {
         if (companionRosterByZs.isEmpty() && e.companionRosterByZs != null) companionRosterByZs.putAll(e.companionRosterByZs);
         if (enchantPrestige.isEmpty() && e.enchantPrestige != null) enchantPrestige.putAll(e.enchantPrestige);
         if (rebirthMultiplier == null) { rebirthMultiplier = e.rebirthMultiplier; rebirthMultiplierNext = e.rebirthMultiplierNext; rebirthMultiplierAtRebirths = e.rebirthMultiplierAtRebirths; }
-        if (heroRegenPerMin == null) heroRegenPerMin = e.heroRegenPerMin;
-        if (heroDecayPerMin == null) heroDecayPerMin = e.heroDecayPerMin;
-        if (heroLastHp == null && e.heroLastHp != null && e.heroLastHpAt != null) { heroLastHp = e.heroLastHp; heroLastHpAt = e.heroLastHpAt; }
+        if (hero.regenPerMin == null) hero.regenPerMin = e.heroRegenPerMin;
+        if (hero.decayPerMin == null) hero.decayPerMin = e.heroDecayPerMin;
+        if (hero.lastHp == null && e.heroLastHp != null && e.heroLastHpAt != null) { hero.lastHp = e.heroLastHp; hero.lastHpAt = e.heroLastHpAt; }
         if (cycleHistory.isEmpty() && e.cycleHistory != null) cycleHistory.addAll(e.cycleHistory);
         if (cycleStages.isEmpty() && e.cycleStages != null
             && (rebirths == null || e.cycleAtRebirths == null || rebirths.equals(e.cycleAtRebirths))) cycleStages.addAll(e.cycleStages);
@@ -1276,10 +1082,10 @@ public class StatsTracker extends BotModule {
         e.rebirthMultiplier = rebirthMultiplier;
         e.rebirthMultiplierNext = rebirthMultiplierNext;
         e.rebirthMultiplierAtRebirths = rebirthMultiplierAtRebirths;
-        e.heroRegenPerMin = heroRegenPerMin;
-        e.heroDecayPerMin = heroDecayPerMin;
-        e.heroLastHp = heroLastHp;
-        e.heroLastHpAt = heroLastHpAt != 0 ? heroLastHpAt : null;
+        e.heroRegenPerMin = hero.regenPerMin;
+        e.heroDecayPerMin = hero.decayPerMin;
+        e.heroLastHp = hero.lastHp;
+        e.heroLastHpAt = hero.lastHpAt != 0 ? hero.lastHpAt : null;
         e.cycleStages = cycleStages.isEmpty() ? null : new ArrayList<>(cycleStages);
         e.cycleHistory = cycleHistory.isEmpty() ? null : new ArrayList<>(cycleHistory);
         stateStore.put(stateUser, e);
@@ -1523,6 +1329,7 @@ public class StatsTracker extends BotModule {
         // a board whose money row the currency parser also matches, applyCurrency overwrote it
         // first and both crossing rules compared the row with itself.
         String prevMoneyRaw = liveRaw.get(moneyKey());
+        Double prevMoneyValue = liveBals.get(moneyKey());
         long prevMoneyAge = lastSidebarMoneyAt == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - lastSidebarMoneyAt;
         for (SidebarParser.Hit hit : hits.values()) applyCurrency(hit.currency(), hit.rawAmount(), hit.value(), hit.line());
         if (sidebarMoneyRe != null) {
@@ -1534,7 +1341,7 @@ public class StatsTracker extends BotModule {
                     if (mm.group(g) != null) { raw = mm.group(g); break; }
                 }
                 if (raw == null) continue;
-                noteMoneySuffix(prevMoneyRaw, prevMoneyAge, raw);
+                suffixes.noteMoneySuffix(prevMoneyRaw, prevMoneyValue, prevMoneyAge, raw);
                 Double v = Amounts.parse(raw);
                 if (v == null) {
                     // A money row we can see but cannot read. Silence here is exactly what let
@@ -2421,7 +2228,7 @@ public class StatsTracker extends BotModule {
             // 0.9.50: "EnchantedMC » Your hero has been spawned." carries the » of a player line -
             // the server's own prefixed lines get their own pass.
             String serverText = ChatClassifier.serverLine(text);
-            if (serverText != null) heroLine(serverText, now);
+            if (serverText != null) hero.onLine(serverText, now);
             // 0.9.52: the bulk-delete answers.
             if (companionBulkDeletedRe != null) {
                 Matcher bm = companionBulkDeletedRe.matcher(text);
@@ -2450,7 +2257,7 @@ public class StatsTracker extends BotModule {
                     }
                 }
                 // 0.9.47: the hero lines on a bare server line (the prefixed form is handled above).
-                heroLine(text, now);
+                hero.onLine(text, now);
                 // 0.9.46: a reboot notice - the hub arrival that follows it is the auto-queue, not a /hub.
                 for (Pattern p : rebootRes) {
                     if (p.matcher(text).find()) {
@@ -2674,7 +2481,7 @@ public class StatsTracker extends BotModule {
             if (tok != null && !Amounts.knownSuffix(tokSfx)) {
                 String kind = ChatClassifier.kindOf(text, lastUpgradeKind);
                 if (cfg.suffixLearningEnabled && !tokSfx.isEmpty()) {
-                    applyLearned(tokSfx, Amounts.rungGuess(tokSfx, tok), "fail-line", kind);
+                    suffixes.applyLearned(tokSfx, Amounts.rungGuess(tokSfx, tok), "fail-line", kind);
                     gap = ChatClassifier.needAmount(text, needAmountRe);
                 }
                 if (gap == null) {

@@ -87,14 +87,14 @@ public class HeroController extends BotModule implements Module {
         GuiFlow.Step close = GuiFlow.close("close", c -> isOurGui(c.client), () -> GuiHuman.closeDelayMs(cfg), "hero", finish);
         GuiFlow.Step confirm = GuiFlow.custom("confirm", c -> {
             if (!c.armed()) c.arm(cfg.heroConfirmMs);
-            if (stats.heroSpawnedAt >= clickAt) {
+            if (stats.hero.spawnedAt >= clickAt) {
                 spawnsThisSession++;
                 cycleSpawned = true;
-                stats.noteHeroSpawned(menuHp, c.now);
+                stats.hero.noteSpawned(menuHp, c.now);
                 log("hero_spawn", "name", heroName, "hp", menuHp, "spawns", spawnsThisSession, "confirmMs", c.now - clickAt);
                 return close;
-            } else if (stats.heroNeedsAt >= clickAt) {
-                log("hero_spawn_refused", "needs", stats.heroNeedsHp, "hp", menuHp);
+            } else if (stats.hero.needsAt >= clickAt) {
+                log("hero_spawn_refused", "needs", stats.hero.needsHp, "hp", menuHp);
                 return close;
             } else if (!isOurGui(c.client) && c.now - clickAt > 1500) {
                 // The menu went with no line either way: read the plate for the answer later.
@@ -123,7 +123,7 @@ public class HeroController extends BotModule implements Module {
             boolean go = menuHp != null && menuHp >= cfg.heroSpawnFloorHp && !tracker.isAlive();
             log("hero_menu", "name", heroName, "slot", heroSlot, "hp", menuHp, "max", menuMax, "targetHp", Math.round(targetHp),
                 "spawn", go, "underTarget", menuHp != null && menuHp < targetHp,
-                "sinceDespawnMs", stats.heroDespawnedAt != 0 ? c.now - stats.heroDespawnedAt : null);
+                "sinceDespawnMs", stats.hero.despawnedAt != 0 ? c.now - stats.hero.despawnedAt : null);
             return go ? click : close;
         });
         GuiFlow.Step menuWait = GuiFlow.waitFor("menu_wait", c -> isOurGui(c.client) && !GuiHuman.items(c.client).isEmpty(),
@@ -155,8 +155,8 @@ public class HeroController extends BotModule implements Module {
         long now = System.currentTimeMillis();
         if (flow.isBusy()) return "hero: " + flow.phaseName() + (menuHp != null ? " ❤" + Math.round(menuHp) : "");
         if (aborts.suspended()) return "hero: suspended after repeated aborts (toggle to reset)";
-        if (stats.heroAlive(now)) return "hero: out " + (now - stats.heroSpawnedAt) / 1000 + "s · " + spawnsThisSession + " spawned";
-        Double hp = stats.heroPredictedHp(now, cfg.heroMaxHp);
+        if (stats.hero.alive(now)) return "hero: out " + (now - stats.hero.spawnedAt) / 1000 + "s · " + spawnsThisSession + " spawned";
+        Double hp = stats.hero.predictedHp(now, cfg.heroMaxHp);
         if (cfg.heroFarmPhaseOnly && !stats.farmPhase() && (hp == null || hp < cfg.heroMaxHp - 0.5)) {
             return "hero: ~" + (hp != null ? Math.round(hp) : "?") + "/" + cfg.heroMaxHp + " · holding for the farm phase (stage "
                 + stats.confirmedZoneLevel() + " of ~" + stats.expectedTopStage() + ")";
@@ -164,7 +164,7 @@ public class HeroController extends BotModule implements Module {
         String t = targetHp > 0 ? " target " + Math.round(targetHp) : "";
         String in = nextCheckAt > now ? " · check in " + (nextCheckAt - now + 59_999) / 60_000 + " min" : " · check at next lull";
         return "hero: ~" + (hp != null ? Math.round(hp) : "?") + "/" + cfg.heroMaxHp + t + in
-            + " · regen " + fmt(stats.heroRegenPerMin != null ? stats.heroRegenPerMin : cfg.heroRegenPerMin) + "/min";
+            + " · regen " + fmt(stats.hero.regenPerMin != null ? stats.hero.regenPerMin : cfg.heroRegenPerMin) + "/min";
     }
 
     private static String fmt(double v) { return String.valueOf(Num.r2(v)); }
@@ -181,22 +181,22 @@ public class HeroController extends BotModule implements Module {
                 : Economy.heroPickTarget(rng.nextDouble(), cfg.heroSpawnHpMin, cfg.heroSpawnHpMax, cfg.heroMaxHp);
             cycleSpawned = false;
         }
-        Double hp = stats.heroPredictedHp(now, cfg.heroMaxHp);
-        double regen = stats.heroRegenPerMin != null ? stats.heroRegenPerMin : cfg.heroRegenPerMin;
+        Double hp = stats.hero.predictedHp(now, cfg.heroMaxHp);
+        double regen = stats.hero.regenPerMin != null ? stats.hero.regenPerMin : cfg.heroRegenPerMin;
         double minutes = hp == null ? 0 : Economy.heroMinutesToTarget(hp, targetHp, regen);
         long waitMs = Economy.heroWaitMs(minutes, cfg.heroCheckLeewayPct, rng.nextDouble(), cfg.heroMinRecheckMs);
-        if (stats.heroAlive(now)) {
+        if (stats.hero.alive(now)) {
             // Out now: the pool is spent when it lands, so the wait counts from the predicted despawn.
-            double decay = stats.heroDecayPerMin != null ? stats.heroDecayPerMin : cfg.heroDecayPerMin;
-            double hpAtSpawn = stats.heroHpAtSpawn != null ? stats.heroHpAtSpawn : cfg.heroMaxHp;
-            long lifeLeft = Math.max(0, Math.round(hpAtSpawn / Math.max(0.1, decay) * 60_000.0) - (now - stats.heroSpawnedAt));
+            double decay = stats.hero.decayPerMin != null ? stats.hero.decayPerMin : cfg.heroDecayPerMin;
+            double hpAtSpawn = stats.hero.hpAtSpawn != null ? stats.hero.hpAtSpawn : cfg.heroMaxHp;
+            long lifeLeft = Math.max(0, Math.round(hpAtSpawn / Math.max(0.1, decay) * 60_000.0) - (now - stats.hero.spawnedAt));
             minutes = Economy.heroMinutesToTarget(0, targetHp, regen);
             waitMs = lifeLeft + Economy.heroWaitMs(minutes, cfg.heroCheckLeewayPct, rng.nextDouble(), cfg.heroMinRecheckMs);
         }
         nextCheckAt = now + waitMs;
         nextVia = via;
         log("hero_plan", "via", via, "targetHp", Math.round(targetHp), "redrawn", redraw, "predictedHp", hp != null ? Num.r1(hp) : null,
-            "regenPerMin", Num.r2(regen), "waitMs", waitMs, "alive", stats.heroAlive(now));
+            "regenPerMin", Num.r2(regen), "waitMs", waitMs, "alive", stats.hero.alive(now));
     }
 
     /** @return true if combat should yield this tick. */
@@ -231,7 +231,7 @@ public class HeroController extends BotModule implements Module {
             break;
         }
         // A live hero shows its draining HP in the menu too (13:30: read 2, 14:52: read 7) - not a pool anchor.
-        if (menuHp != null && !tracker.isAlive() && !stats.heroAlive(now)) stats.noteHeroHp(menuHp, menuMax, now, "menu");
+        if (menuHp != null && !tracker.isAlive() && !stats.hero.alive(now)) stats.hero.noteHp(menuHp, menuMax, now, "menu");
     }
 
     private boolean maybeStart(MinecraftClient client, CombatController combat, long now) {
@@ -241,19 +241,19 @@ public class HeroController extends BotModule implements Module {
             // 0.9.54: the climb just ended - the menu is due after a short beat, not at the
             // pool model's far date (a player finishes the mob in hand, then summons).
             farmSeqSeen = stats.farmPhaseSeq;
-            if (!stats.heroAlive(now) && !tracker.isAlive()) {
+            if (!stats.hero.alive(now) && !tracker.isAlive()) {
                 nextCheckAt = Math.min(nextCheckAt, now + HumanTiming.logNormalMs(20_000, 90_000));
                 nextVia = "farm";
             }
         }
         if (now < nextCheckAt) return false;
-        if (stats.heroAlive(now) || tracker.isAlive()) {
-            logThrottled("hero_skip:alive", 60_000, "hero_skip", "reason", "alive", "plate", tracker.isAlive(), "sinceSpawnMs", now - stats.heroSpawnedAt);
+        if (stats.hero.alive(now) || tracker.isAlive()) {
+            logThrottled("hero_skip:alive", 60_000, "hero_skip", "reason", "alive", "plate", tracker.isAlive(), "sinceSpawnMs", now - stats.hero.spawnedAt);
             return false;
         }
         if (upgrades != null && (upgrades.isBusy() || upgrades.hasPendingDecision())) return false;
         if (combat.isCooking()) return false; // the lull after a kill, never mid-cook
-        Double hp = stats.heroPredictedHp(now, cfg.heroMaxHp);
+        Double hp = stats.hero.predictedHp(now, cfg.heroMaxHp);
         // 0.9.54: the hero halves the time to kill at the top stage and adds nothing to the
         // climb (stage 40: 4.3 s up vs 11.7 s down over 84 kills; the farm phase covered in
         // 4 of 18 cycles) - the pool is held for the farm phase unless it is full.
@@ -267,7 +267,7 @@ public class HeroController extends BotModule implements Module {
             nextCheckAt = now + 30_000;
             return false;
         }
-        if ("hold-pool".equals(gate) && now - stats.heroLastHpAt < 20 * 60_000L) {
+        if ("hold-pool".equals(gate) && now - stats.hero.lastHpAt < 20 * 60_000L) {
             // The model says the server would refuse: wait for the floor, no menu open.
             schedule(now, "under-floor");
             return false;
@@ -275,7 +275,7 @@ public class HeroController extends BotModule implements Module {
         visitStartedAt = now;
         heroSlot = -1; menuHp = null; menuMax = null;
         log("hero_visit_start", "via", nextVia, "targetHp", Math.round(targetHp), "predictedHp", hp != null ? Num.r1(hp) : null,
-            "sinceDespawnMs", stats.heroDespawnedAt != 0 ? now - stats.heroDespawnedAt : null);
+            "sinceDespawnMs", stats.hero.despawnedAt != 0 ? now - stats.hero.despawnedAt : null);
         flow.start(stepType, now);
         return true;
     }

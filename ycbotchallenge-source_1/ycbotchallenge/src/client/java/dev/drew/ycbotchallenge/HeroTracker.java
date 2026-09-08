@@ -86,7 +86,7 @@ public class HeroTracker extends BotModule {
         if (name == null) {
             if (seenName != null && now - lastSeenAt >= cfg.heroGoneAfterMs) {
                 log("hero_gone", "name", seenName, "lastHp", lastHp, "lifetimeMs", lastSeenAt - firstSeenAt,
-                    "hpChanges", hpChanges, "sinceSpawnMs", stats.heroSpawnedAt != 0 ? now - stats.heroSpawnedAt : null);
+                    "hpChanges", hpChanges, "sinceSpawnMs", stats.hero.spawnedAt != 0 ? now - stats.hero.spawnedAt : null);
                 seenName = null; lastHp = null; lastHpValue = null; hpChanges = 0;
             }
             return;
@@ -96,7 +96,7 @@ public class HeroTracker extends BotModule {
         if (seenName == null || !seenName.equals(name)) {
             seenName = name; firstSeenAt = now; lastHp = hp; lastHpValue = v; lastHpAt = now; hpChanges = 0;
             log("hero_seen", "name", name, "hp", hp, "hpValue", v, "dist", Math.round(best * 10.0) / 10.0, "entityType", type,
-                "sinceSpawnMs", stats.heroSpawnedAt != 0 ? now - stats.heroSpawnedAt : null);
+                "sinceSpawnMs", stats.hero.spawnedAt != 0 ? now - stats.hero.spawnedAt : null);
             return;
         }
         if (!hp.equals(lastHp)) {
@@ -104,7 +104,7 @@ public class HeroTracker extends BotModule {
             hpChanges++;
             log("hero_hp", "name", name, "hp", hp, "hpValue", v, "from", lastHp, "dropPerMin", perMin != null ? Math.round(perMin * 100.0) / 100.0 : null,
                 "sinceSeenMs", now - firstSeenAt, "dist", Math.round(best * 10.0) / 10.0);
-            if (perMin != null && perMin > 0 && perMin < 60) stats.noteHeroDecay(perMin, now);
+            if (perMin != null && perMin > 0 && perMin < 60) stats.hero.noteDecay(perMin, now);
             lastHp = hp; lastHpValue = v; lastHpAt = now;
         }
     }

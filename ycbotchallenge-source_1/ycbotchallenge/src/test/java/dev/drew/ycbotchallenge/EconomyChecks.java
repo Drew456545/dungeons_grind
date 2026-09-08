@@ -111,6 +111,7 @@ public final class EconomyChecks {
         n += checks0962d();
         n += checksInfra();
         n += checksGuiFlow();
+        n += checksSplit();
         if (n > 0) {
             System.err.println(n + " failed");
             System.exit(1);
@@ -3428,6 +3429,32 @@ public final class EconomyChecks {
             System.err.println("FAIL v61: " + ex);
             n++;
         }
+        return n;
+    }
+
+    /** 0.9.62: the pieces lifted out of StatsTracker keep their arithmetic. */
+    private static int checksSplit() {
+        int n = 0;
+        HeroPool hp = new HeroPool(new YCBotChallengeConfig());
+        n += eq("no hero yet", hp.alive(1000), false);
+        n += eq("no pool read yet", hp.predictedHp(1000, 100) == null, true);
+        hp.noteSpawned(80.0, 1000);
+        n += eq("out after a spawn", hp.alive(2000), true);
+        n += eq("pool is 0 while out", hp.predictedHp(2000, 100), 0.0, 1e-9);
+        n += eq("gone once the pool must be spent", hp.alive(1000 + 80L * 60_000 / 6 + 120_000), false);
+        hp.despawnedAt = 3000;
+        hp.lastHp = 0.0;
+        hp.lastHpAt = 3000;
+        n += eq("down after a despawn", hp.alive(4000), false);
+        Double later = hp.predictedHp(3000 + 10 * 60_000L, 100);
+        n += eq("the pool refills", later != null && later > 0 && later <= 100, true);
+        hp.noteHp(20.0, null, 3000 + 10 * 60_000L, "menu");
+        n += eq("a read after a minute teaches the regen", hp.regenPerMin != null && Math.abs(hp.regenPerMin - 2.0) < 1e-9, true);
+        hp.noteDecay(6.0, 0);
+        n += eq("decay learned", hp.decayPerMin, 6.0, 1e-9);
+        n += eq("a chat line that is not the hero's is nothing", hp.onLine("You have recieved 1 Rusty Key keys.", 5000), false);
+        SuffixLearner sl = new SuffixLearner(new YCBotChallengeConfig(), scale -> List.of());
+        n += eq("no lesson without a scale", sl.learnSuffixFromGui("K", null, "test"), false);
         return n;
     }
 
