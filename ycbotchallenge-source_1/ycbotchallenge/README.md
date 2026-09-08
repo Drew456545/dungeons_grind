@@ -255,6 +255,77 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.62: the map that read BTq, the income that outlived a rebirth, and the driver the menu flows share
+
+**The captcha (2026-09-08, 4 h 16 min lost).** Map 72671 at 06:47:48 UTC; the dump reads `BTq`.
+`captcha_captured renders:0` - `captchaVoteRenders`' `x1` never matched the render spec (it
+wanted `bil`/`near`), so no render was made, the 0.9.59 two-model ballot never started, and the
+second model read a x3 upscale on the legacy path. flash said `BT9`, max said `BTq`; flash is
+typed first by design. Twenty seconds later the map was still in hand, and because the ballot
+was not running the rejection took the re-read instead of the second reading: flash repeated
+`BT9`, and the look-alike table is pair-major (`B8` before `q9`), so the one variant was `8T9` -
+typed while `BTq` waited in the fallbacks that 0.9.58 only used when the re-read had nothing new.
+At 06:48:49 the unscramble minigame printed "The correct answer was String."; `captchaSolvedPatterns`
+is the bare word `correct`, `onGameMessage` filtered nothing, and the wrong answer was logged
+`captcha_solved confirmed:true` - the mod stopped watching the map. At 06:50:45 the server's
+"Please enter the captcha on the map." met the two-answer cap in `begin()`'s re-prompt branch,
+which pauses where the two other exhausted sites resume; the kick came at 07:02:51 - fifteen
+minutes after the map, as on 09-07 (02:12 -> 02:27) - and the bot was off until 11:07. Now:
+`parseRenderSpec` takes the bare `xN` (the ballot fires flash and max on the native map:
+`captcha_captured renders:1`, two `captcha_hedge` rows in one second, `captcha_candidates via:ballot`);
+a rejection types the other model's reading first (`captcha_second_read`), and a re-read ranks its
+readings, then the readings parked at the rejection, then every one-character variant
+(`ChatClassifier.lookalikeVariants`, `CaptchaSolver.rereadCandidates`); on the map the acceptance
+is the map leaving the hand for `captchaMapGoneConfirmMs` (1 s) and a chat "correct" counts only
+off the map and only from a server line (`captcha_solved via:map-gone|chat|silence`);
+`captchaMaxAnswers` is 3 and `captchaBudgetMs` 300 s (normalize had capped it at 60 s) for a
+window that is really ~15 min; a re-prompt or a failed re-read types the reading it has
+(`Economy.repromptAction`, `solveFailureAction`), at the cap the bot runs on (`captcha_unverified`)
+and a re-prompt while paused resumes (`captcha_resume via:chat`) - never a pause with a reading
+unsent. The minigame's "Type the answer in chat to win!" (65 of 68 `captcha_hint` rows) is excluded
+(`captchaHintExcludePatterns`). The map is the `BTq` fixture (`unverified:`, so `--real` skips it;
+the duo bench reads it flash `BT9` / max `BTq` every time), and `tools/captcha_fixtures.py`
+certifies a solve only when the map itself confirmed it.
+
+**The "exponent glitch" that was not one.** Every event log since 09-05 (800 k money readings):
+the server switches to the exponent form at exactly 1e92 - largest suffix `97.9NVG`, smallest
+exponent `1.158E92` - with no drift as the rebirth multiplier grows; only the stage at which 1e92
+is reached moves (57, then 52, then 51). `money_row_unparsed` never fired. What did break sat
+next to the crossing. `incomePerMinute` preferred the "Reward Summary (60s)" EMA and
+`rebirthReset` never cleared it nor the stage memory (`endCycle` needed the sidebar counter,
+which that cycle never showed): the 05:40:03 summary put the old cycle's 2.78E100 into a cycle
+whose balance was 0, and every `zone_back_candidate` of the climb measured its stage against
+1.39E100 halving per "+ 0 Money" window, `ratio` printing `9.223372036854776E16` because
+`Math.round(x * 100) / 100` clamps at `Long.MAX_VALUE`. `IncomeEstimator` (pure) owns both
+estimators; a reset clears them, a summary spanning the reset is discarded
+(`income_summary discarded:spans-reset`), the stage record closes with the reset and none
+reopens until the zone changes (`economy_reset incomeReset:true`); `Num.r1/r2/r3` pass a huge or
+non-finite value through instead of saturating (36 money/ratio/pct rows);
+`suffix_scale_suspect` gets the spend and provisional guards its collapse sibling had (two false
+alarms after a sword buy); `pollSidebar` reads the previous money row before any currency row
+lands in `liveRaw`; `Amounts.AMOUNT_RE` is the one amount token and the four patterns the v58
+migration missed (rebirth, companion and prestige multipliers, the hero plate) use it (config v60).
+And the balance frozen for 5-13 minutes at lvl61 was not parsing: every such stretch is a
+"+ 0 Money" summary with zero `kill` rows - 43 bot-on minutes for two kills, TTK 130-370 s,
+sword 2.8E107 against 1.4E107. The retreat still only measures (Drew: fix the measurement first);
+`zone_back_candidate` now says what "there" rests on (`thereStageOnMin`, `thereKills`,
+`incomeResetAgoMin`).
+
+**The architecture.** Six controllers carried one visit skeleton by copy; one bug came from it
+(the rebirth upgrades read `enchantMaxConsecutiveAborts`; now `rebirthUpgradeMaxConsecutiveAborts`,
+config v61). `GuiFlow` runs a chain of steps one per tick with the step and visit clocks, the
+`<prefix>_abort` / `_suspended` / `_resumed` bookkeeping (`GuiFlow.Aborts`) and the owner's hook;
+the hero spawner and the rebirth upgrades are scripts on it, the enchanter, the boss and the
+companions keep their own step machines but share the abort bookkeeping and the sub-menu beat.
+`Module` is what the client asks of the six, held once in priority order (two loops replace
+twelve literal blocks). `Loose.compile`, `Groups`, `JsonStore` (atomic writes now) and
+`BotModule` (logger, `log`, `logThrottled`) replace the four, five, five and nine copies.
+`StatsTracker` loses the hero pool (`HeroPool`, `stats.hero`) and the suffix learning
+(`SuffixLearner`, `stats.suffixes`); its boss-bar, giveaway/GG, companion-economy, cycle-record
+and chat-router jobs are still in it. Event names and fields are unchanged throughout; the
+checks gain `checks0962a-d`, `checksInfra`, `checksGuiFlow` (a scripted visit on a fake clock)
+and `checksSplit`.
+
 ### 0.9.61: the balance that read as $93 - money above the ladder
 
 2026-09-07 22:55 the balance stopped being money. The server's suffix ladder ends at NVG
