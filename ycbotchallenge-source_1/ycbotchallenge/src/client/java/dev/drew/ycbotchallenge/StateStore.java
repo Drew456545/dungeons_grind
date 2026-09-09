@@ -87,6 +87,14 @@ public final class StateStore {
         public Integer rebirthReq;
         public String tab;
         public long at;
+        /** 0.9.63: false = the menu was read and had no beacon; null = a pre-0.9.63 entry. */
+        public Boolean beacon;
+        /** 0.9.63: the nether star as last read - none | locked | open | max (null = never read). */
+        public String awakenState;
+        public Integer awakenLevel;
+        public Integer awakenMax;
+        public Double awakenCost;
+        public String awakenCurrency;
     }
 
     /** One stage of a rebirth (0.9.37): bot-on and wall minutes, kills, buys, what it earned. */

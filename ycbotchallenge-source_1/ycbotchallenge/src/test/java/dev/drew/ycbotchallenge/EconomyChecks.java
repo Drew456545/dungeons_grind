@@ -109,6 +109,7 @@ public final class EconomyChecks {
         n += checks0962b();
         n += checks0962c();
         n += checks0962d();
+        n += checks0963a();
         n += checksInfra();
         n += checksGuiFlow();
         n += checksSplit();
@@ -3910,6 +3911,117 @@ public final class EconomyChecks {
         n += eq("max line", loose(CFG.enchantPrestigeMaxPattern).matcher("This enchantment is already at the max prestige!").find(), true);
         n += eq("sword level line", loose(CFG.swordLevelChatPattern).matcher("YOUR SWORD IS NOW LEVEL 127!").find(), true);
         n += eq("a player asking is not a prestige", ok.matcher("LiterallyWorst » how do i prestige").find(), false);
+        return n;
+    }
+
+    /**
+     * 0.9.63: the nether star, and the menus with nothing to click. Speed, Keyfinder, Soul
+     * Magnet, Essence Magnet, Frost Mark and Credit Finder were opened six times a visit for a
+     * week on both accounts (no beacon = never remembered = unknown-first, every visit), which
+     * also kept the real candidates shut. The star's open form is Bleed's 2026-09-07 menu.
+     */
+    private static int checks0963a() {
+        int n = 0;
+        EnchantLore el = new EnchantLore(CFG);
+        List<String> open = List.of("awakened enchant", "Description:",
+            "Awakened Bleed applies the bleed effect to every mob in the zone.",
+            "Awakening an enchant transforms it into a significantly stronger",
+            "version, which becomes available once the original enchant is fully",
+            "upgraded. To trigger the awakened effect, the base enchant must first",
+            "activate. Then the awakened version will have a chance to proc instead.",
+            "Information:", "Level: 0 / 10", "Price: 50,000,000,000 Souls", "Activation Chance: 0.000%",
+            "[click here to upgrade this awakened enchant]");
+        EnchantLore.Awaken a = el.parseAwaken(8, "Awoken Bleed Enchant", open);
+        n += eq("star parses", a != null, true);
+        if (a != null) {
+            n += eq("star level", a.level(), 0);
+            n += eq("star max", a.max(), 10);
+            n += eq("star cost", a.cost(), 5e10, 1);
+            n += eq("star currency", a.currency(), "souls");
+            n += eq("star open", a.locked(), false);
+            n += eq("star state", a.state(), "open");
+            n += eq("star eligible with 445B souls", EnchantLore.awakenBlock(a, 445e9) == null, true);
+            n += eq("star balance blocks", EnchantLore.awakenBlock(a, 4e10), "balance");
+            n += eq("star unknown balance blocks", EnchantLore.awakenBlock(a, null), "no-balance");
+        }
+        EnchantLore.Awaken locked = el.parseAwaken(8, "Awoken Nuke Enchant", List.of("This enchant cannot be awoken yet."));
+        n += eq("locked star parses", locked != null, true);
+        n += eq("locked star is locked", locked != null && locked.locked(), true);
+        n += eq("locked star state", locked != null ? locked.state() : null, "locked");
+        n += eq("locked star blocks", EnchantLore.awakenBlock(locked, 1e15), "locked");
+        EnchantLore.Awaken maxed = el.parseAwaken(8, "Awoken Bleed Enchant", List.of("Level: 10 / 10", "Price: 1T Souls"));
+        n += eq("max star blocks", EnchantLore.awakenBlock(maxed, 1e15), "max");
+        n += eq("no star", EnchantLore.awakenBlock((EnchantLore.Awaken) null, 1e15), "no-item");
+        n += eq("the beacon is no star", el.parseAwaken(26, "Enchant Prestige", List.of("Prestige: 6 / 10")) == null, true);
+        n += eq("the hopper is no star", el.parseAwaken(22, "Max Upgrade", List.of("* Levels: 1")) == null, true);
+        n += eq("the enchant is no star", el.parseAwaken(9, "Bleed Enchant", List.of("Level: 20,000 / 20,000")) == null, true);
+
+        // What a visit remembers.
+        long now = 1_000_000_000L;
+        long rescan = 6 * 3_600_000L;
+        java.util.Map<String, Double> bals = java.util.Map.of("souls", 445e9);
+        EnchantLore.PrestigeState dead = new EnchantLore.PrestigeState(null, null, null, null, null, "souls",
+            false, null, null, null, null, "none", now);
+        n += eq("no beacon blocks for good", EnchantLore.prestigeBlock(dead, 78, bals), "none");
+        n += eq("no star blocks for good", EnchantLore.awakenBlock(dead, bals, now + 365L * 86_400_000L, rescan), "none");
+        EnchantLore.PrestigeState lockedS = new EnchantLore.PrestigeState(null, null, null, null, null, "souls",
+            false, null, null, null, null, "locked", now);
+        n += eq("locked star keeps the menu shut", EnchantLore.awakenBlock(lockedS, bals, now + rescan - 1, rescan), "locked");
+        n += eq("locked star due", EnchantLore.awakenBlock(lockedS, bals, now + rescan, rescan) == null, true);
+        EnchantLore.PrestigeState openS = new EnchantLore.PrestigeState(3, 10, 7.02e12, "souls", 20, "souls",
+            true, 0, 10, 5e10, "souls", "open", now);
+        n += eq("open star eligible", EnchantLore.awakenBlock(openS, bals, now, rescan) == null, true);
+        n += eq("open star over balance", EnchantLore.awakenBlock(openS, java.util.Map.of("souls", 1e9), now, rescan), "balance");
+        n += eq("its beacon still over balance", EnchantLore.prestigeBlock(openS, 78, bals), "balance");
+        EnchantLore.PrestigeState maxS = new EnchantLore.PrestigeState(10, 10, null, null, 11, "souls",
+            true, 10, 10, null, null, "max", now);
+        n += eq("max star blocks", EnchantLore.awakenBlock(maxS, bals, now, rescan), "max");
+        EnchantLore.PrestigeState old = new EnchantLore.PrestigeState(10, 10, null, null, 11, "souls");
+        n += eq("pre-0.9.63 entry: star unknown", EnchantLore.awakenBlock(old, bals, now, rescan) == null, true);
+        n += eq("pre-0.9.63 entry: beacon still gated", EnchantLore.prestigeBlock(old, 78, bals), "max");
+        n += eq("nothing remembered is unknown", EnchantLore.awakenBlock((EnchantLore.PrestigeState) null, bals, now, rescan) == null, true);
+
+        // The pick over both.
+        EnchantLore.Item speed = el.parse("Speed Enchant", List.of("Level: 10 / 10", "Price: 300,000,000 Souls"));
+        EnchantLore.Item bleed = el.parse("Bleed Enchant", List.of("Level: 20,000 / 20,000", "Price: 50,300,000 Souls"));
+        EnchantLore.Item crit = el.parse("Critical Enchant", List.of("Level: 1,000 / 1,000", "Price: 2,600,000 Souls"));
+        EnchantLore.Item warden = el.parse("Warden Guard Enchant", List.of("Level: 250 / 250", "Price: 4,800,000,000 Souls"));
+        List<EnchantLore.Item> items = List.of(speed, bleed, crit, warden);
+        java.util.Map<String, EnchantLore.PrestigeState> rem = new java.util.HashMap<>();
+        java.util.Set<String> none = java.util.Set.of();
+        EnchantLore.UpgradePick up = EnchantLore.upgradePick(items, rem, 78, bals, none, now, rescan, true);
+        n += eq("nothing remembered: first maxed, unknown", up != null ? up.item().name() + " " + up.via() : null, "Speed Enchant unknown");
+        rem.put("Speed Enchant", dead);
+        up = EnchantLore.upgradePick(items, rem, 78, bals, none, now, rescan, true);
+        n += eq("a dead menu is never opened", up != null ? up.item().name() : null, "Bleed Enchant");
+        n += eq("a dead menu alone: nothing", EnchantLore.upgradePick(List.of(speed), rem, 78, bals, none, now, rescan, true) == null, true);
+        rem.put("Bleed Enchant", openS);
+        rem.put("Critical Enchant", maxS);
+        rem.put("Warden Guard Enchant", new EnchantLore.PrestigeState(0, 10, 1.23e12, "souls", 7, "souls",
+            true, null, null, null, null, "locked", now));
+        up = EnchantLore.upgradePick(items, rem, 78, bals, none, now, rescan, true);
+        n += eq("the 50B star beats a 1.23T beacon over the balance", up != null ? up.item().name() + " " + up.via() : null, "Bleed Enchant awaken");
+        n += eq("pick cost", up != null ? up.cost() : null, 5e10, 1);
+        java.util.Map<String, Double> rich = java.util.Map.of("souls", 1e15);
+        up = EnchantLore.upgradePick(items, rem, 78, rich, none, now, rescan, true);
+        n += eq("rich: the 50B star is still the cheapest step", up != null ? up.item().name() + " " + up.via() : null, "Bleed Enchant awaken");
+        up = EnchantLore.upgradePick(items, rem, 78, rich, java.util.Set.of("Bleed Enchant"), now, rescan, true);
+        n += eq("attempted: Warden's 1.23T beacon next", up != null ? up.item().name() + " " + up.via() : null, "Warden Guard Enchant prestige");
+        java.util.Set<String> two = java.util.Set.of("Bleed Enchant", "Warden Guard Enchant");
+        n += eq("Critical: max beacon, max star - never", EnchantLore.upgradePick(items, rem, 78, rich, two, now, rescan, true) == null, true);
+        rem.put("Critical Enchant", old);
+        up = EnchantLore.upgradePick(items, rem, 78, rich, two, now, rescan, true);
+        n += eq("a pre-0.9.63 entry opens once for its star", up != null ? up.item().name() + " " + up.via() : null, "Critical Enchant unknown");
+        up = EnchantLore.upgradePick(items, rem, 78, rich, none, now, rescan, true);
+        n += eq("unknown before the cheapest known", up != null ? up.item().name() : null, "Critical Enchant");
+        n += eq("star off: a pre-0.9.63 entry at max prestige stays shut", EnchantLore.upgradePick(items, rem, 78, rich, two, now, rescan, false) == null, true);
+        n += eq("star off: the beacon still picks", EnchantLore.upgradePick(items, rem, 78, rich, java.util.Set.of("Bleed Enchant"), now, rescan, false).via(), "prestige");
+        rem.put("Critical Enchant", maxS);
+        rem.put("Warden Guard Enchant", new EnchantLore.PrestigeState(0, 10, 1.23e12, "souls", 7, "souls",
+            true, null, null, null, null, "locked", now - rescan));
+        up = EnchantLore.upgradePick(List.of(warden), rem, 78, bals, none, now, rescan, true);
+        n += eq("a locked star past its rescan is read again", up != null ? up.via() : null, "unknown");
+        n += eq("the 0.9.43 pick still holds", EnchantLore.prestigePick(items, rem, 78, rich, none).name(), "Warden Guard Enchant");
         return n;
     }
 }

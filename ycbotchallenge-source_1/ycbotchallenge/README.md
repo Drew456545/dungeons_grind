@@ -255,6 +255,61 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.63: the menus with nothing in them, the nether star, and the egg the desktop never bought
+
+Read from both accounts' logs side by side (`~/code/ycbot-logs`, Snicker_Licker on the desktop at
+rebirth 7, Ihazekids69420 on the Mac at rebirth 78; the `desktop/` folder also holds Ihazekids'
+Sep 4-7 sessions, so filter by `username`).
+
+**Six dead menus a visit.** Every enchanter visit spent all six prestige opens
+(`enchantPrestigeOpensPerVisit`) on enchants that have no prestige beacon: Speed, Keyfinder, Soul
+Magnet, Essence Magnet, Frost Mark, Credit Finder on the Mac (40 visits x 6, every one
+`enchant_prestige_read why:no-item`), Speed, Keyfinder, Soul Magnet, Enhancer, Rocket, Second Hand
+on the desktop. `rememberEnchantPrestige` only ran when a beacon parsed, so a menu without one was
+never remembered, `prestigeBlock(null)` said unknown, and `prestigePick` opens unknowns first. On
+the Mac that also kept the real candidates shut (Warden Guard 0/10, Rain 0/10, Bleed 3/10 were
+not opened in two sessions). Visits ran 36 s on the Mac and 23 s on the desktop, most of it these
+opens. Now `rememberEnchantUpgrade` writes the entry whatever the menu held (`beacon:false`), and
+`prestigeBlock` answers `none` for it. Drew: an enchant with neither beacon nor star never gets
+one - once maxed it is never opened again.
+
+**The nether star.** Drew: the ascension indicator is a nether star in the Upgrade menu, next
+to the beacon. In the dumps it is `Awoken <Name> Enchant` (slot 8): `This enchant cannot be awoken
+yet.` on every menu but one, and on Bleed (20000/20000, prestige 3) `awakened enchant | ... becomes
+available once the original enchant is fully upgraded ... | Level: 0 / 10 | Price: 50,000,000,000
+Souls | [click here to upgrade this awakened enchant]` - a ten-level enchant of its own, one click a
+level. `EnchantLore.parseAwaken` reads it (`enchantAwakenNamePattern`, `enchantAwakenLockedPattern`,
+the level and price lines are the enchant's own), the state remembers it (`awakenState` none |
+locked | open | max), `upgradePick` opens the cheapest next step of either kind (Drew: cheapest
+first, prestige or awaken), and `AWAKEN_CLICK`/`AWAKEN_SETTLE` buy levels the way the beacon is
+clicked - the star's own level rising is the evidence, no chat line is known
+(`enchant_awaken_read`, `enchant_awaken_click`, `enchant_awaken`, `enchant_awaken_stop`,
+`enchant_menu_close awakens`). A locked star with no beacon (Nuke, Ghost, Piggy Bank, Virus - all
+MAX; what opens it is unknown) is read again after `enchantAwakenRescanMs` (6 h). A pre-0.9.63
+entry opens once more for its star. On the Mac, Bleed's star at 50B souls is bought on the first
+visit; Warden Guard's beacon at 1.23T waits for the souls.
+
+**The egg the desktop never bought.** Snicker_Licker has never bought an egg: every `companion_skip`
+of that account says `blocked: no-egg-price` (stages 5-11), and it has no `companion_plan` at all.
+The price store was only fed by a purchase's sidebar delta, and `blockedReason` needs a stored
+price before the economy may buy - chicken and egg; Ihazekids got out of it through three manual
+visits and the old `cheap` trigger. The hologram price is read every 10 s and logged at every stage
+(`companion_price` 44.44Q at stage 9, 2.32QQ at 10 - the ladder the purchases measured), so it now
+seeds the store when the stage has no price (`companion_price via:hologram`); an observed purchase
+still overwrites it. From that account's own rows: stage 9, income 22Q/min, cycle 64 min, a 3-egg
+floor batch is ~6 min of income against a ~10.7 min persist budget, so `companion-persist` fires.
+
+**`/zone previous` would not have paid.** `zone_back_candidate` (measured, never sent): Mac 2 of
+288 checks `wouldRetreat`, median ratio 0.00-0.04 at every stage 19-72 (one 2.28 at stage 70);
+desktop 3 of 159, median 0.01-0.53. Nothing changes; the measurement stays.
+
+Seen, not acted on: the Mac's rebirth-73 cycle spent 45 min at lvl53 with 5 kills - the boss event
+(48 `boss_reward` rows), as designed. Level buys are a uniform pick among the affordable and "Max
+Upgrade" drains the tab (Zombie Apocalypse at 150B souls a level), which keeps souls below the
+prestige costs on the Mac; a reserve is a separate discussion. Totems, auras and armour on
+Ihazekids are never read; every rate and price is learned per account from the sidebar, so no
+per-account switch exists or is needed.
+
 ### 0.9.62: the map that read BTq, the income that outlived a rebirth, and the driver the menu flows share
 
 **The captcha (2026-09-08, 4 h 16 min lost).** Map 72671 at 06:47:48 UTC; the dump reads `BTq`.

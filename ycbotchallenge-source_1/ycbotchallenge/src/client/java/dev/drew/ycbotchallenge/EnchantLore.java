@@ -63,9 +63,44 @@ public final class EnchantLore {
         }
     }
 
-    /** 0.9.43: what a visit remembers about an enchant's beacon (persisted), so the menu is not opened for nothing. */
-    public record PrestigeState(Integer level, Integer max, Double cost, String currency, Integer rebirthReq, String tab) {}
+    /**
+     * 0.9.63: the nether star of an Upgrade menu - "Awoken <Name> Enchant". Locked it reads
+     * "This enchant cannot be awoken yet."; open it is a ten-level enchant of its own
+     * ("Level: 0 / 10", "Price: 50,000,000,000 Souls", "[click here to upgrade this awakened
+     * enchant]" - Bleed, 2026-09-07). One click buys one level.
+     */
+    public record Awaken(int slot, Integer level, Integer max, Double cost, String currency, boolean locked) {
+        public boolean maxedOut() { return level != null && max != null && level >= max; }
+        /** none | locked | max | open - the word the state remembers. */
+        public String state() { return locked ? "locked" : maxedOut() ? "max" : "open"; }
+        public String summary() {
+            return "awaken " + (locked ? "locked" : level + "/" + max + (cost != null ? " " + Amounts.format(cost) + " " + currency : ""));
+        }
+    }
 
+    /**
+     * 0.9.43: what a visit remembers about an enchant's beacon (persisted), so the menu is not
+     * opened for nothing. 0.9.63: also whether the menu had a beacon at all ({@code beacon}
+     * false = read, none there; null = a pre-0.9.63 entry) and its nether star
+     * ({@code awakenState} none | locked | open | max; null = the star was never read).
+     * Drew: an enchant with neither beacon nor star never gets one - once maxed it is never
+     * opened again. A locked star is read again after enchantAwakenRescanMs.
+     */
+    public record PrestigeState(Integer level, Integer max, Double cost, String currency, Integer rebirthReq, String tab,
+                                Boolean beacon, Integer awakenLevel, Integer awakenMax, Double awakenCost, String awakenCurrency,
+                                String awakenState, Long at) {
+        /** The 0.9.43 shape: beacon known by its fields, the star never read. */
+        public PrestigeState(Integer level, Integer max, Double cost, String currency, Integer rebirthReq, String tab) {
+            this(level, max, cost, currency, rebirthReq, tab, null, null, null, null, null, null, null);
+        }
+        public boolean beaconAbsent() { return beacon != null && !beacon; }
+    }
+
+    /** 0.9.63: the enchant whose Upgrade menu to open, and why: prestige | awaken | unknown (cost null). */
+    public record UpgradePick(Item item, String via, Double cost) {}
+
+    private final Pattern awakenNameRe;
+    private final Pattern awakenLockedRe;
     private final Pattern prestigeNameRe;
     private final Pattern prestigeLevelRe;
     private final Pattern prestigeCostRe;
@@ -94,6 +129,8 @@ public final class EnchantLore {
         prestigeCostRe = compileLoose(cfg.enchantPrestigeCostPattern);
         prestigeRebirthRe = compileLoose(cfg.enchantPrestigeRebirthPattern);
         prestigeMultRe = compileLoose(cfg.enchantPrestigeMultiplierPattern);
+        awakenNameRe = compileLoose(cfg.enchantAwakenNamePattern);
+        awakenLockedRe = compileLoose(cfg.enchantAwakenLockedPattern);
         maxUpgradeName = cfg.enchantMaxUpgradeName == null ? "max upgrade"
             : cfg.enchantMaxUpgradeName.trim().toLowerCase(Locale.ROOT);
         List<String> t = new ArrayList<>();
@@ -145,9 +182,103 @@ public final class EnchantLore {
         return null;
     }
 
+    /**
+     * 0.9.63: the nether star, parsed from its stripped name and lore; null for any other item.
+     * The level and price lines are the enchant's own ("Level: 0 / 10", "Price: ... Souls").
+     */
+    public Awaken parseAwaken(int slot, String rawName, List<String> rawLore) {
+        String name = rawName == null ? "" : SidebarParser.strip(rawName);
+        if (!awakenNameRe.matcher(name).find()) return null;
+        List<String> lore = new ArrayList<>();
+        if (rawLore != null) for (String l : rawLore) { String s = SidebarParser.strip(l); if (!s.isEmpty()) lore.add(s); }
+        Integer level = null, max = null;
+        Double cost = null;
+        String currency = null;
+        boolean locked = false;
+        for (String line : lore) {
+            Matcher m;
+            if (awakenLockedRe.matcher(line).find()) locked = true;
+            if (level == null && (m = levelRe.matcher(line)).find()) { level = intGroup(m, "cur"); max = intGroup(m, "max"); }
+            if (cost == null && (m = priceRe.matcher(line)).find()) {
+                cost = Amounts.parse(m.group("amount"));
+                String c = m.group("currency");
+                currency = c != null ? c.toLowerCase(Locale.ROOT) : null;
+            }
+        }
+        return new Awaken(slot, level, max, cost, currency, locked);
+    }
+
+    /** 0.9.63: why the star cannot be clicked right now, or null when it can (the 0.9.11 rule: never blind). */
+    public static String awakenBlock(Awaken a, Double balance) {
+        if (a == null) return "no-item";
+        if (a.locked()) return "locked";
+        if (a.maxedOut()) return "max";
+        if (a.cost() == null) return "no-cost";
+        if (balance == null) return "no-balance";
+        if (a.cost() > balance + 1e-6) return "balance";
+        return null;
+    }
+
+    /**
+     * 0.9.63: the same gate on a remembered state. Null state, or a star never read = unknown =
+     * worth opening; "none" (no star in the menu) is for good; "locked" until the rescan is due.
+     */
+    public static String awakenBlock(PrestigeState s, java.util.Map<String, Double> balances, long now, long rescanMs) {
+        if (s == null || s.awakenState() == null) return null;
+        switch (s.awakenState()) {
+            case "none": return "none";
+            case "max": return "max";
+            case "locked": return s.at() != null && rescanMs > 0 && now - s.at() >= rescanMs ? null : "locked";
+            default: break;
+        }
+        if (s.awakenCost() == null) return null;
+        if (s.awakenCurrency() != null && balances != null) {
+            Double bal = balances.get(s.awakenCurrency());
+            if (bal != null && s.awakenCost() > bal + 1e-6) return "balance";
+        }
+        return null;
+    }
+
+    /**
+     * 0.9.63: the enchant whose Upgrade menu to open, over both the beacon and the star: never
+     * one blocked on both, unknown ones first (a menu never read, or a star never read), then
+     * the cheapest known next step of either kind (Drew: cheapest first, prestige or awaken).
+     */
+    public static UpgradePick upgradePick(List<Item> inSlotOrder, java.util.Map<String, PrestigeState> remembered,
+                                          Integer rebirths, java.util.Map<String, Double> balances, Set<String> skipNames,
+                                          long now, long rescanMs, boolean awakenEnabled) {
+        UpgradePick best = null;
+        if (inSlotOrder == null) return null;
+        for (Item it : inSlotOrder) {
+            if (!it.maxed() || it.locked()) continue;
+            if (skipNames != null && skipNames.contains(it.name())) continue;
+            PrestigeState s = remembered != null ? remembered.get(it.name()) : null;
+            String pb = prestigeBlock(s, rebirths, balances);
+            // The star off: a menu once read is only its beacon (a menu never read is still unknown).
+            String ab = awakenEnabled || s == null ? awakenBlock(s, balances, now, rescanMs) : "disabled";
+            if (pb != null && ab != null) continue;
+            Double pCost = pb == null && s != null ? s.cost() : null;
+            Double aCost = ab == null && s != null && s.awakenState() != null ? s.awakenCost() : null;
+            boolean pUnknown = pb == null && (s == null || s.cost() == null);
+            boolean aUnknown = ab == null && (s == null || s.awakenState() == null);
+            String via;
+            Double cost;
+            if (pUnknown || aUnknown) { via = "unknown"; cost = null; }
+            else if (pCost != null && (aCost == null || pCost <= aCost)) { via = "prestige"; cost = pCost; }
+            else if (aCost != null) { via = "awaken"; cost = aCost; }
+            else { via = "unknown"; cost = null; }
+            boolean better = best == null
+                || (cost == null && best.cost() != null)
+                || (cost != null && best.cost() != null && cost < best.cost());
+            if (better) best = new UpgradePick(it, via, cost);
+        }
+        return best;
+    }
+
     /** The same gate on a remembered state (null state = unknown = worth opening). */
     public static String prestigeBlock(PrestigeState s, Integer rebirths, java.util.Map<String, Double> balances) {
         if (s == null) return null;
+        if (s.beaconAbsent()) return "none";
         if (s.level() != null && s.max() != null && s.level() >= s.max()) return "max";
         if (s.rebirthReq() != null && rebirths != null && rebirths < s.rebirthReq()) return "rebirth";
         if (s.cost() != null && s.currency() != null && balances != null) {

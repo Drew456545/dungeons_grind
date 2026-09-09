@@ -31,7 +31,7 @@ public class EnchantController extends BotModule implements Module {
     @Override public String name() { return "enchant"; }
     private enum Phase {
         IDLE, OPEN_CLEAR, OPEN_WAIT, LOOK, TAB_CLICK, TAB_PRESS, TAB_WAIT, SCAN, ENCHANT_CLICK, UPGRADE_WAIT,
-        MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, PRESTIGE_CLICK, PRESTIGE_SETTLE, CLOSE_RETURN,
+        MAX_READ, MAX_CLICK, SETTLE, RETURN_WAIT, PRESTIGE_CLICK, PRESTIGE_SETTLE, AWAKEN_CLICK, AWAKEN_SETTLE, CLOSE_RETURN,
         SWORDS_CLICK, SWORDS_PRESS, SWORDS_WAIT, SWORDS_READ, CLOSE
     }
 
@@ -108,6 +108,12 @@ public class EnchantController extends BotModule implements Module {
     private int prestigesThisVisit = 0;
     private int prestigesSession = 0;
     private long prestigeClickAt = 0;
+    // 0.9.63: the nether star.
+    private EnchantLore.Awaken awakenItem = null;
+    private int awakensThisEnchant = 0;
+    private int awakensThisVisit = 0;
+    private int awakensSession = 0;
+    private long awakenClickAt = 0;
     private final Set<String> upgradeGuiLogged = new HashSet<>();
     private final Map<String, Set<String>> lockedByTab = new HashMap<>();
     private int swordLevelSeqSeen = -1;
@@ -163,7 +169,8 @@ public class EnchantController extends BotModule implements Module {
         }
         return "enchant: " + phase.name().toLowerCase(Locale.ROOT)
             + (currentTab != null ? " " + currentTab : "") + (buys > 0 ? "  bought " + buys : "")
-            + (prestigesThisVisit > 0 ? "  prestiged " + prestigesThisVisit : "");
+            + (prestigesThisVisit > 0 ? "  prestiged " + prestigesThisVisit : "")
+            + (awakensThisVisit > 0 ? "  awakened " + awakensThisVisit : "");
     }
 
     /** 0.9.43: the Y-screen line under "Enchant prestige". */
@@ -177,7 +184,8 @@ public class EnchantController extends BotModule implements Module {
             if (s.cost() == null || EnchantLore.prestigeBlock(s, stats.rebirths, bals) != null) continue;
             if (s.cost() < best) { best = s.cost(); next = e.getKey() + " " + Amounts.format(s.cost()) + " " + s.currency(); }
         }
-        return "prestiged " + prestigesSession + " this session" + (next != null ? " · next " + next : lastPrestigeLine != null ? " · " + lastPrestigeLine : "");
+        return "prestiged " + prestigesSession + (awakensSession > 0 ? ", awakened " + awakensSession : "") + " this session"
+            + (next != null ? " · next " + next : lastPrestigeLine != null ? " · " + lastPrestigeLine : "");
     }
 
     public void reset(MinecraftClient client) {
@@ -385,21 +393,29 @@ public class EnchantController extends BotModule implements Module {
                 if (choice == null) {
                     // 0.9.43: level buys are done on this tab - a maxed enchant's beacon next
                     // (Drew: levels first, then prestige; cheapest next prestige first).
-                    EnchantLore.Item pp = cfg.enchantPrestigeEnabled && !wrapUp && prestigeOpensThisVisit < cfg.enchantPrestigeOpensPerVisit
-                        ? EnchantLore.prestigePick(items, stats.enchantPrestigeStates(), stats.rebirths, balances, attempted) : null;
+                    // 0.9.63: or its nether star - the cheapest next step of either kind, and a
+                    // menu whose beacon and star were both read and both blocked is never opened.
+                    EnchantLore.UpgradePick up = cfg.enchantPrestigeEnabled && !wrapUp && prestigeOpensThisVisit < cfg.enchantPrestigeOpensPerVisit
+                        ? EnchantLore.upgradePick(items, stats.enchantPrestigeStates(), stats.rebirths, balances, attempted,
+                            now, cfg.enchantAwakenRescanMs, cfg.enchantAwakenEnabled) : null;
+                    EnchantLore.Item pp = up != null ? up.item() : null;
                     if (pp != null) {
                         picked = pp;
                         prestigeMode = true;
                         prestigeOpensThisVisit++;
                         prestigesThisEnchant = 0;
+                        awakensThisEnchant = 0;
                         pickedSlot = -1;
                         for (EnchantScreens.SlotItem si : slots) if (si.item() == pp) { pickedSlot = si.slot(); break; }
                         attempted.add(pp.name());
                         EnchantLore.PrestigeState known = stats.enchantPrestigeState(pp.name());
-                        log("enchant_pick", "tab", currentTab, "via", "prestige", "name", pp.name(), "slot", pickedSlot,
+                        log("enchant_pick", "tab", currentTab, "via", up.via(), "name", pp.name(), "slot", pickedSlot,
                             "level", pp.level(), "maxLevel", pp.maxLevel(),
                             "known", known != null ? known.level() + "/" + known.max() : null,
                             "knownCost", known != null && known.cost() != null ? Amounts.format(known.cost()) : null,
+                            "knownAwaken", known != null ? known.awakenState() : null,
+                            "knownAwakenCost", known != null && known.awakenCost() != null ? Amounts.format(known.awakenCost()) : null,
+                            "pickCost", up.cost() != null ? Amounts.format(up.cost()) : null,
                             "balance", bal != null ? Amounts.format(bal) : null, "rebirths", stats.rebirths);
                         phase = Phase.ENCHANT_CLICK;
                         phaseUntil = now + GuiHuman.clickDelayMs(cfg);
@@ -470,10 +486,23 @@ public class EnchantController extends BotModule implements Module {
                     log("enchant_upgrade_gui", "name", pname, "title", GuiHuman.title(client), "items", GuiHuman.describe(guiItems));
                 }
                 prestigeItem = findPrestige(guiItems);
+                awakenItem = findAwaken(guiItems);
                 if (prestigeMode) {
                     String block = EnchantLore.prestigeBlock(prestigeItem, stats.rebirths,
                         prestigeItem != null && prestigeItem.currency() != null ? stats.currency(prestigeItem.currency()) : null);
-                    if (prestigeItem != null) stats.rememberEnchantPrestige(pname, currentTab, prestigeItem);
+                    // 0.9.63: remembered whatever was there - a menu with no beacon and no star
+                    // is a fact, not an unknown (six such menus opened every visit for a week).
+                    stats.rememberEnchantUpgrade(pname, currentTab, prestigeItem, awakenItem);
+                    Double abal = awakenItem != null && awakenItem.currency() != null ? stats.currency(awakenItem.currency()) : null;
+                    String ablock = !cfg.enchantAwakenEnabled ? "disabled" : EnchantLore.awakenBlock(awakenItem, abal);
+                    log("enchant_awaken_read", "name", pname, "star", awakenItem != null ? awakenItem.summary() : null,
+                        "slot", awakenItem != null ? awakenItem.slot() : null,
+                        "level", awakenItem != null ? awakenItem.level() : null, "max", awakenItem != null ? awakenItem.max() : null,
+                        "cost", awakenItem != null && awakenItem.cost() != null ? Amounts.format(awakenItem.cost()) : null,
+                        "currency", awakenItem != null ? awakenItem.currency() : null,
+                        "locked", awakenItem != null ? awakenItem.locked() : null,
+                        "balance", abal != null ? Amounts.format(abal) : null,
+                        "eligible", ablock == null, "why", ablock);
                     log("enchant_prestige_read", "name", pname, "beacon", prestigeItem != null ? prestigeItem.summary() : null,
                         "slot", prestigeItem != null ? prestigeItem.slot() : null,
                         "level", prestigeItem != null ? prestigeItem.level() : null, "max", prestigeItem != null ? prestigeItem.max() : null,
@@ -485,14 +514,22 @@ public class EnchantController extends BotModule implements Module {
                         "balance", prestigeItem != null && prestigeItem.currency() != null && stats.currency(prestigeItem.currency()) != null
                             ? Amounts.format(stats.currency(prestigeItem.currency())) : null,
                         "eligible", block == null, "why", block);
-                    if (block != null) {
-                        GuiHuman.close(client, "enchant", logger);
-                        phase = Phase.RETURN_WAIT;
-                        phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
+                    // 0.9.63: the cheaper of the two steps first (Drew: cheapest first, no reserve).
+                    boolean pOk = block == null;
+                    boolean aOk = ablock == null;
+                    if (pOk && (!aOk || prestigeItem.cost() <= awakenItem.cost())) {
+                        phase = Phase.PRESTIGE_CLICK;
+                        phaseUntil = now + GuiHuman.clickDelayMs(cfg);
                         return true;
                     }
-                    phase = Phase.PRESTIGE_CLICK;
-                    phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                    if (aOk) {
+                        phase = Phase.AWAKEN_CLICK;
+                        phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                        return true;
+                    }
+                    GuiHuman.close(client, "enchant", logger);
+                    phase = Phase.RETURN_WAIT;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
                     return true;
                 }
                 EnchantScreens.SlotItem mi = EnchantScreens.maxUpgradeItem(h, lore);
@@ -622,6 +659,64 @@ public class EnchantController extends BotModule implements Module {
                 if ((rose || chat) && block == null && prestigesThisEnchant < cfg.enchantPrestigeMaxPerVisit && !wrapUp) {
                     prestigeItem = after;
                     phase = Phase.PRESTIGE_CLICK;
+                    phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+                    return true;
+                }
+                // 0.9.63: the beacon is done for now - the star may still be open.
+                if (!wrapUp && awakenEligibleNow(client, now)) return true;
+                GuiHuman.close(client, "enchant", logger);
+                phase = Phase.RETURN_WAIT;
+                phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
+            }
+            case AWAKEN_CLICK -> {
+                if (now < phaseUntil) return true;
+                if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.UPGRADE || awakenItem == null) {
+                    phase = Phase.RETURN_WAIT;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
+                    return true;
+                }
+                GuiHuman.click(client, awakenItem.slot(), "enchant", "awaken", logger);
+                awakenClickAt = now;
+                log("enchant_awaken_click", "name", picked != null ? picked.name() : null, "slot", awakenItem.slot(),
+                    "from", awakenItem.level(), "cost", awakenItem.cost() != null ? Amounts.format(awakenItem.cost()) : null,
+                    "currency", awakenItem.currency(), "n", awakensThisEnchant + 1);
+                phase = Phase.AWAKEN_SETTLE;
+                phaseUntil = now + HumanTiming.logNormalMs(cfg.enchantBuySettleMinMs, cfg.enchantBuySettleMaxMs);
+            }
+            case AWAKEN_SETTLE -> {
+                if (now < phaseUntil) return true;
+                // No chat line for an awakened level is known; the star's own level is the evidence.
+                EnchantLore.Awaken before = awakenItem;
+                EnchantScreens.Kind k = EnchantScreens.classify(client, lore);
+                EnchantLore.Awaken after = k == EnchantScreens.Kind.UPGRADE ? findAwaken(GuiHuman.items(client)) : null;
+                boolean rose = after != null && after.level() != null && before != null && before.level() != null && after.level() > before.level();
+                String pname = picked != null ? picked.name() : null;
+                if (rose) {
+                    awakensThisEnchant++;
+                    awakensThisVisit++;
+                    awakensSession++;
+                    Double cost = before.cost();
+                    String cur = before.currency();
+                    if (cost != null && cur != null) spent.merge(cur, cost, Double::sum);
+                    lastPrestigeLine = pname + " awakened -> " + after.level();
+                    log("enchant_awaken", "name", pname, "from", before.level(), "to", after.level(),
+                        "cost", cost != null ? Amounts.format(cost) : null, "currency", cur,
+                        "next", after.summary(), "n", awakensThisEnchant);
+                } else {
+                    log("enchant_awaken_stop", "reason", after == null ? "gui-gone" : "no-change", "name", pname,
+                        "level", after != null ? after.level() : null, "n", awakensThisEnchant);
+                }
+                if (after != null) stats.rememberEnchantAwaken(pname, currentTab, after);
+                if (k != EnchantScreens.Kind.UPGRADE) {
+                    phase = Phase.RETURN_WAIT;
+                    phaseUntil = now + GuiFlow.SUBMENU_BEAT_MS;
+                    return true;
+                }
+                String ablock = after == null ? "no-item" : EnchantLore.awakenBlock(after,
+                    after.currency() != null ? stats.currency(after.currency()) : null);
+                if (rose && ablock == null && awakensThisEnchant < cfg.enchantAwakenMaxPerVisit && !wrapUp) {
+                    awakenItem = after;
+                    phase = Phase.AWAKEN_CLICK;
                     phaseUntil = now + GuiHuman.clickDelayMs(cfg);
                     return true;
                 }
@@ -854,6 +949,9 @@ public class EnchantController extends BotModule implements Module {
         prestigesThisEnchant = 0;
         prestigeOpensThisVisit = 0;
         prestigesThisVisit = 0;
+        awakenItem = null;
+        awakensThisEnchant = 0;
+        awakensThisVisit = 0;
         upgradeGuiLogged.clear();
         unlockHint = false;
         farmVisitDue = false;
@@ -974,7 +1072,8 @@ public class EnchantController extends BotModule implements Module {
     private void finish(MinecraftClient client, long now, String reason) {
         Map<String, String> spentFmt = new HashMap<>();
         spent.forEach((k, v) -> spentFmt.put(k, Amounts.format(v)));
-        log("enchant_menu_close", "reason", reason, "buys", buys, "prestiges", prestigesThisVisit, "spent", spentFmt,
+        log("enchant_menu_close", "reason", reason, "buys", buys, "prestiges", prestigesThisVisit,
+            "awakens", awakensThisVisit > 0 ? awakensThisVisit : null, "spent", spentFmt,
             "durationMs", now - visitStartedAt, "balances", balancesNow());
         aborts.finish();
         endVisit(client, now);
@@ -1012,18 +1111,46 @@ public class EnchantController extends BotModule implements Module {
         return null;
     }
 
+    /** 0.9.63: the star among an Upgrade menu's items, or null. */
+    private EnchantLore.Awaken findAwaken(List<GuiHuman.Item> items) {
+        for (GuiHuman.Item it : items) {
+            EnchantLore.Awaken a = lore.parseAwaken(it.slot(), it.name(), it.lore());
+            if (a != null) return a;
+        }
+        return null;
+    }
+
+    /**
+     * 0.9.63: after the beacon is done, the star of the same menu when it is open and covered:
+     * re-read now (the prestige may have moved the balance), and the click is queued.
+     */
+    private boolean awakenEligibleNow(MinecraftClient client, long now) {
+        if (!cfg.enchantAwakenEnabled || awakensThisEnchant >= cfg.enchantAwakenMaxPerVisit) return false;
+        if (EnchantScreens.classify(client, lore) != EnchantScreens.Kind.UPGRADE) return false;
+        EnchantLore.Awaken a = findAwaken(GuiHuman.items(client));
+        if (EnchantLore.awakenBlock(a, a != null && a.currency() != null ? stats.currency(a.currency()) : null) != null) return false;
+        awakenItem = a;
+        phase = Phase.AWAKEN_CLICK;
+        phaseUntil = now + GuiHuman.clickDelayMs(cfg);
+        return true;
+    }
+
     /**
      * 0.9.43: a maxed tab is still worth a scan when a remembered beacon on it could be
      * clicked now (the floor met, the cost covered) - or when nothing on it has been read yet.
+     * 0.9.63: or a remembered star (open and covered, or locked past its rescan); a menu read
+     * with neither counts as read, never as "nothing on it yet".
      */
     private boolean prestigeWorthOnTab(String tab) {
         if (!cfg.enchantPrestigeEnabled) return false;
         Map<String, Double> bals = balancesMap();
+        long now = now();
         boolean anyOnTab = false;
         for (EnchantLore.PrestigeState s : stats.enchantPrestigeStates().values()) {
             if (s.tab() == null || !s.tab().equals(tab)) continue;
             anyOnTab = true;
             if (EnchantLore.prestigeBlock(s, stats.rebirths, bals) == null) return true;
+            if (cfg.enchantAwakenEnabled && EnchantLore.awakenBlock(s, bals, now, cfg.enchantAwakenRescanMs) == null) return true;
         }
         return !anyOnTab;
     }

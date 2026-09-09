@@ -1404,6 +1404,25 @@ public class YCBotChallengeConfig {
      * enchant (sword level 150: Archer) appears on it. A sword-level chat line clears it.
      */
     public int enchantMaxedTabRescanMs = 600_000;
+
+    // ---- 0.9.63: the nether star. Every Upgrade menu may carry an "Awoken <Name> Enchant"
+    // item (slot 8): "This enchant cannot be awoken yet." until the enchant is fully
+    // upgraded, then a ten-level enchant of its own ("Level: 0 / 10", "Price: 50,000,000,000
+    // Souls", "[click here to upgrade this awakened enchant]" - Bleed at 20000/20000, prestige
+    // 3). One click buys one level. Speed, Keyfinder, Soul Magnet, Essence Magnet, Frost Mark,
+    // Credit Finder, Enhancer, Rocket, Second Hand have neither a beacon nor a star; Drew:
+    // they never will, so once maxed they are never opened again. A locked star (Nuke, Ghost,
+    // Piggy Bank, Virus - all MAX, no beacon) is read again after enchantAwakenRescanMs.
+    // Drew: buy awakened levels, cheapest next step first across beacon and star.
+    public boolean enchantAwakenEnabled = true;
+    /** The star's item name. */
+    public String enchantAwakenNamePattern = "/^awoken\\b/";
+    /** The lore line of a star that is not open yet. */
+    public String enchantAwakenLockedPattern = "/cannot be awoken yet/";
+    /** How long a remembered locked star keeps its menu shut. */
+    public long enchantAwakenRescanMs = 21_600_000;
+    /** Clicks on one star in one visit (each read again before the next). */
+    public int enchantAwakenMaxPerVisit = 10;
     /** The server's lines: success, the rebirth gate, the max - never counted as account prestiges. */
     public String enchantPrestigeChatPattern = "/prestiged the (?<name>.+? enchant) enchant for (?<amount>(?<![\\w.])[\\d,.]+(?:[Ee][+-]?\\d{1,3}|\\s*[A-Za-z]{0,4}))\\s*(?<currency>souls|essence|shards|money)/";
     public String enchantPrestigeGatePattern = "/at least (?<n>[\\d,]+) rebirths to prestige/";

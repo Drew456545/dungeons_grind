@@ -995,23 +995,64 @@ public class StatsTracker extends BotModule {
     /** 0.9.43: an enchant's beacon as last read, or null when never seen. */
     public EnchantLore.PrestigeState enchantPrestigeState(String name) {
         StateStore.PrestigeEntry p = name == null ? null : enchantPrestige.get(name);
-        return p == null ? null : new EnchantLore.PrestigeState(p.level, p.max, p.cost, p.currency, p.rebirthReq, p.tab);
+        return p == null ? null : toState(p);
+    }
+
+    private static EnchantLore.PrestigeState toState(StateStore.PrestigeEntry p) {
+        return new EnchantLore.PrestigeState(p.level, p.max, p.cost, p.currency, p.rebirthReq, p.tab,
+            p.beacon, p.awakenLevel, p.awakenMax, p.awakenCost, p.awakenCurrency, p.awakenState, p.at > 0 ? p.at : null);
     }
 
     /** 0.9.43: every remembered beacon, for the pick. */
     public Map<String, EnchantLore.PrestigeState> enchantPrestigeStates() {
         Map<String, EnchantLore.PrestigeState> out = new LinkedHashMap<>();
-        for (Map.Entry<String, StateStore.PrestigeEntry> e : enchantPrestige.entrySet()) {
-            StateStore.PrestigeEntry p = e.getValue();
-            out.put(e.getKey(), new EnchantLore.PrestigeState(p.level, p.max, p.cost, p.currency, p.rebirthReq, p.tab));
-        }
+        for (Map.Entry<String, StateStore.PrestigeEntry> e : enchantPrestige.entrySet()) out.put(e.getKey(), toState(e.getValue()));
         return out;
     }
 
+    /** 0.9.43: a beacon read again (after a prestige click); the star fields stay as they were. */
     public void rememberEnchantPrestige(String name, String tab, EnchantLore.Prestige p) {
         if (name == null || p == null) return;
+        StateStore.PrestigeEntry old = enchantPrestige.get(name);
         StateStore.PrestigeEntry e = new StateStore.PrestigeEntry();
         e.level = p.level(); e.max = p.max(); e.cost = p.cost(); e.currency = p.currency(); e.rebirthReq = p.rebirthReq();
+        e.beacon = true;
+        if (old != null) {
+            e.awakenState = old.awakenState; e.awakenLevel = old.awakenLevel; e.awakenMax = old.awakenMax;
+            e.awakenCost = old.awakenCost; e.awakenCurrency = old.awakenCurrency;
+        }
+        e.tab = tab; e.at = System.currentTimeMillis();
+        enchantPrestige.put(name, e);
+        markStateDirty();
+    }
+
+    /**
+     * 0.9.63: an Upgrade menu as read - the beacon (or that there is none) and the star (or
+     * that there is none). Always written: Speed, Keyfinder, Soul Magnet, Essence Magnet,
+     * Frost Mark, Credit Finder have neither, and were opened six times a visit for a week
+     * because a menu without a beacon was never remembered.
+     */
+    public void rememberEnchantUpgrade(String name, String tab, EnchantLore.Prestige p, EnchantLore.Awaken a) {
+        if (name == null) return;
+        StateStore.PrestigeEntry e = new StateStore.PrestigeEntry();
+        e.beacon = p != null;
+        if (p != null) { e.level = p.level(); e.max = p.max(); e.cost = p.cost(); e.currency = p.currency(); e.rebirthReq = p.rebirthReq(); }
+        e.awakenState = a == null ? "none" : a.state();
+        if (a != null) { e.awakenLevel = a.level(); e.awakenMax = a.max(); e.awakenCost = a.cost(); e.awakenCurrency = a.currency(); }
+        e.tab = tab; e.at = System.currentTimeMillis();
+        enchantPrestige.put(name, e);
+        markStateDirty();
+    }
+
+    /** 0.9.63: the star read again (after an awaken click); the beacon fields stay as they were. */
+    public void rememberEnchantAwaken(String name, String tab, EnchantLore.Awaken a) {
+        if (name == null || a == null) return;
+        StateStore.PrestigeEntry old = enchantPrestige.get(name);
+        StateStore.PrestigeEntry e = new StateStore.PrestigeEntry();
+        if (old != null) {
+            e.level = old.level; e.max = old.max; e.cost = old.cost; e.currency = old.currency; e.rebirthReq = old.rebirthReq; e.beacon = old.beacon;
+        }
+        e.awakenState = a.state(); e.awakenLevel = a.level(); e.awakenMax = a.max(); e.awakenCost = a.cost(); e.awakenCurrency = a.currency();
         e.tab = tab; e.at = System.currentTimeMillis();
         enchantPrestige.put(name, e);
         markStateDirty();

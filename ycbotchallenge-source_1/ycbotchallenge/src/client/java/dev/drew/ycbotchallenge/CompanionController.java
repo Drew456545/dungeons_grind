@@ -966,7 +966,17 @@ public class CompanionController extends BotModule implements Module {
                 if (stage != null && !stage.equals(lastPriceLogStage)) {
                     lastPriceLogStage = stage;
                     Double income = stats.incomePerMinute();
+                    // 0.9.63: the hologram's price seeds the store when the stage has none.
+                    // The store was only ever fed by a purchase's sidebar delta, and the
+                    // decision needs a stored price before it can buy: Snicker_Licker logged
+                    // this price at every stage for a week and never bought an egg (every
+                    // companion_skip "blocked: no-egg-price"). The hologram is the per-egg price
+                    // (44.44Q at stage 9, 2.32QQ at 10 - the ladder the purchases measured);
+                    // an observed purchase still overwrites it.
+                    boolean seeded = hit.price() != null && stats.companionEggPrice(stage) == null;
+                    if (seeded) stats.noteCompanionEggPrice(stage, hit.price());
                     log("companion_price", "stage", stage, "price", hit.price() != null ? Amounts.format(hit.price()) : null,
+                        "via", seeded ? "hologram" : null,
                         "incomePerMin", income != null ? Amounts.format(income) : null,
                         "minutesPerEgg", tenth(CompanionLore.incomeMinutes(hit.price(), income)),
                         "dist", Math.round(hit.dist()), "lines", hit.lines());
