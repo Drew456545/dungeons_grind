@@ -1137,6 +1137,18 @@ public final class Economy {
      * {@code hold-pool} under the floor; {@code unknown} with no pool read yet (spawn on the
      * farm phase - the menu read is the first anchor).
      */
+    /**
+     * 0.9.64: whether the player stands where /heroes works. "settling" inside the
+     * post-teleport settle; "off-floor" with no kill since the last teleport, or further than
+     * {@code radius} from where the last one landed; null when the spot is good. Pure.
+     */
+    public static String heroFloorGate(boolean settling, Double distFromLastKill, double radius) {
+        if (settling) return "settling";
+        if (distFromLastKill == null) return "off-floor";
+        if (distFromLastKill > Math.max(0, radius)) return "off-floor";
+        return null;
+    }
+
     public static String heroSpawnGate(boolean farmOnly, boolean farmPhase, Double hp, double floor, double margin, double maxHp) {
         boolean full = hp != null && hp >= maxHp - 0.5;
         if (farmOnly && !farmPhase && !full) return "hold-farm";

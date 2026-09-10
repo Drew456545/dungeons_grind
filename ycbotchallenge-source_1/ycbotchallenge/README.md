@@ -255,6 +255,37 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.64: the hero off the mob floor, and the spawn room's chicken
+
+**The hero.** Drew: "you can only summon hero where mobs spawn ... right after a teleport we try
+to spawn hero but it doesn't work." The server's line is `You must be standing on mob floor to
+spawn your hero!`; it went to `hero_chat` and the visit ended `hero_spawn_unconfirmed` (13 on the
+Mac, 4 on the desktop in the last sessions). Fifteen of fifteen came 3-7 s after
+`companion_visit_done` (the player still at the egg, up to 80 blocks off the floor) or in the
+seconds after a rebirth (the spawn room). Nothing in the spawner looked at where the player
+stood, and `CombatController.isSettling()` had no callers, so a visit could start inside the
+post-teleport settle. Now the combat module remembers where the last kill landed since the last
+teleport (`markKillSpot`; cleared on `zone_teleport`), `Economy.heroFloorGate` holds the visit
+while settling or further than `heroFloorRadiusBlocks` (6) from that spot (`hero_hold
+reason:settling|off-floor distFromKill sinceKillMs`, rechecked every 5 s), the line itself is
+`heroFloorPattern` -> `hero_floor_rejected` and `hero_spawn_rejected reason:mob-floor` (nothing
+spent; the pool anchor untouched), and the retry comes after `heroFloorRetryMs` (15 s) instead of
+the model's next date (`hero_plan` then `via:floor-retry`).
+
+**The chicken.** Drew's screenshot: a plain chicken in the corner of the spawn room, targeted
+first after a rebirth. Two chickens live there: the real stage-1 mob (`LVL1 Chicken`, killed in
+~10 s, the cycle's first kill) and the AFK one (`RIGHT CLICK TO UPGRADE | [AFKMOB] LVL1 Chicken
+❤∞`, already ignored by `ignoreMobPatterns` once its hologram loads), plus plateless farm
+chickens like the one in the picture. After a rebirth `confirmedZoneLevel()` was null until the
+first boss bar, so the plateless rule (`unplatedIgnoreAfterTicks`) could not fire and the
+plain chicken drew `target_abandoned reason:no-connect` for 7.5-9.6 s each rebirth, then again
+after the reset. A rebirth always lands on stage 1 (every `cycle_end` stage list starts `lvl1`),
+so the teleport now adopts level 1 (`boss_level via:rebirth`) and the plateless rule strikes the
+farm chicken off in two seconds. The permanent manual ignore Drew asked for already exists:
+**Ctrl+G with the crosshair on the mob** marks its kind and position in
+`config/ycbotchallenge-ignored.json` (`manualIgnoreRadiusBlocks` 1.5, forever, survives
+rebirths and restarts; Ctrl+G again un-marks). Neither machine has a mark yet.
+
 ### 0.9.63: the menus with nothing in them, the nether star, and the egg the desktop never bought
 
 Read from both accounts' logs side by side (`~/code/ycbot-logs`, Snicker_Licker on the desktop at

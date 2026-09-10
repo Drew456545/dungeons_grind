@@ -110,6 +110,7 @@ public final class EconomyChecks {
         n += checks0962c();
         n += checks0962d();
         n += checks0963a();
+        n += checks0964();
         n += checksInfra();
         n += checksGuiFlow();
         n += checksSplit();
@@ -4022,6 +4023,30 @@ public final class EconomyChecks {
         up = EnchantLore.upgradePick(List.of(warden), rem, 78, bals, none, now, rescan, true);
         n += eq("a locked star past its rescan is read again", up != null ? up.via() : null, "unknown");
         n += eq("the 0.9.43 pick still holds", EnchantLore.prestigePick(items, rem, 78, rich, none).name(), "Warden Guard Enchant");
+        return n;
+    }
+
+    /**
+     * 0.9.64: the mob floor. Fifteen of fifteen "You must be standing on mob floor to spawn
+     * your hero!" refusals came seconds after a companion visit (the player at the egg) or a
+     * rebirth (the spawn room); the spawner now waits for a kill to place the player.
+     */
+    private static int checks0964() {
+        int n = 0;
+        n += eq("settling: hold", Economy.heroFloorGate(true, 0.5, 6), "settling");
+        n += eq("no kill since the teleport: hold", Economy.heroFloorGate(false, null, 6), "off-floor");
+        n += eq("at the egg, 40 blocks off: hold", Economy.heroFloorGate(false, 40.0, 6), "off-floor");
+        n += eq("just past the radius: hold", Economy.heroFloorGate(false, 6.01, 6), "off-floor");
+        n += eq("on the radius: go", Economy.heroFloorGate(false, 6.0, 6) == null, true);
+        n += eq("at the kill: go", Economy.heroFloorGate(false, 0.0, 6) == null, true);
+        HeroPool hp = new HeroPool(new YCBotChallengeConfig());
+        n += eq("floor line is the floor", hp.onLine("EnchantedMC » You must be standing on mob floor to spawn your hero!", 5000), true);
+        n += eq("floor line stamps floorAt", hp.floorAt, 5000L);
+        n += eq("floor line is not a spawn", hp.spawnedAt, 0L);
+        n += eq("floor line is not a refusal", hp.needsAt, 0L);
+        n += eq("spawn line still a spawn", hp.onLine("EnchantedMC » Your hero has been spawned.", 6000), true);
+        n += eq("spawn line leaves floorAt", hp.floorAt, 5000L);
+        n += eq("spawn stamps spawnedAt", hp.spawnedAt, 6000L);
         return n;
     }
 }

@@ -296,6 +296,29 @@ public class CombatController {
         return System.currentTimeMillis() < settleUntil;
     }
 
+    /** 0.9.64: where the player stood at the last kill, and when - null since the last teleport. */
+    private Vec3d lastKillPos = null;
+    private long lastKillAt = 0;
+
+    private void markKillSpot(MinecraftClient client, long now) {
+        if (client.player == null) return;
+        lastKillPos = client.player.getEntityPos();
+        lastKillAt = now;
+    }
+
+    /**
+     * 0.9.64: how far the player is from where the last kill landed, or null with no kill
+     * since the last teleport. Kills happen on the mob floor; an egg or an enchanter does not.
+     * The hero spawner asks before typing /heroes ("You must be standing on mob floor to
+     * spawn your hero!" - 15 of 15 rejections came seconds after a companion visit or a rebirth).
+     */
+    public Double distFromLastKill(MinecraftClient client) {
+        if (lastKillPos == null || client.player == null) return null;
+        return client.player.getEntityPos().distanceTo(lastKillPos);
+    }
+
+    public long lastKillAt() { return lastKillAt; }
+
     /** Remaining time on the current mob from the live boss-bar HP and the measured DPS, or null. */
     public Double liveEtaMs() {
         if (!connected || targetMob == null) return null;
@@ -492,7 +515,13 @@ public class CombatController {
                         String why = stats.consumeTeleportReason();
                         if (logger != null) logger.log("zone_teleport", "blocks", Math.round(jumped), "reason", why);
                         stats.onZoneAdvance("teleport");
+                        // 0.9.64: a rebirth lands on stage 1, always (every cycle's stage list
+                        // starts lvl1). Known now, the plateless rule strikes the spawn room's
+                        // farm chicken off in unplatedIgnoreAfterTicks instead of after the
+                        // first boss bar - before it, the bot swung at it 7-10 s each rebirth.
+                        if ("rebirth".equals(why)) stats.adoptZoneLevel(1, "rebirth", 0);
                         lastPredictedTtkMs = null;
+                        lastKillPos = null;
                         beginSettle(now, why);
                         lastTickPos = null;
                         releaseKeys(client);
@@ -651,6 +680,7 @@ public class CombatController {
             long cookMs = now - tagAt;
             if (entityGone || cookMs >= cfg.barVanishMinCookMs) {
                 kills++;
+                markKillSpot(client, now);
                 stats.recordKill();
                 stats.recordKillDuration(cookMs, targetRarity);
                 wantsUpgradeWindow = true;
@@ -678,6 +708,7 @@ public class CombatController {
             if ("kill".equals(verdict)) {
                 long ttk = Math.max(1, barGoneAt - tagAt);
                 kills++;
+                markKillSpot(client, now);
                 stats.recordKill();
                 stats.recordKillDuration(ttk, targetRarity);
                 wantsUpgradeWindow = true;
@@ -710,6 +741,7 @@ public class CombatController {
         if (target != null && (target.isRemoved() || target.isDead() || !target.isAlive())) {
             if (connected) {
                 kills++;
+                markKillSpot(client, now);
                 stats.recordKill();
                 stats.recordKillDuration(now - tagAt, targetRarity);
                 wantsUpgradeWindow = true;
@@ -723,6 +755,7 @@ public class CombatController {
                 // The bar never rendered, but the mob is gone and the money landed after
                 // our first click: a kill the boss bar was too quick to show.
                 kills++;
+                markKillSpot(client, now);
                 stats.recordKill();
                 stats.recordKillDuration(Math.max(1, now - firstClickAt), targetRarity);
                 wantsUpgradeWindow = true;

@@ -58,6 +58,9 @@ public class HeroController extends BotModule implements Module {
     /** 0.9.54: the farm phase seen last, and the hold log's beat. */
     private int farmSeqSeen = -1;
     private long lastHoldLogAt = 0;
+    /** 0.9.64: the last click was refused for the floor; the next check comes soon, not at the model's date. */
+    private boolean floorRejected = false;
+    private long lastFloorHoldLogAt = 0;
 
     public HeroController(YCBotChallengeConfig cfg, StatsTracker stats, UpgradeController upgrades, HeroTracker tracker) {
         this.cfg = cfg;
@@ -95,6 +98,11 @@ public class HeroController extends BotModule implements Module {
                 return close;
             } else if (stats.hero.needsAt >= clickAt) {
                 log("hero_spawn_refused", "needs", stats.hero.needsHp, "hp", menuHp);
+                return close;
+            } else if (stats.hero.floorAt >= clickAt) {
+                // 0.9.64: off the mob floor - nothing spent; back soon, once a kill has placed us.
+                floorRejected = true;
+                log("hero_spawn_rejected", "reason", "mob-floor", "hp", menuHp);
                 return close;
             } else if (!isOurGui(c.client) && c.now - clickAt > 1500) {
                 // The menu went with no line either way: read the plate for the answer later.
@@ -253,6 +261,20 @@ public class HeroController extends BotModule implements Module {
         }
         if (upgrades != null && (upgrades.isBusy() || upgrades.hasPendingDecision())) return false;
         if (combat.isCooking()) return false; // the lull after a kill, never mid-cook
+        // 0.9.64: /heroes only works on the mob floor. Not inside the post-teleport settle, and
+        // not until a kill since the last teleport has placed the player near where it landed
+        // (an egg visit walks up to 80 blocks off the floor; a rebirth lands in the spawn room).
+        Double distKill = combat.distFromLastKill(client);
+        String floor = Economy.heroFloorGate(combat.isSettling(), distKill, cfg.heroFloorRadiusBlocks);
+        if (floor != null) {
+            if (now - lastFloorHoldLogAt > 60_000) {
+                lastFloorHoldLogAt = now;
+                log("hero_hold", "reason", floor, "distFromKill", distKill != null ? Num.r1(distKill) : null,
+                    "sinceKillMs", combat.lastKillAt() != 0 ? now - combat.lastKillAt() : null);
+            }
+            nextCheckAt = now + 5_000;
+            return false;
+        }
         Double hp = stats.hero.predictedHp(now, cfg.heroMaxHp);
         // 0.9.54: the hero halves the time to kill at the top stage and adds nothing to the
         // climb (stage 40: 4.3 s up vs 11.7 s down over 84 kills; the farm phase covered in
@@ -285,5 +307,11 @@ public class HeroController extends BotModule implements Module {
         log("hero_visit_end", "reason", reason, "hp", menuHp, "durationMs", now - visitStartedAt);
         flow.cancel();
         schedule(now, reason);
+        if (floorRejected) {
+            // 0.9.64: the pool was ready and is still ready - only the spot was wrong.
+            floorRejected = false;
+            nextCheckAt = Math.min(nextCheckAt, now + Math.max(1000, cfg.heroFloorRetryMs));
+            nextVia = "floor-retry";
+        }
     }
 }

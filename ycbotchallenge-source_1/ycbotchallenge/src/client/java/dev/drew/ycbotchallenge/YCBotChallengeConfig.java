@@ -1331,6 +1331,16 @@ public class YCBotChallengeConfig {
     public String heroLorePattern = "/health:\\s*(?<hp>[\\d,]+)\\s*\\/\\s*(?<max>[\\d,]+)/";
     public String heroDespawnPattern = "/your hero despawned/";
     public String heroNeedsPattern = "/hero needs (?<n>[\\d,]+) health/";
+    // ---- 0.9.64: the mob floor. "You must be standing on mob floor to spawn your hero!" - 15 of
+    // 15 such refusals on both accounts came 3-7 s after a companion visit ended (the player at
+    // the egg) or seconds after a rebirth (the spawn room). Kills happen on the mob floor, so
+    // the visit waits until the player is within heroFloorRadiusBlocks of where the last kill
+    // landed since the last teleport, and never inside the post-teleport settle. A refusal
+    // that still gets through costs nothing and is retried after heroFloorRetryMs, once a kill
+    // has placed the player again.
+    public String heroFloorPattern = "/standing on mob floor/";
+    public double heroFloorRadiusBlocks = 6.0;
+    public long heroFloorRetryMs = 15_000;
     public double heroSpawnHpMin = 60;
     public double heroSpawnHpMax = 95;
     public double heroSpawnFloorHp = 25;

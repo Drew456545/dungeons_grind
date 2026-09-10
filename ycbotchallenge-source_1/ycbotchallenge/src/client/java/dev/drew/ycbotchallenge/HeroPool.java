@@ -21,16 +21,20 @@ public final class HeroPool extends BotModule {
     public volatile Double regenPerMin = null;
     public volatile Double decayPerMin = null;
     private int regenSamples = 0;
+    /** 0.9.64: when the server last said "You must be standing on mob floor to spawn your hero!". */
+    public volatile long floorAt = 0;
     private final Pattern spawnRe;
     private final Pattern chatRe;
     private final Pattern despawnRe;
     private final Pattern needsRe;
+    private final Pattern floorRe;
 
     public HeroPool(YCBotChallengeConfig cfg) {
         spawnRe = Loose.compile(cfg.heroSpawnPattern);
         chatRe = Loose.compile(cfg.heroChatPattern);
         despawnRe = Loose.compile(cfg.heroDespawnPattern);
         needsRe = Loose.compile(cfg.heroNeedsPattern);
+        floorRe = Loose.compile(cfg.heroFloorPattern);
     }
 
     /** The hero is out: spawned after it last despawned, and not longer ago than its pool could last. */
@@ -87,6 +91,12 @@ public final class HeroPool extends BotModule {
                 log("hero_needs", "hp", needsHp, "raw", text);
                 return true;
             }
+        }
+        if (floorRe != null && floorRe.matcher(text).find()) {
+            // 0.9.64: the click landed off the mob floor - nothing spent, the pool untouched.
+            floorAt = now;
+            log("hero_floor_rejected", "raw", text);
+            return true;
         }
         if (chatRe != null && chatRe.matcher(text).find()) {
             log("hero_chat", "raw", text);
