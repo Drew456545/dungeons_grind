@@ -1752,7 +1752,7 @@ public class StatsTracker extends BotModule {
             if (!key.isEmpty()) current.add(key);
             // 0.9.38: the zone boss's own bar has no heart ("Rotten Boss 300") - never a mob
             // level, whatever it is called, and the count is the fight's progress.
-            if (indexOfHeart(title) < 0 && bossEventBarRe != null && bossEventBarRe.matcher(bossBarPrefix(title)).find()) {
+            if (isEventBarTitle(title, bossEventBarRe)) {
                 if (eventTitle == null) eventTitle = title.trim();
                 continue;
             }
@@ -2104,13 +2104,27 @@ public class StatsTracker extends BotModule {
         return -1;
     }
 
+    /**
+     * 0.9.66: the zone boss's own bar ("Warden Boss 600": no heart, the event pattern) is never a
+     * mob's bar. The mob matchers below took it for one: with a Warden Boss on screen every
+     * Warden mob read as connected on its first whiff (the bar "mentioned" it), cooked against a
+     * bar with no HP to the 90 s timeout and was abandoned - 104 min of it on the Mac's lvl130,
+     * more on lvl118-120 - and the boss module sat on "cooking" while the bot did it.
+     */
+    static boolean isEventBarTitle(String title, Pattern eventRe) {
+        if (title == null) return false;
+        return indexOfHeart(title) < 0 && eventRe != null && eventRe.matcher(bossBarPrefix(title)).find();
+    }
+
     /** True if any boss bar's title mentions {@code mobName} (e.g. "Chicken" in "LVL1 Chicken ❤ 78"). */
     public boolean bossBarMatches(String mobName) {
         if (mobName == null || mobName.isBlank()) return false;
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.inGameHud == null) return false;
         for (ClientBossBar bar : bossBars(client).values()) {
-            String prefix = bossBarPrefix(bar.getName().getString());
+            String title = bar.getName().getString();
+            if (isEventBarTitle(title, bossEventBarRe)) continue;
+            String prefix = bossBarPrefix(title);
             if (prefix.toLowerCase().contains(mobName.toLowerCase())) return true;
         }
         return false;
@@ -2123,7 +2137,9 @@ public class StatsTracker extends BotModule {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.inGameHud == null) return out;
         for (ClientBossBar bar : bossBars(client).values()) {
-            String prefix = bossBarPrefix(bar.getName().getString());
+            String title = bar.getName().getString();
+            if (isEventBarTitle(title, bossEventBarRe)) continue;
+            String prefix = bossBarPrefix(title);
             if (prefix.toLowerCase().contains(mobName.toLowerCase())) out.add(prefix);
         }
         return out;
@@ -2137,6 +2153,7 @@ public class StatsTracker extends BotModule {
         Double best = null;
         for (ClientBossBar bar : bossBars(client).values()) {
             String title = bar.getName().getString();
+            if (isEventBarTitle(title, bossEventBarRe)) continue;
             if (!bossBarPrefix(title).toLowerCase().contains(mobName.toLowerCase())) continue;
             Double hp = ChatClassifier.bossBarHp(title);
             // if multiple match, take the lowest (most-damaged = the one cooking)

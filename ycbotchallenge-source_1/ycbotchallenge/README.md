@@ -255,6 +255,21 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.66: the Warden Boss is not a Warden
+
+Drew: "there is a warden boss and warden mobs that sometimes cause the bot to behave
+incorrectly." The mob-bar matchers (`bossBarMatches`, `bossBarTitlesFor`, `currentHpFor`) took
+any boss bar whose title mentioned the mob's name, and the zone boss's own bar is titled
+`Warden Boss 600` (or `Scorpion Boss 500`; no heart, no LVL). With one on screen - and after a
+lost window it stays on screen until someone kills it - every Warden mob read as connected on
+its first whiff (the connect rule is "a click landed and a bar mentions the mob"), cooked
+against a bar with no HP, hit the 90 s cook timeout and was abandoned, again and again: 104
+min of `cook-timeout` on the Mac's lvl130 Wardens, 21-26 min each on lvl118-120, and the boss
+module waited on `boss_skip reason:cooking` while it happened; a Warden Boss kill then credited
+a `kill via:bossbar-gone` to the mob. `StatsTracker.isEventBarTitle` (no heart and the
+`bossEventBarPattern`) now excludes that bar from all three matchers, the same test the bar
+poller already used to keep it off the zone level.
+
 ### 0.9.65: the income trap, the boss window, and the hero on a stall
 
 Read from both accounts' logs side by side, Sep 9-15 (`~/code/ycbot-logs`; Ihazekids69420 on the

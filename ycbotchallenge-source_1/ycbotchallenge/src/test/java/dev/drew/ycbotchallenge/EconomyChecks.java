@@ -112,6 +112,7 @@ public final class EconomyChecks {
         n += checks0963a();
         n += checks0964();
         n += checks0965();
+        n += checks0966();
         n += checksInfra();
         n += checksGuiFlow();
         n += checksSplit();
@@ -4128,6 +4129,22 @@ public final class EconomyChecks {
         n += eq("stall detect default", c.stallDetectMs, 180_000);
         n += eq("boss ms per hit", c.bossMsPerHit, 700);
         n += eq("hero spawns on stalls", c.heroStallSpawn, true);
+        return n;
+    }
+
+    /** 0.9.66: the Warden Boss bar is not a Warden mob's bar (Drew: "a warden boss and warden mobs sometimes cause the bot to behave incorrectly"). */
+    private static int checks0966() {
+        int n = 0;
+        java.util.regex.Pattern re = Loose.compile(CFG.bossEventBarPattern);
+        n += eq("the event bar", StatsTracker.isEventBarTitle("Warden Boss 600", re), true);
+        n += eq("the event bar, counted down", StatsTracker.isEventBarTitle("Scorpion Boss 4", re), true);
+        n += eq("a Warden mob's bar", StatsTracker.isEventBarTitle("LVL130 Warden \u2764 3.2M", re), false);
+        n += eq("a Warden mob's bar, the other heart", StatsTracker.isEventBarTitle("LVL130 Warden \u2665 3.2M", re), false);
+        n += eq("a rare Warden's bar", StatsTracker.isEventBarTitle("[EPIC] LVL118 Warden \u2764 12.5M", re), false);
+        n += eq("the AFK mob's bar", StatsTracker.isEventBarTitle("[AFKMOB] LVL9 Mooshroom \u2764\u221e", re), false);
+        n += eq("a countdown bar", StatsTracker.isEventBarTitle("Event: 12m 10s", re), false);
+        n += eq("null", StatsTracker.isEventBarTitle(null, re), false);
+        n += eq("no pattern", StatsTracker.isEventBarTitle("Warden Boss 600", null), false);
         return n;
     }
 }
