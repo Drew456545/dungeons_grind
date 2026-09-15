@@ -255,6 +255,76 @@ GG is unchanged and works: 85 % of waves, half the perk pulls, the reply typed o
 
 **Rebirth timing (Drew: keep rebirthing as soon as affordable).** Rebirth cost is exactly x30 per rebirth from rb8 (656S) to rb23 (313TR); the zone price is x55 per stage and the top stage advances ~0.85 a rebirth, so the top zone grows ~x30 a rebirth too and the ratio rebirth cost / next zone stays about 2 (313TR vs 160TR at rb22) - an early rebirth at rb40 has the same shape as at rb23. What changes is the climb: one more stage a rebirth at ~0.7 bot-on minutes a stage (rb22 22 stages in 11.9 min, rb23 24 in 16.9) against a top-stage farm of 12-16 min set by that ratio and the income; income at the same stage grew x35 in one rebirth (lvl23: 23DD/min in rb21 -> 0.8TR/min in rb22), nearly all of it the two 10-egg visits. `cycle_end` now carries `climbMin`, `farmMin`, `farmKills`, `rebirthCost`, `topZonePrice` and `ratio` (and `tools/progress.py` prints them), so the trend is in the log; nothing acts on it.
 
+### 0.9.65: the income trap, the boss window, and the hero on a stall
+
+Read from both accounts' logs side by side, Sep 9-15 (`~/code/ycbot-logs`; Ihazekids69420 on the
+Mac, 95 h bot-on, 77 cycles; Snicker_Licker on the desktop, 87 h, 89 cycles).
+
+**The income trap.** The median cycle is 35-40 bot-on minutes on both accounts, but a third of
+all bot time went into a handful of cycles of 2-12 hours (desktop rb64 413 min, rb69 742, rb72
+656; Mac rb115 679, rb136 736, rb135 246, rb74 184). Every one has the same shape: `/zone max`
+jumped 5-7 stages at once (lvl45 -> 51, lvl49 -> 53, lvl95 -> 98), the new stage's mob took
+minutes a kill (Enderman 51 at 330 s, Axolotl 98 at 500-600 s, Iron Golem 56 never inside the
+90 s cook), income collapsed to nothing, and the sword that would have fixed it stayed
+`sword-hard-unaffordable` for hours - the Mac's lvl98 stint ended the moment two `/swordmax`
+landed and the bot cleared lvl98-100 in four minutes. `zone_back_candidate` could not see any
+of it (`ratio: null` or `0.0` during a stall - the previous stage's peak rate is measured in
+the 0.9 minutes of the climb, the stalled stage's "here" rate comes off a kill that never
+comes). Meanwhile the hero, which one-shot an EPIC lvl98 Axolotl (1.2 s against 500 s), sat
+held `reason:climb` (farm phase only) and `reason:off-floor` (837 holds on the desktop: leashing
+around a big mob drifts past 6 blocks from the last kill).
+
+Now: a stage is **stalled** (`stage_stall reason:no-kill|slow-cook|slow-ttk`, `Economy.stallVerdict`)
+after `stallDetectMs` (3 min) on it with no kill for that long, or a cook or kill median over
+`stallTtkMs` (60 s), while the sword is neither affordable nor due within `stallSwordEtaMaxMin`
+(5) at the measured income; it clears on a zone change or a minute of healthy evals
+(`stage_stall_end`). The escape (`Economy.stallEscape`): the hero spawner treats a stall as the
+farm phase (`hero_visit_start via:stall stalled:true`, `heroStallSpawn`) and the mob floor is
+also anywhere within the cook leash plus reach of the mob in hand (`heroFloorTargetSlack`); if
+the hero has been out `stallRetreatAfterMs` (4 min) and the stage is still stalled - or no hero
+is possible and the stall is that old - the bot types `zonePreviousCommand` (`stall_retreat`),
+farms the stage below (its `avgPerMin` was measured, not modelled) with zone buys held
+(`upgrade_skip reason:stall-retreat`; an affordable sword goes as `stall-retreat-sword`, and
+the buy hesitation is skipped while stalled), and comes back with `zoneNextCommand` once a sword
+buy landed (`stall_return`). Both moves are typed as `upgrade_send kind:zone_move` with no price
+bookkeeping and must produce a teleport inside `stallMoveVerifyMs` (`stall_retreat_ok` /
+`stall_return_ok`); a retreat that does not (`stall_move_failed retreatOff:true`) switches the
+retreat off for the session - the return then waits for the next affordable `/zone max`. At most
+`stallMaxRetreatsPerStage` (3) retreats a stage a rebirth. And a zone buy from a stage whose
+kills already take `zoneStepTtkMs` (3 s) is typed as `zoneNextCommand`, one stage, so a jump
+cannot skip six stages onto an Iron Golem (`upgrade_send command:/zone next`).
+
+**The cook that never hurts.** Half the desktop's 401 `cook-timeout` abandons (678 min of
+swinging with no kill: Iron Golem 56, Vindicator 58, Wither Skeleton 53, Zombie 55, Spider 54)
+show `sinceHpDropMs == afterMs` - the plate HP never moved in the whole 90 s - while the same
+mob type died in 32 s another time. Not hitting, not parsing, or genuinely tanky: `cook_probe`
+(every `cookProbeIntervalMs`, 15 s, while a tagged mob lives) logs the HP raw and parsed, the
+eye-to-hitbox distance against reach, what the crosshair is on, the hurt flashes since the tag
+and the mob's box, so one night at stages 50-58 says which. No behaviour change yet.
+
+**The boss window.** The Mac killed 23 of 32 bosses and lost 7 to `event-timeout`, all 500/600-
+count Scorpion and Warden bosses that take 250-300 s at ~2 hits/s, with 8, 11, 16, 34, 41, 72
+and 77 hits left - Drew's "50-ish HP". The 300 s cap counted from the module's own start, was
+never retried, and once a window ended the same bar could never be re-engaged (`seqSeen`). The
+desktop lost 3 of 38 to a mob in the aim ray (an iron golem, an enderman, a panda: twelve
+offsets of at most 12 degrees, then the identical retry six to twelve times). Now the window is
+the bar count at `bossMsPerHit` (700 ms) each, floored at `bossEventMaxMs`, counted from the
+bar's appearance, and extended by `bossEventExtendMs` (60 s, up to `bossMaxExtensions`) while
+the count fell inside that long (`boss_window_extend`); a bar the module gave up on is
+re-engaged once its count dropped or `bossReengageMs` (20 s) passed (`boss_seen via:reengage`,
+up to `bossMaxReengages`); a living mob in the ray lowers the aim like a stand did, then moves
+the stand `bossBlockerRestandDeg` (55) to a side (`boss_blocked action:restand`, twice), then
+hands the mob to combat for `bossBlockerHandoffMs` (45 s, `boss_handoff` / `boss_handoff_end`,
+combat's next pick is that mob) and comes back (`boss_seen via:handoff`); and a marker already
+inside reach is aimed at from where the bot stands (`boss_walk skipped:true`, once per target)
+instead of the 0.1-0.8 block shuffle that cost up to 2.9 s forty times a boss.
+
+**Left alone this release:** menu cadence (enchanter 359 visits / 120 min and companions 220 /
+141 min a week on the desktop, ~5 %), the human-imitation pauses (distractions 154 min,
+hesitation 122, settles 68, Drew's own alt-tabbing 82 - only the hesitation on a stalled stage
+changed), and the stuck captcha map re-detected 2136 times in one session (log noise, the play
+went on).
+
 ### 0.9.64: the hero off the mob floor, and the spawn room's chicken
 
 **The hero.** Drew: "you can only summon hero where mobs spawn ... right after a teleport we try

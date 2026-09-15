@@ -26,7 +26,7 @@ import net.minecraft.util.math.Vec3d;
 public class UpgradeController extends BotModule implements Module {
     @Override public String name() { return "upgrade"; }
     private enum Phase { IDLE, WAIT_STILL, PAUSE, TYPE, READ, SETTLE, GUI_WAIT, GUI_LOOK, GUI_CLICK, GUI_ESC }
-    private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY, CHAT, GG }
+    private enum Kind { SWORD, ZONE, REBIRTH, GIVEAWAY, CHAT, GG, ZONE_MOVE }
 
     private record PendingCmd(String text, Kind kind, long notBefore, boolean followUp) {}
 
@@ -129,6 +129,33 @@ public class UpgradeController extends BotModule implements Module {
     private int zoneBackSeq = -1;
     private int zoneBackBuys = 0;
     private boolean zoneBackHardLogged = false;
+    // ---- 0.9.65: the income trap (Economy.stallVerdict / stallEscape). A stall is declared per
+    // stage, cleared by a zone change or a minute of healthy kills; the hero spawner reads
+    // stallActive(), the retreat is typed here as a ZONE_MOVE (no price bookkeeping), verified
+    // by the teleport it must produce, and undone by the return move once a sword buy landed.
+    private long stallSince = 0;
+    private String stallReason = null;
+    private Integer stallStage = null;
+    private int stallSeq = 0;
+    private int stallZoneSeq = -1;
+    private long stallHealthySince = 0;
+    private long stallLastLogAt = 0;
+    private boolean retreatActive = false;
+    private long retreatSince = 0;
+    private Integer retreatFromStage = null;
+    private boolean retreatSwordBought = false;
+    private final java.util.Map<Integer, Integer> retreatsByStage = new java.util.HashMap<>();
+    private Integer retreatsAtRebirths = null;
+    /** null = never tried; false = the retreat command produced no teleport, off for the session. */
+    private Boolean zoneMoveSupported = null;
+    private String movePending = null;
+    private long moveSentAt = 0;
+    private int moveSeqAtSend = -1;
+
+    /** 0.9.65: a stall is declared on the current stage (the hero spawner and the hesitation read this). */
+    public boolean stallActive() { return stallSince != 0; }
+    public int stallSeq() { return stallSeq; }
+    public boolean retreatActive() { return retreatActive; }
 
     public UpgradeController(YCBotChallengeConfig cfg, StatsTracker stats) {
         this.cfg = cfg;
@@ -284,6 +311,13 @@ public class UpgradeController extends BotModule implements Module {
                 seedKillsNeeded = HumanTiming.ticks(cfg.rebirthSeedMinKillsMin, Math.max(cfg.rebirthSeedMinKillsMin, cfg.rebirthSeedMinKillsMax));
                 seedDelayMs = HumanTiming.logNormalMs(cfg.rebirthSeedDelayMinMs, Math.max(cfg.rebirthSeedDelayMinMs + 1, cfg.rebirthSeedDelayMaxMs));
             }
+            if (movePending != null && moveSentAt != 0) {
+                // 0.9.65: a typed /zone previous|next must move us; nothing else runs until it did or failed.
+                if (stats.zoneChangeSeq() != moveSeqAtSend) moveConfirmed(now);
+                else if (now - moveSentAt > cfg.stallMoveVerifyMs) moveFailed(now);
+                else return false;
+            }
+            maybeQueueStallReturn(now);
             maybeQueueRebirthProbe(combat, now);
             maybeQueueGiveaway(now);
             maybeQueueWinReply(now);
@@ -417,6 +451,7 @@ public class UpgradeController extends BotModule implements Module {
             savingZone = "saving-zone".equals(d.reason());
             logEggs(d, now);
             maybeLogZoneBack(combat, d, predicted, now);
+            d = updateStall(combat, d, now);
             if (d.actsTyped() && !Economy.firstKillsReached(combat.kills - killsAtEnable, combat.kills - killsAtRebirth, firstKillsNeeded)) {
                 lastDecision = d.hold("first-kills", null);
                 evalAt = Long.MAX_VALUE;
@@ -497,6 +532,18 @@ public class UpgradeController extends BotModule implements Module {
                     finish();
                     return false;
                 }
+                if (pendingKind == Kind.ZONE_MOVE) {
+                    // 0.9.65: a move, not a buy - the teleport is the only answer that counts.
+                    lastSendAt = now;
+                    stats.noteZoneMove();
+                    moveSentAt = now;
+                    moveSeqAtSend = stats.zoneChangeSeq();
+                    if (logger != null) logger.log("upgrade_send", "command", pending, "kind", "zone_move",
+                        "via", movePending, "typos", typer.typos());
+                    client.setScreen(null);
+                    finish();
+                    return false;
+                }
                 if (pendingKind == Kind.GIVEAWAY) {
                     // Not an economy command: no price bookkeeping, no response window.
                     lastSendAt = now;
@@ -562,6 +609,9 @@ public class UpgradeController extends BotModule implements Module {
                 }
                 boolean maxed = pendingKind == Kind.ZONE ? stats.zoneMaxed : stats.swordMaxed;
                 if (!stats.lastSendSucceeded && !maxed) stats.onUpgradeSuccess(kind, now);
+                // 0.9.65: the sword buy the retreat was farming for - the return move is due (a
+                // send that drew no fail line counts, the same as onUpgradeSuccess above).
+                if (pendingKind == Kind.SWORD && retreatActive) retreatSwordBought = true;
                 // 0.9.37: a sword bought while the mob is still being cooked: look at the same
                 // fight again once the board settled (every 2026-09-04 climb needed a second tier).
                 if (pendingKind == Kind.SWORD && stats.lastSendSucceeded && combat.isCooking()) {
@@ -861,6 +911,8 @@ public class UpgradeController extends BotModule implements Module {
      */
     private boolean hesitate(String kind, long now) {
         if ("rebirth".equals(kind) || cfg.buyHesitationChance <= 0) return false;
+        // 0.9.65: no dithering over the buy that ends a stall (122 min of holds a week on the desktop).
+        if (cfg.stallSkipHesitation && (stallActive() || retreatActive)) return false;
         if (hesitatingUntil > now) {
             if (kind.equals(hesitateKind)) return true;
             return false;
@@ -1119,7 +1171,12 @@ public class UpgradeController extends BotModule implements Module {
     }
 
     private String commandOf(String kind) {
-        if ("zone".equals(kind)) return cfg.zoneCommand;
+        // 0.9.65: one stage at a time when the kills here already take a while - a /zone max from
+        // lvl45 landed on lvl51 (633 min) and from lvl49 on lvl53 (480 min).
+        if ("zone".equals(kind)) {
+            boolean step = Economy.zoneStepWhenSlow(cfg.zoneStepWhenSlow, stats.medianTtkMs(), stats.stageMaxTtkMs(), cfg.zoneStepTtkMs);
+            return step ? cfg.zoneNextCommand : cfg.zoneCommand;
+        }
         if ("rebirth".equals(kind)) return cfg.rebirthCommand;
         return cfg.swordCommand;
     }
@@ -1192,6 +1249,156 @@ public class UpgradeController extends BotModule implements Module {
         return v == null ? null : Num.r1(v);
     }
 
+    // ---------------------------------------------------------------- 0.9.65: the income trap
+
+    /**
+     * The stall verdict for this eval, and the decision with the retreat's hold on zone buys
+     * applied. A stall is declared once per stage visit (stage_stall), logged again every two
+     * minutes while it lasts, and cleared by a zone change (stage_stall_end via:zone-change) or a
+     * minute of healthy evals (via:recovered). While a retreat is active no zone is bought
+     * (upgrade_skip reason:stall-retreat): the lower stage is for the sword.
+     */
+    private Decision updateStall(CombatController combat, Decision d, long now) {
+        if (!cfg.stallDetectEnabled) return d;
+        if (retreatsAtRebirths == null || !retreatsAtRebirths.equals(stats.rebirths)) {
+            retreatsAtRebirths = stats.rebirths;
+            retreatsByStage.clear();
+        }
+        int seq = stats.zoneChangeSeq();
+        if (seq != stallZoneSeq) {
+            stallZoneSeq = seq;
+            if (stallSince != 0) clearStall("zone-change", now);
+        }
+        long stageOnMs = stats.stageOnMs();
+        long entered = stats.stageEnteredAt();
+        long lastKill = combat.lastKillAt();
+        long sinceKill = lastKill > entered ? now - lastKill : entered > 0 ? now - entered : 0;
+        boolean swordAff = knownAffordable("sword");
+        Double bal = stats.money();
+        Double income = stats.incomePerMinute();
+        Double swordEtaMin = stats.swordTarget != null && bal != null && income != null && income > 0
+            ? Math.max(0, stats.swordTarget - bal) / income : null;
+        double cookMs = combat.isCooking() ? combat.cookElapsedMs() : 0;
+        String verdict = Economy.stallVerdict(stageOnMs, sinceKill, stats.medianTtkMs(), cookMs, swordAff, swordEtaMin,
+            cfg.stallDetectMs, cfg.stallTtkMs, cfg.stallSwordEtaMaxMin);
+        StatsTracker.StageRecord here = stats.currentStageRecord();
+        StatsTracker.StageRecord prev = stats.previousStageRecord();
+        Integer stage = stats.confirmedZoneLevel();
+        if (verdict != null) {
+            stallHealthySince = 0;
+            boolean fresh = stallSince == 0;
+            if (fresh) {
+                stallSince = now;
+                stallReason = verdict;
+                stallStage = stage;
+                stallSeq++;
+            }
+            if (fresh || now - stallLastLogAt > 120_000) {
+                stallLastLogAt = now;
+                if (logger != null) {
+                    logger.log("stage_stall", "via", fresh ? "declared" : "ongoing", "reason", verdict, "stage", stage,
+                        "stageOnMin", Num.r1(stageOnMs / 60_000.0), "sinceKillMs", sinceKill,
+                        "ttkMs", stats.medianTtkMs() != null ? Math.round(stats.medianTtkMs()) : null,
+                        "cookMs", Math.round(cookMs), "stageKills", here != null ? here.kills : null,
+                        "swordTarget", stats.swordTarget != null ? Amounts.format(stats.swordTarget) : null,
+                        "bal", bal != null ? Amounts.format(bal) : null, "swordEtaMin", swordEtaMin != null ? Num.r1(swordEtaMin) : null,
+                        "hereAvgPerMin", here != null && here.avgPerMin() != null ? Amounts.format(here.avgPerMin()) : null,
+                        "prevStage", prev != null ? prev.stage : null,
+                        "prevAvgPerMin", prev != null && prev.avgPerMin() != null ? Amounts.format(prev.avgPerMin()) : null,
+                        "heroAlive", stats.hero.alive(now), "retreatActive", retreatActive,
+                        "retreats", stage != null ? retreatsByStage.getOrDefault(stage, 0) : null,
+                        "stallAgeMs", now - stallSince);
+                }
+            }
+            maybeRetreat(combat, now, stage, prev);
+        } else if (stallSince != 0) {
+            if (stallHealthySince == 0) stallHealthySince = now;
+            else if (now - stallHealthySince >= 60_000) clearStall("recovered", now);
+        }
+        if (retreatActive && d.acts() && "zone".equals(d.kind())) {
+            // The lower stage is for the sword: an affordable one goes first, a zone never.
+            if (!stats.swordMaxed && swordAff) return d.with(Decision.BUY, "sword", "stall-retreat-sword", d.gain(), d.gainVia(), null);
+            return d.hold("stall-retreat", null);
+        }
+        return d;
+    }
+
+    private void clearStall(String via, long now) {
+        if (logger != null) logger.log("stage_stall_end", "via", via, "reason", stallReason, "stage", stallStage,
+            "stallMin", Num.r1((now - stallSince) / 60_000.0));
+        stallSince = 0;
+        stallReason = null;
+        stallStage = null;
+        stallHealthySince = 0;
+        stallLastLogAt = 0;
+    }
+
+    /** The escape ladder's retreat rung: hero first (the spawner acts on stallActive), then /zone previous. */
+    private void maybeRetreat(CombatController combat, long now, Integer stage, StatsTracker.StageRecord prev) {
+        if (retreatActive || movePending != null || !queue.isEmpty()) return;
+        boolean retreatAllowed = cfg.stallRetreatEnabled && !Boolean.FALSE.equals(zoneMoveSupported)
+            && stage != null && retreatsByStage.getOrDefault(stage, 0) < cfg.stallMaxRetreatsPerStage;
+        boolean prevMeasured = prev != null && prev.avgPerMin() != null && prev.stage != null
+            && (stage == null || prev.stage < stage);
+        Double hp = stats.hero.predictedHp(now, cfg.heroMaxHp);
+        boolean heroAlive = stats.hero.alive(now);
+        boolean heroCanSpawn = cfg.heroSpawnEnabled && cfg.heroStallSpawn && hp != null && hp >= cfg.heroSpawnFloorHp;
+        long heroAliveMs = heroAlive ? now - stats.hero.spawnedAt : 0;
+        String escape = Economy.stallEscape(now - stallSince, heroCanSpawn, heroAlive, heroAliveMs,
+            retreatAllowed, prevMeasured, cfg.stallRetreatAfterMs);
+        if (!"retreat".equals(escape)) return;
+        retreatsByStage.merge(stage, 1, Integer::sum);
+        retreatFromStage = stage;
+        movePending = "retreat";
+        moveSentAt = 0;
+        queue.add(new PendingCmd(cfg.zonePreviousCommand, Kind.ZONE_MOVE, 0, false));
+        if (logger != null) logger.log("stall_retreat", "stage", stage, "prevStage", prev.stage,
+            "prevAvgPerMin", Amounts.format(prev.avgPerMin()), "stallMin", Num.r1((now - stallSince) / 60_000.0),
+            "reason", stallReason, "heroAlive", heroAlive, "heroAliveMs", heroAliveMs,
+            "retreats", retreatsByStage.get(stage), "command", cfg.zonePreviousCommand);
+    }
+
+    /** The sword the retreat was for has landed: back up one stage, after a beat. */
+    private void maybeQueueStallReturn(long now) {
+        if (!retreatActive || movePending != null || !queue.isEmpty()) return;
+        // Never a wedge: a retreat with no sword in 30 min goes back up regardless.
+        boolean timedOut = retreatSince != 0 && now - retreatSince > 1_800_000L;
+        if (!retreatSwordBought && !timedOut) return;
+        movePending = "return";
+        moveSentAt = 0;
+        queue.add(new PendingCmd(cfg.zoneNextCommand, Kind.ZONE_MOVE, now + HumanTiming.logNormalMs(3000, 8000), false));
+        if (logger != null) logger.log("stall_return", "fromStage", retreatFromStage, "command", cfg.zoneNextCommand,
+            "via", retreatSwordBought ? "sword" : "timeout", "retreatMin", Num.r1((now - retreatSince) / 60_000.0));
+    }
+
+    private void moveConfirmed(long now) {
+        String via = movePending;
+        movePending = null;
+        moveSentAt = 0;
+        zoneMoveSupported = true;
+        if ("retreat".equals(via)) {
+            retreatActive = true;
+            retreatSince = now;
+            retreatSwordBought = false;
+            if (stallSince != 0) clearStall("retreat", now);
+            if (logger != null) logger.log("stall_retreat_ok", "fromStage", retreatFromStage, "zone", stats.zone);
+        } else {
+            retreatActive = false;
+            if (logger != null) logger.log("stall_return_ok", "toStage", retreatFromStage, "zone", stats.zone);
+            retreatFromStage = null;
+        }
+    }
+
+    private void moveFailed(long now) {
+        String via = movePending;
+        movePending = null;
+        moveSentAt = 0;
+        if ("retreat".equals(via)) zoneMoveSupported = false;
+        retreatActive = false;
+        if (logger != null) logger.log("stall_move_failed", "via", via, "stage", stats.confirmedZoneLevel(),
+            "waitedMs", cfg.stallMoveVerifyMs, "retreatOff", "retreat".equals(via));
+    }
+
     private void begin(MinecraftClient client, CombatController combat, long now, PendingCmd cmd) {
         pendingKind = cmd.kind();
         pending = cmd.text();
@@ -1231,6 +1438,7 @@ public class UpgradeController extends BotModule implements Module {
     private void abort(MinecraftClient client, String why) {
         if (logger != null) logger.log("upgrade_abort", "reason", why,
             "kind", pendingKind != null ? pendingKind.name().toLowerCase(Locale.ROOT) : null);
+        if (pendingKind == Kind.ZONE_MOVE) { movePending = null; moveSentAt = 0; } // 0.9.65: never typed - the stall may try again
         closeOurChat(client);
         closeRebirthGui(client);
         if (pendingKind == Kind.REBIRTH && stats.rebirthTarget == null) {

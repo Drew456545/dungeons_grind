@@ -1167,6 +1167,23 @@ public class YCBotChallengeConfig {
     public boolean bossRespectVanillaCooldown = false;
     public int bossHitLogEvery = 10;
     public int bossMaxConsecutiveAborts = 3;
+    // ---- 0.9.65: the boss window and the mob in the ray. Every 500/600-count boss on the Mac took
+    // 250-300 s and the 300 s cap lost 7 of 32 with 8-77 hits left; the desktop lost 3 of 38 to a
+    // stage mob standing in the aim ray (12 sweeps at a panda, six identical retries). Now the
+    // window is the bar count times bossMsPerHit (floored at bossEventMaxMs), extended by
+    // bossEventExtendMs while a hit landed inside that long, a bar the module gave up on is
+    // re-engaged once its count dropped or bossReengageMs passed, a living blocker gets the aim
+    // lowered, then the stand moved bossBlockerRestandDeg to a side (bossBlockerRestands times),
+    // then handed to combat for bossBlockerHandoffMs, and a marker already in reach skips the walk.
+    public int bossMsPerHit = 700;
+    public int bossEventExtendMs = 60_000;
+    public int bossMaxExtensions = 10;
+    public int bossReengageMs = 20_000;
+    public int bossMaxReengages = 4;
+    public int bossBlockerRestands = 2;
+    public double bossBlockerRestandDeg = 55.0;
+    public int bossBlockerHandoffMs = 45_000;
+    public boolean bossWalkSkipInReach = true;
 
     // ---- 0.9.28: the Transcend ability (Q with the sword held; "Your Transcend Ability has
     // been activated (180s Cooldown)" / "… has ended"). Periodic, never on the dot.
@@ -1360,6 +1377,15 @@ public class YCBotChallengeConfig {
      */
     public boolean heroFarmPhaseOnly = true;
     public double heroSpawnFloorMargin = 10;
+    /**
+     * 0.9.65: a stalled stage (Economy.stallVerdict: minutes without a kill, the sword out of
+     * reach) spends the pool at once, farm phase or not - the hero one-shot the lvl98 Axolotl
+     * that took the Mac 500 s a kill, and it sat held "for the farm phase" through ten hours of
+     * that. And the mob floor is also anywhere within the cook leash plus reach of the mob in
+     * hand (837 "off-floor" holds on the desktop while leashing around an Iron Golem).
+     */
+    public boolean heroStallSpawn = true;
+    public double heroFloorTargetSlack = 1.0;
     /**
      * A sidebar money drop of 99%+ counts as a rebirth (money-collapse) only when the
      * new value is below this; a bigger "collapse" is a suffix read on the wrong scale
@@ -1602,6 +1628,36 @@ public class YCBotChallengeConfig {
     public double zoneBackMargin = 1.5;
     public double zoneMoneyGrowthPrior = 20.0;
     /**
+     * 0.9.65: the income trap. A third of all bot time on both accounts (Sep 9-15) was a
+     * handful of cycles where /zone max jumped 5-7 stages onto a mob that took minutes a kill,
+     * income collapsed and the sword that would fix it stayed unaffordable for hours (desktop
+     * lvl51 633 min, lvl53 480 min; Mac lvl98 581 min - two /swordmax at the end cleared it in
+     * four minutes). A stage is stalled (stage_stall) after stallDetectMs on it with no kill
+     * for that long, or a cook / kill median over stallTtkMs, while the sword is neither
+     * affordable nor within stallSwordEtaMaxMin at the measured income. The escape: the hero
+     * (heroStallSpawn), then after stallRetreatAfterMs zonePreviousCommand back to the last
+     * measured stage to farm until a sword buy lands, then zoneNextCommand back up - at most
+     * stallMaxRetreatsPerStage times a stage; a move that produces no teleport inside
+     * stallMoveVerifyMs disables the retreat for the session. And a zone buy from a stage whose
+     * kills already take zoneStepTtkMs is typed as zoneNextCommand (one stage), so a jump cannot
+     * skip six stages onto an Iron Golem.
+     */
+    public boolean stallDetectEnabled = true;
+    public int stallDetectMs = 180_000;
+    public int stallTtkMs = 60_000;
+    public double stallSwordEtaMaxMin = 5.0;
+    public boolean stallRetreatEnabled = true;
+    public int stallRetreatAfterMs = 240_000;
+    public int stallMaxRetreatsPerStage = 3;
+    public int stallMoveVerifyMs = 8_000;
+    public boolean stallSkipHesitation = true;
+    public String zonePreviousCommand = "/zone previous";
+    public String zoneNextCommand = "/zone next";
+    public boolean zoneStepWhenSlow = true;
+    public int zoneStepTtkMs = 3_000;
+    /** 0.9.65: the cook probe (cook_probe) - what the bot sees every so often while a tagged mob is not dying. 0 = off. */
+    public int cookProbeIntervalMs = 15_000;
+    /**
      * A bot toggle within this many ms on the same stage (no zone change or teleport in
      * between) keeps the kill window and the patience roll instead of clearing them
      * (2026-09-04 14:55: six toggles in 37 s emptied the window each time and the gate
@@ -1787,7 +1843,7 @@ public class YCBotChallengeConfig {
      * before overlaying JSON, so a config file that lacks this key would otherwise
      * "look" current and skip every migration. save() always writes the current version.
      */
-    public static final int CURRENT_CONFIG_VERSION = 61;
+    public static final int CURRENT_CONFIG_VERSION = 62;
     public int configVersion = 0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -2212,6 +2268,11 @@ public class YCBotChallengeConfig {
             if ("B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9".equals(captchaLookalikes)) captchaLookalikes = "ad,hn,B8,O0,S5,Z2,I1,l1,G6,b6,g9,q9";
             changed = true;
         }
+        if (configVersion < 62) {
+            // v62 (0.9.65): the stall escape, the boss window by count, the hero on stalls, the
+            // cook probe - every knob is new and takes its default.
+            changed = true;
+        }
         if (configVersion < 61) {
             // v61 (0.9.62): rebirthUpgradeMaxConsecutiveAborts (defaults only - a fresh knob).
             changed = true;
@@ -2614,6 +2675,26 @@ public class YCBotChallengeConfig {
         if (bossClickCpsMax < bossClickCpsMin) bossClickCpsMax = bossClickCpsMin;
         if (bossHitLogEvery < 1) bossHitLogEvery = 1;
         if (bossMaxConsecutiveAborts < 1) bossMaxConsecutiveAborts = 1;
+        if (bossMsPerHit < 0) bossMsPerHit = 0;
+        if (bossEventExtendMs < 0) bossEventExtendMs = 0;
+        if (bossMaxExtensions < 0) bossMaxExtensions = 0;
+        if (bossReengageMs < 0) bossReengageMs = 0;
+        if (bossMaxReengages < 0) bossMaxReengages = 0;
+        if (bossBlockerRestands < 0) bossBlockerRestands = 0;
+        if (bossBlockerRestandDeg < 10) bossBlockerRestandDeg = 10;
+        if (bossBlockerRestandDeg > 120) bossBlockerRestandDeg = 120;
+        if (bossBlockerHandoffMs < 0) bossBlockerHandoffMs = 0;
+        if (heroFloorTargetSlack < 0) heroFloorTargetSlack = 0;
+        if (stallDetectMs < 30_000) stallDetectMs = 30_000;
+        if (stallTtkMs < 0) stallTtkMs = 0;
+        if (stallSwordEtaMaxMin < 0) stallSwordEtaMaxMin = 0;
+        if (stallRetreatAfterMs < 30_000) stallRetreatAfterMs = 30_000;
+        if (stallMaxRetreatsPerStage < 0) stallMaxRetreatsPerStage = 0;
+        if (stallMoveVerifyMs < 2000) stallMoveVerifyMs = 2000;
+        if (zonePreviousCommand == null || zonePreviousCommand.isBlank()) zonePreviousCommand = "/zone previous";
+        if (zoneNextCommand == null || zoneNextCommand.isBlank()) zoneNextCommand = "/zone next";
+        if (zoneStepTtkMs < 0) zoneStepTtkMs = 0;
+        if (cookProbeIntervalMs < 0) cookProbeIntervalMs = 0;
         if (zoneBuyAdvanceGraceMs < 500) zoneBuyAdvanceGraceMs = 500;
         if (plateMajorityMin < 1) plateMajorityMin = 1;
         if (perfLogIntervalMs < 5000) perfLogIntervalMs = 5000;

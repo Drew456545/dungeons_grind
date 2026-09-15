@@ -111,6 +111,7 @@ public final class EconomyChecks {
         n += checks0962d();
         n += checks0963a();
         n += checks0964();
+        n += checks0965();
         n += checksInfra();
         n += checksGuiFlow();
         n += checksSplit();
@@ -4047,6 +4048,86 @@ public final class EconomyChecks {
         n += eq("spawn line still a spawn", hp.onLine("EnchantedMC » Your hero has been spawned.", 6000), true);
         n += eq("spawn line leaves floorAt", hp.floorAt, 5000L);
         n += eq("spawn stamps spawnedAt", hp.spawnedAt, 6000L);
+        return n;
+    }
+
+    /**
+     * 0.9.65: the income trap and the boss window. A third of all bot time on both accounts
+     * was a handful of stalled cycles (/zone max onto a mob that took minutes a kill, the sword
+     * unaffordable for hours); every 500/600-count boss on the Mac ran out its 300 s window
+     * with 8-77 hits left; the desktop lost three to a mob in the aim ray.
+     */
+    private static int checks0965() {
+        int n = 0;
+        // the stall verdict
+        n += eq("young stage: no verdict", Economy.stallVerdict(60_000, 60_000, null, 0, false, null, 180_000, 60_000, 5.0), null);
+        n += eq("no kill for 3 min: no-kill", Economy.stallVerdict(180_000, 180_000, null, 0, false, null, 180_000, 60_000, 5.0), "no-kill");
+        n += eq("sword affordable: the economy buys it", Economy.stallVerdict(180_000, 180_000, null, 0, true, null, 180_000, 60_000, 5.0), null);
+        n += eq("sword due in 4 min: wait", Economy.stallVerdict(180_000, 180_000, null, 0, false, 4.0, 180_000, 60_000, 5.0), null);
+        n += eq("sword due in 40 min: stall", Economy.stallVerdict(180_000, 180_000, null, 0, false, 40.0, 180_000, 60_000, 5.0), "no-kill");
+        n += eq("a 90 s cook: slow-cook", Economy.stallVerdict(180_000, 30_000, null, 90_000, false, null, 180_000, 60_000, 5.0), "slow-cook");
+        n += eq("a 5 min median: slow-ttk", Economy.stallVerdict(180_000, 30_000, 300_000.0, 0, false, null, 180_000, 60_000, 5.0), "slow-ttk");
+        n += eq("a 9 s median, fresh kill: healthy", Economy.stallVerdict(180_000, 30_000, 9_000.0, 0, false, null, 180_000, 60_000, 5.0), null);
+        n += eq("detect off", Economy.stallVerdict(180_000, 180_000, null, 0, false, null, 0, 60_000, 5.0), null);
+        // the escape ladder
+        n += eq("pool ready, no hero out: hero", Economy.stallEscape(10_000, true, false, 0, true, true, 240_000), "hero");
+        n += eq("hero out 1 min: wait", Economy.stallEscape(300_000, true, true, 60_000, true, true, 240_000), "wait");
+        n += eq("hero out 4 min, still stalled: retreat", Economy.stallEscape(300_000, false, true, 240_000, true, true, 240_000), "retreat");
+        n += eq("no hero possible, 4 min: retreat", Economy.stallEscape(240_000, false, false, 0, true, true, 240_000), "retreat");
+        n += eq("no hero possible, 3 min: wait", Economy.stallEscape(180_000, false, false, 0, true, true, 240_000), "wait");
+        n += eq("pool ready but never spawned, 8 min: retreat", Economy.stallEscape(480_000, true, false, 0, true, true, 240_000), "retreat");
+        n += eq("retreat off: hero", Economy.stallEscape(480_000, true, false, 0, false, true, 240_000), "hero");
+        n += eq("retreat off, hero out: wait", Economy.stallEscape(480_000, true, true, 60_000, false, true, 240_000), "wait");
+        n += eq("nothing measured below: wait", Economy.stallEscape(480_000, false, false, 0, true, false, 240_000), "wait");
+        // one stage at a time when the kills already take a while
+        n += eq("instant kills: /zone max", Economy.zoneStepWhenSlow(true, 800.0, null, 3000), false);
+        n += eq("6 s kills: /zone next", Economy.zoneStepWhenSlow(true, 6000.0, null, 3000), true);
+        n += eq("no median, one 10 s kill: /zone next", Economy.zoneStepWhenSlow(true, null, 10_000.0, 3000), true);
+        n += eq("nothing measured: /zone max", Economy.zoneStepWhenSlow(true, null, null, 3000), false);
+        n += eq("step off", Economy.zoneStepWhenSlow(false, 6000.0, null, 3000), false);
+        // the hero on a stall, and the mob floor from the mob in hand
+        n += eq("climb, pool 80, stalled: spawn", Economy.heroSpawnGate(true, false, 80.0, 25, 10, 150, true), "spawn");
+        n += eq("climb, pool 30, stalled: hold-pool", Economy.heroSpawnGate(true, false, 30.0, 25, 10, 150, true), "hold-pool");
+        n += eq("climb, no read, stalled: unknown", Economy.heroSpawnGate(true, false, null, 25, 10, 150, true), "unknown");
+        n += eq("climb, pool 80, not stalled: hold-farm", Economy.heroSpawnGate(true, false, 80.0, 25, 10, 150, false), "hold-farm");
+        n += eq("12 blocks off the kill, 3 from the mob: go", Economy.heroFloorGate(false, 12.0, 6, 3.0, 8.0) == null, true);
+        n += eq("12 blocks off the kill, 9 from the mob: hold", Economy.heroFloorGate(false, 12.0, 6, 9.0, 8.0), "off-floor");
+        n += eq("no mob, at the kill: go", Economy.heroFloorGate(false, 2.0, 6, null, 8.0) == null, true);
+        n += eq("settling beats the mob", Economy.heroFloorGate(true, 2.0, 6, 3.0, 8.0), "settling");
+        // the boss window
+        n += eq("400 count: 300 s floor", Economy.bossWindowMs(300_000, 400, 700), 300_000L);
+        n += eq("600 count: 420 s", Economy.bossWindowMs(300_000, 600, 700), 420_000L);
+        n += eq("no count: the floor", Economy.bossWindowMs(300_000, null, 700), 300_000L);
+        n += eq("msPerHit off: the floor", Economy.bossWindowMs(300_000, 600, 0), 300_000L);
+        n += eq("a hit 30 s ago: extend", Economy.bossTimeoutAction(true, 30_000, 60_000, 0, 10), "extend");
+        n += eq("nothing for 70 s: abort", Economy.bossTimeoutAction(true, 70_000, 60_000, 0, 10), "abort");
+        n += eq("bar gone: abort", Economy.bossTimeoutAction(false, 1_000, 60_000, 0, 10), "abort");
+        n += eq("extensions spent: abort", Economy.bossTimeoutAction(true, 1_000, 60_000, 10, 10), "abort");
+        n += eq("count dropped since: reengage", Economy.bossReengage(true, 5_000, true, 0, 4, 20_000), true);
+        n += eq("20 s later: reengage", Economy.bossReengage(true, 20_000, false, 0, 4, 20_000), true);
+        n += eq("5 s later, no drop: not yet", Economy.bossReengage(true, 5_000, false, 0, 4, 20_000), false);
+        n += eq("bar gone: no", Economy.bossReengage(false, 60_000, true, 0, 4, 20_000), false);
+        n += eq("four re-engages spent: no", Economy.bossReengage(true, 60_000, true, 4, 4, 20_000), false);
+        n += eq("first blocker: restand", Economy.bossBlockedAction(0, 2, false, true, true), "restand");
+        n += eq("second: restand", Economy.bossBlockedAction(1, 2, false, true, true), "restand");
+        n += eq("third, a mob: handoff", Economy.bossBlockedAction(2, 2, false, true, true), "handoff");
+        n += eq("third, a stand: abort", Economy.bossBlockedAction(2, 2, false, false, true), "abort");
+        n += eq("handoff spent: abort", Economy.bossBlockedAction(2, 2, true, true, true), "abort");
+        n += eq("handoff off: abort", Economy.bossBlockedAction(2, 2, false, true, false), "abort");
+        double[] straight = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{2, 64, 0}, 3.0, new double[]{5, 64, 0}, 0.8, 0);
+        double[] side = Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{2, 64, 0}, 3.0, new double[]{5, 64, 0}, 0.8, 90);
+        n += eq("straight stand is out along the face", straight[0], 4.2, 1e-9);
+        n += eq("side stand keeps the reach", Math.hypot(side[0] - 2, side[2]), 2.2, 1e-9);
+        n += eq("side stand is 90 degrees round", Math.abs(side[2]), 2.2, 1e-9);
+        n += eq("the 5-arg stand point is the 0-degree one", Economy.bossStandPoint(new double[]{0, 64, 0}, new double[]{2, 64, 0}, 3.0, new double[]{5, 64, 0}, 0.8)[0], 4.2, 1e-9);
+        // the new knobs survive a load and their clamps
+        YCBotChallengeConfig c = new YCBotChallengeConfig();
+        n += eq("config version", YCBotChallengeConfig.CURRENT_CONFIG_VERSION, 62);
+        n += eq("retreat command", c.zonePreviousCommand, "/zone previous");
+        n += eq("return command", c.zoneNextCommand, "/zone next");
+        n += eq("stall detect default", c.stallDetectMs, 180_000);
+        n += eq("boss ms per hit", c.bossMsPerHit, 700);
+        n += eq("hero spawns on stalls", c.heroStallSpawn, true);
         return n;
     }
 }

@@ -61,6 +61,8 @@ public class HeroController extends BotModule implements Module {
     /** 0.9.64: the last click was refused for the floor; the next check comes soon, not at the model's date. */
     private boolean floorRejected = false;
     private long lastFloorHoldLogAt = 0;
+    /** 0.9.65: the stall last answered (a fresh one pulls the menu forward). */
+    private int stallSeqSeen = 0;
 
     public HeroController(YCBotChallengeConfig cfg, StatsTracker stats, UpgradeController upgrades, HeroTracker tracker) {
         this.cfg = cfg;
@@ -254,6 +256,15 @@ public class HeroController extends BotModule implements Module {
                 nextVia = "farm";
             }
         }
+        // 0.9.65: a stalled stage (the economy's verdict) is the moment for the pool, climb or not.
+        boolean stalled = cfg.heroStallSpawn && upgrades != null && upgrades.stallActive();
+        if (stalled && upgrades.stallSeq() != stallSeqSeen) {
+            stallSeqSeen = upgrades.stallSeq();
+            if (!stats.hero.alive(now) && !tracker.isAlive()) {
+                nextCheckAt = Math.min(nextCheckAt, now + HumanTiming.logNormalMs(5_000, 30_000));
+                nextVia = "stall";
+            }
+        }
         if (now < nextCheckAt) return false;
         if (stats.hero.alive(now) || tracker.isAlive()) {
             logThrottled("hero_skip:alive", 60_000, "hero_skip", "reason", "alive", "plate", tracker.isAlive(), "sinceSpawnMs", now - stats.hero.spawnedAt);
@@ -265,11 +276,15 @@ public class HeroController extends BotModule implements Module {
         // not until a kill since the last teleport has placed the player near where it landed
         // (an egg visit walks up to 80 blocks off the floor; a rebirth lands in the spawn room).
         Double distKill = combat.distFromLastKill(client);
-        String floor = Economy.heroFloorGate(combat.isSettling(), distKill, cfg.heroFloorRadiusBlocks);
+        Double distTarget = combat.distFromTarget(client);
+        // 0.9.65: within the cook leash of the mob in hand is the mob floor too.
+        String floor = Economy.heroFloorGate(combat.isSettling(), distKill, cfg.heroFloorRadiusBlocks,
+            distTarget, cfg.cookLeashMaxBlocks + cfg.reach + cfg.heroFloorTargetSlack);
         if (floor != null) {
             if (now - lastFloorHoldLogAt > 60_000) {
                 lastFloorHoldLogAt = now;
                 log("hero_hold", "reason", floor, "distFromKill", distKill != null ? Num.r1(distKill) : null,
+                    "distFromTarget", distTarget != null ? Num.r1(distTarget) : null,
                     "sinceKillMs", combat.lastKillAt() != 0 ? now - combat.lastKillAt() : null);
             }
             nextCheckAt = now + 5_000;
@@ -279,7 +294,8 @@ public class HeroController extends BotModule implements Module {
         // 0.9.54: the hero halves the time to kill at the top stage and adds nothing to the
         // climb (stage 40: 4.3 s up vs 11.7 s down over 84 kills; the farm phase covered in
         // 4 of 18 cycles) - the pool is held for the farm phase unless it is full.
-        String gate = Economy.heroSpawnGate(cfg.heroFarmPhaseOnly, stats.farmPhase(), hp, cfg.heroSpawnFloorHp, cfg.heroSpawnFloorMargin, cfg.heroMaxHp);
+        String gate = Economy.heroSpawnGate(cfg.heroFarmPhaseOnly, stats.farmPhase(), hp, cfg.heroSpawnFloorHp, cfg.heroSpawnFloorMargin,
+            cfg.heroMaxHp, stalled);
         if ("hold-farm".equals(gate)) {
             if (now - lastHoldLogAt > 5 * 60_000L) {
                 lastHoldLogAt = now;
@@ -297,7 +313,8 @@ public class HeroController extends BotModule implements Module {
         visitStartedAt = now;
         heroSlot = -1; menuHp = null; menuMax = null;
         log("hero_visit_start", "via", nextVia, "targetHp", Math.round(targetHp), "predictedHp", hp != null ? Num.r1(hp) : null,
-            "sinceDespawnMs", stats.hero.despawnedAt != 0 ? now - stats.hero.despawnedAt : null);
+            "sinceDespawnMs", stats.hero.despawnedAt != 0 ? now - stats.hero.despawnedAt : null,
+            "stalled", stalled ? true : null);
         flow.start(stepType, now);
         return true;
     }

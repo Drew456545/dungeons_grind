@@ -319,6 +319,31 @@ public class CombatController {
 
     public long lastKillAt() { return lastKillAt; }
 
+    /** 0.9.65: where the mob in hand (or the last one) stands - the other mob-floor evidence. */
+    private Vec3d lastTargetPos = null;
+
+    /** 0.9.65: eye-to-hitbox distance to the mob in hand, else to where the last one stood, null with neither. */
+    public Double distFromTarget(MinecraftClient client) {
+        if (client.player == null) return null;
+        if (target != null) return reachDistance(client, target);
+        if (lastTargetPos == null) return null;
+        return client.player.getEntityPos().distanceTo(lastTargetPos);
+    }
+
+    /** 0.9.65: the boss module's blocker - the next pick is this mob while it lives and {@code until} has not passed. */
+    private LivingEntity preferredTarget = null;
+    private long preferredUntil = 0;
+
+    public void preferTarget(LivingEntity e, long until) {
+        preferredTarget = e;
+        preferredUntil = until;
+    }
+
+    /** 0.9.65: the cook probe's counters. */
+    private long lastCookProbeAt = 0;
+    private int cookHurtFlashes = 0;
+    private boolean cookHurtWas = false;
+
     /** Remaining time on the current mob from the live boss-bar HP and the measured DPS, or null. */
     public Double liveEtaMs() {
         if (!connected || targetMob == null) return null;
@@ -863,6 +888,7 @@ public class CombatController {
             }
         }
 
+        if (target != null) lastTargetPos = target.getEntityPos();
         lastYawErrSigned = MouseDriver.signedYawError(client, connected && nextTarget != null ? nextTarget : target);
 
         // Re-tag safety: if a connect was recorded but the boss bar has since
@@ -908,6 +934,9 @@ public class CombatController {
             tagHp = stats.currentHpFor(targetMob);
             lastHpSeen = tagHp;
             lastHpDropAt = now;
+            lastCookProbeAt = now;
+            cookHurtFlashes = 0;
+            cookHurtWas = false;
             nextGlanceAt = 0;
             glanceOut = false;
             cookLeash = rng.nextDouble(cfg.cookLeashMinBlocks, Math.max(cfg.cookLeashMinBlocks + 0.01, cfg.cookLeashMaxBlocks));
@@ -1038,6 +1067,35 @@ public class CombatController {
         if (currentHp != null) {
             if (lastHpSeen == null || currentHp < lastHpSeen - 1e-9) lastHpDropAt = now;
             lastHpSeen = currentHp;
+        }
+        // 0.9.65: the cook probe. Half the desktop's 90 s cook-timeouts on Iron Golems and
+        // Wither Skeletons showed no plate HP drop for the whole cook (sinceHpDropMs == afterMs)
+        // while the same mob type died in 32 s another time: not hitting, not parsing, or
+        // genuinely tanky - this row says which.
+        if (cfg.cookProbeIntervalMs > 0 && logger != null) {
+            boolean hurtNow = target.hurtTime > 0;
+            if (hurtNow && !cookHurtWas) cookHurtFlashes++;
+            cookHurtWas = hurtNow;
+            if (now - lastCookProbeAt >= cfg.cookProbeIntervalMs) {
+                lastCookProbeAt = now;
+                HitResult hr = client.crosshairTarget;
+                String hit = hr == null ? "none"
+                    : hr.getType() == HitResult.Type.ENTITY ? "entity:" + typeName(((EntityHitResult) hr).getEntity())
+                    : hr.getType() == HitResult.Type.BLOCK ? "block" : "miss";
+                List<String> titles = stats.bossBarTitlesFor(targetMob);
+                logger.log("cook_probe", "mob", targetMob, "rarity", targetRarity, "level", targetLevel,
+                    "sinceTagMs", now - tagAt, "hp", currentHp, "hpAtTag", tagHp,
+                    "sinceHpDropMs", lastHpDropAt == 0 ? null : now - lastHpDropAt,
+                    "dps", currentDps != null ? Num.r2(currentDps) : null,
+                    "bar", titles.isEmpty() ? null : titles.get(0),
+                    "dist", Math.round(reachDistance(client, target) * 100.0) / 100.0,
+                    "originDist", Math.round(client.player.distanceTo(target) * 100.0) / 100.0,
+                    "reach", Math.round(effectiveReach() * 100.0) / 100.0, "crosshair", hit,
+                    "hurtFlashes", cookHurtFlashes, "hurtNow", hurtNow, "sinceClickMs", now - lastClickAt,
+                    "w", Math.round(target.getWidth() * 100.0) / 100.0, "h", Math.round(target.getHeight() * 100.0) / 100.0,
+                    "aimErr", Math.round(MouseDriver.aimErrorDeg(client, target, aimHeightFrac) * 10.0) / 10.0,
+                    "leash", Math.round(cookLeash * 100.0) / 100.0, "focused", windowFocused);
+            }
         }
 
         if (trackStyle == TrackStyle.WATCH || trackStyle == TrackStyle.HESITATE) tickGlance(client, now);
@@ -1550,6 +1608,12 @@ public class CombatController {
     }
 
     private LivingEntity pickTarget(MinecraftClient client, LivingEntity exclude) {
+        // 0.9.65: the boss module's blocker comes first while it lives and the handoff runs.
+        if (preferredTarget != null) {
+            long nowP = System.currentTimeMillis();
+            if (nowP >= preferredUntil || preferredTarget.isRemoved()) preferredTarget = null;
+            else if (preferredTarget != exclude && validMob(client, preferredTarget)) return preferredTarget;
+        }
         List<LivingEntity> candidates = new ArrayList<>();
         Map<EntityType<?>, Integer> counts = new HashMap<>();
         excludedByUsThisScan = 0;

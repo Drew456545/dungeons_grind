@@ -206,6 +206,9 @@ public class StatsTracker extends BotModule {
 
     public StageRecord currentStageRecord() { return currentStage; }
     public StageRecord previousStageRecord() { return previousStage; }
+    /** 0.9.65: bot-on ms on the current stage (0 with no record open), and when it was entered. */
+    public long stageOnMs() { return currentStage != null ? currentStage.onMs : 0; }
+    public long stageEnteredAt() { return currentStage != null ? currentStage.enteredAt : 0; }
 
     private void closeStageRecord(String via) {
         StageRecord r = currentStage;
@@ -881,6 +884,12 @@ public class StatsTracker extends BotModule {
             expectTeleportUntil = now + Math.max(0, cfg.expectedTeleportAfterZoneMs);
             expectTeleportReason = "zone";
         }
+    }
+
+    /** 0.9.65: /zone previous or /zone next typed as a move, not a buy - the teleport is expected, no price bookkeeping. */
+    public void noteZoneMove() {
+        expectTeleportUntil = System.currentTimeMillis() + Math.max(0, cfg.expectedTeleportAfterZoneMs);
+        expectTeleportReason = "zone";
     }
 
     /** Rebirth diamond click: the teleport that follows is a rebirth, not a zone advance. */

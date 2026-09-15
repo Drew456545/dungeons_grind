@@ -1150,11 +1150,103 @@ public final class Economy {
     }
 
     public static String heroSpawnGate(boolean farmOnly, boolean farmPhase, Double hp, double floor, double margin, double maxHp) {
+        return heroSpawnGate(farmOnly, farmPhase, hp, floor, margin, maxHp, false);
+    }
+
+    /** 0.9.65: a stalled stage counts as the farm phase - the pool goes now, not at the top stage. */
+    public static String heroSpawnGate(boolean farmOnly, boolean farmPhase, Double hp, double floor, double margin, double maxHp,
+                                       boolean stalled) {
         boolean full = hp != null && hp >= maxHp - 0.5;
-        if (farmOnly && !farmPhase && !full) return "hold-farm";
-        if (hp == null) return farmPhase || !farmOnly ? "unknown" : "hold-farm";
+        boolean phase = farmPhase || stalled;
+        if (farmOnly && !phase && !full) return "hold-farm";
+        if (hp == null) return phase || !farmOnly ? "unknown" : "hold-farm";
         if (hp < floor + margin && !full) return "hold-pool";
         return "spawn";
+    }
+
+    /**
+     * 0.9.65: the mob floor is also anywhere within {@code targetRadius} of the mob in hand (or
+     * the last one): leashing around a big mob for minutes drifts past the kill-spot radius
+     * (837 "off-floor" holds on the desktop, the hero never spawned into the stall).
+     */
+    public static String heroFloorGate(boolean settling, Double distFromLastKill, double radius,
+                                       Double distFromTarget, double targetRadius) {
+        if (settling) return "settling";
+        if (distFromTarget != null && distFromTarget <= Math.max(0, targetRadius)) return null;
+        return heroFloorGate(false, distFromLastKill, radius);
+    }
+
+    // ---- 0.9.65: the income trap
+
+    /**
+     * Is this stage a stall? Null when it is not, else why: {@code no-kill} (nothing died for
+     * {@code detectMs}), {@code slow-cook} (the mob in hand has taken {@code ttkMs} already),
+     * {@code slow-ttk} (the kill median is over {@code ttkMs}). Never before {@code detectMs}
+     * of bot-on time on the stage, never while the sword is affordable (the economy buys it)
+     * or due within {@code swordEtaMaxMin} at the measured income. Pure.
+     */
+    public static String stallVerdict(long stageOnMs, long sinceKillMs, Double medianTtkMs, double cookElapsedMs,
+                                      boolean swordAffordable, Double swordEtaMin,
+                                      int detectMs, int ttkMs, double swordEtaMaxMin) {
+        if (detectMs <= 0 || stageOnMs < detectMs) return null;
+        if (swordAffordable) return null;
+        if (swordEtaMin != null && swordEtaMin <= swordEtaMaxMin) return null;
+        if (sinceKillMs >= detectMs) return "no-kill";
+        if (ttkMs > 0 && cookElapsedMs >= ttkMs) return "slow-cook";
+        if (ttkMs > 0 && medianTtkMs != null && medianTtkMs >= ttkMs) return "slow-ttk";
+        return null;
+    }
+
+    /**
+     * What a declared stall does next: {@code hero} (the pool can go and no hero is out),
+     * {@code retreat} (a step down to the last measured stage), {@code wait}. The hero gets
+     * {@code retreatAfterMs} to show it can carry the stage; with no hero possible the retreat
+     * comes after that long, and a pool that never lands a hero (a spawner held elsewhere)
+     * stops blocking it after twice that. Pure.
+     */
+    public static String stallEscape(long stallAgeMs, boolean heroCanSpawn, boolean heroAlive, long heroAliveMs,
+                                     boolean retreatAllowed, boolean prevMeasured, int retreatAfterMs) {
+        if (!retreatAllowed || !prevMeasured) return heroCanSpawn && !heroAlive ? "hero" : "wait";
+        if (heroAlive) return heroAliveMs >= retreatAfterMs ? "retreat" : "wait";
+        if (heroCanSpawn) return stallAgeMs >= 2L * retreatAfterMs ? "retreat" : "hero";
+        return stallAgeMs >= retreatAfterMs ? "retreat" : "wait";
+    }
+
+    /** The zone buy is typed one stage at a time when the kills here already take {@code stepTtkMs} (the sword is only just ahead). */
+    public static boolean zoneStepWhenSlow(boolean enabled, Double medianTtkMs, Double stageMaxTtkMs, int stepTtkMs) {
+        if (!enabled || stepTtkMs <= 0) return false;
+        Double t = medianTtkMs != null ? medianTtkMs : stageMaxTtkMs;
+        return t != null && t >= stepTtkMs;
+    }
+
+    // ---- 0.9.65: the boss window
+
+    /** The window a boss gets: the config floor, or the bar count at {@code msPerHit} each, whichever is longer. */
+    public static long bossWindowMs(int cfgMaxMs, Integer count, int msPerHit) {
+        long floor = Math.max(30_000, cfgMaxMs);
+        if (count == null || count <= 0 || msPerHit <= 0) return floor;
+        return Math.max(floor, (long) count * msPerHit);
+    }
+
+    /** At the window's end: {@code extend} while the bar is up and a hit landed within {@code extendMs}, else {@code abort}. */
+    public static String bossTimeoutAction(boolean barPresent, long sinceProgressMs, int extendMs, int extensions, int maxExtensions) {
+        if (barPresent && extendMs > 0 && sinceProgressMs < extendMs && extensions < maxExtensions) return "extend";
+        return "abort";
+    }
+
+    /** Re-engage a bar the module already gave up on: it is still up, and its count dropped since (someone hit it) or {@code reengageMs} passed. */
+    public static boolean bossReengage(boolean barPresent, long sinceWindowEndMs, boolean countDropped,
+                                       int reengages, int maxReengages, int reengageMs) {
+        if (!barPresent || reengages >= maxReengages) return false;
+        if (countDropped) return true;
+        return reengageMs > 0 && sinceWindowEndMs >= reengageMs;
+    }
+
+    /** A living mob in the aim ray after a full sweep: {@code restand} (a side), {@code handoff} (combat kills it), {@code abort}. */
+    public static String bossBlockedAction(int restands, int maxRestands, boolean handoffTried, boolean blockerIsMob, boolean handoffEnabled) {
+        if (restands < maxRestands) return "restand";
+        if (handoffEnabled && blockerIsMob && !handoffTried) return "handoff";
+        return "abort";
     }
 
     /**
@@ -1298,6 +1390,11 @@ public final class Economy {
 
     /** The stand point {@code inset} blocks inside reach (0.9.44: 0.8, so a slid marker stays in the ray). */
     public static double[] bossStandPoint(double[] body, double[] marker, double reach, double[] player, double inset) {
+        return bossStandPoint(body, marker, reach, player, inset, 0);
+    }
+
+    /** 0.9.65: {@code sideDeg} swings the stand around the marker (a mob in the ray from the straight-on spot). */
+    public static double[] bossStandPoint(double[] body, double[] marker, double reach, double[] player, double inset, double sideDeg) {
         double ox = marker[0] - body[0], oz = marker[2] - body[2];
         double h = Math.sqrt(ox * ox + oz * oz);
         int face = 0;
@@ -1307,6 +1404,12 @@ public final class Economy {
             oz = player[2] - body[2];
             h = Math.sqrt(ox * ox + oz * oz);
             if (h < 1e-6) { ox = 1; oz = 0; h = 1; }
+        }
+        if (sideDeg != 0) {
+            double a = Math.toRadians(sideDeg);
+            double rx = ox * Math.cos(a) - oz * Math.sin(a);
+            double rz = ox * Math.sin(a) + oz * Math.cos(a);
+            ox = rx; oz = rz;
         }
         double stand = Math.max(1.2, reach - inset);
         return new double[]{marker[0] + ox / h * stand, marker[1], marker[2] + oz / h * stand, face};

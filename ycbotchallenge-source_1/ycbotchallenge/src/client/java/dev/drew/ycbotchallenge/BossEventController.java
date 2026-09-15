@@ -123,6 +123,23 @@ public class BossEventController extends BotModule implements Module {
     private int windowRetries = 0;
     private boolean approaching = false;
     private boolean approachTried = false;
+    // 0.9.65: the window by count and its extensions, the re-engage of a bar given up on, the
+    // mob in the ray (aim lower -> restand -> hand it to combat), the walk skipped in reach.
+    private long windowMaxMs = 0;
+    private long extendedMs = 0;
+    private int extensions = 0;
+    private long windowEndedAt = 0;
+    private Integer countAtWindowEnd = null;
+    private int reengages = 0;
+    private Entity blocker = null;
+    private int restands = 0;
+    private int standSide = 0;
+    private boolean handoffTried = false;
+    private boolean handoffActive = false;
+    private long handoffUntil = 0;
+    private boolean walkSkipTried = false;
+    /** 0.9.65: when the bar count last fell or a hit was counted - what the window extension measures. */
+    private long lastCountDropAt = 0;
 
     public BossEventController(YCBotChallengeConfig cfg, StatsTracker stats, UpgradeController upgrades) {
         this.cfg = cfg;
@@ -169,7 +186,20 @@ public class BossEventController extends BotModule implements Module {
         if (phase == Phase.IDLE) return maybeStart(client, combat, now);
 
         if (phase != Phase.WALK) combat.releaseKeys(client);
-        if (now - eventStartedAt > cfg.bossEventMaxMs) { abort(client, combat, "event-timeout"); return false; }
+        if (now - eventStartedAt > windowMaxMs + extendedMs) {
+            // 0.9.65: a boss still going down is not given up on - the window stretches while hits land.
+            String act = Economy.bossTimeoutAction(stats.bossEventBarPresent, now - lastCountDropAt,
+                cfg.bossEventExtendMs, extensions, cfg.bossMaxExtensions);
+            if ("extend".equals(act)) {
+                extensions++;
+                extendedMs += cfg.bossEventExtendMs;
+                log("boss_window_extend", "extensions", extensions, "windowMs", now - windowStartedAt, "count", stats.bossEventCount,
+                    "sinceProgressMs", now - lastCountDropAt, "hits", windowHits, "windowMaxMs", windowMaxMs + extendedMs);
+            } else {
+                abort(client, combat, "event-timeout");
+                return false;
+            }
+        }
         if (client.currentScreen != null) {
             if (screenOpenSince == 0) screenOpenSince = now;
             if (now - screenOpenSince > 5_000) { abort(client, combat, "screen-open"); return false; }
@@ -183,11 +213,12 @@ public class BossEventController extends BotModule implements Module {
         if (count != null && (lastCountSeen == null || count < lastCountSeen)) {
             lastCountSeen = count;
             lastProgressAt = now;
+            lastCountDropAt = now;
             rescansWithoutProgress = 0;
         }
         Integer th = stats.bossTargetsHit;
         if (th != null && !th.equals(lastTargetsHit)) {
-            if (lastTargetsHit != null && th > lastTargetsHit) rescansWithoutProgress = 0;
+            if (lastTargetsHit != null && th > lastTargetsHit) { rescansWithoutProgress = 0; lastCountDropAt = now; }
             lastTargetsHit = th;
             lastProgressAt = now;
         }
@@ -209,6 +240,17 @@ public class BossEventController extends BotModule implements Module {
                 Vec3d p = client.player.getEntityPos();
                 double dx = stand.x - p.x, dz = stand.z - p.z;
                 double dist = Math.sqrt(dx * dx + dz * dz);
+                // 0.9.65: a marker already inside reach is aimed at from here (the 0.1-0.8 block
+                // shuffles cost 0.1-2.9 s each, ~40 a boss), once per target.
+                if (!approaching && cfg.bossWalkSkipInReach && !walkSkipTried && bestDist == Double.MAX_VALUE
+                    && marker != null && eyeToBox(client, marker) <= cfg.reach - 0.4) {
+                    walkSkipTried = true;
+                    releaseWalkKeys(client);
+                    log("boss_walk", "blocks", 0.0, "ms", now - walkStartAt, "left", Math.round(dist * 10.0) / 10.0,
+                        "target", targets, "approach", false, "skipped", true);
+                    beginAim(now);
+                    return true;
+                }
                 if (dist <= cfg.bossStandTolerance) {
                     releaseWalkKeys(client);
                     log("boss_walk", "blocks", bestDist == Double.MAX_VALUE ? 0.0 : Math.round((bestDist - dist) * 10.0) / 10.0, "ms", now - walkStartAt,
@@ -260,6 +302,24 @@ public class BossEventController extends BotModule implements Module {
                 if (marker == null || marker.isRemoved()) { phase = Phase.SCAN; return true; }
                 if (aimIssuedAt == 0) {
                     if (aimTry >= AIM_OFFSETS.length) {
+                        // 0.9.65: a living mob in the ray (the panda, the iron golem, the enderman of the
+                        // desktop's lost windows): stand to a side, then let combat kill it, then give up.
+                        if (blocker != null && !blocker.isRemoved()) {
+                            String act = Economy.bossBlockedAction(restands, cfg.bossBlockerRestands, handoffTried,
+                                blockerIsMob(blocker), cfg.bossBlockerHandoffMs > 0);
+                            log("boss_blocked", "entity", typeId(blocker), "plate", plateOf(blocker), "action", act,
+                                "restands", restands, "hits", hits, "count", stats.bossEventCount, "target", targets);
+                            if ("restand".equals(act)) {
+                                restands++;
+                                standSide = restands % 2 == 1 ? 1 : -1;
+                                blocker = null;
+                                walkSkipTried = true;
+                                phase = Phase.SCAN;
+                                lastScanAt = 0;
+                                return true;
+                            }
+                            if ("handoff".equals(act)) { beginHandoff(client, combat, now); return false; }
+                        }
                         if (++aimSweeps >= 2) { abort(client, combat, "no-aim"); return false; }
                         log("boss_aim_sweep_failed", "sweeps", aimSweeps, "crosshair", crosshairDesc(client));
                         phase = Phase.SCAN;
@@ -285,7 +345,10 @@ public class BossEventController extends BotModule implements Module {
                 // 0.9.42: a companion plate stand or a display in the ray (the 0.9.40 combat
                 // rule, never ported here): aim a step lower on the marker's box and look again.
                 Entity inRay = client.crosshairTarget instanceof EntityHitResult ehr ? ehr.getEntity() : null;
-                if (inRay != null && inRay != marker && (inRay instanceof ArmorStandEntity || inRay instanceof DisplayEntity)
+                if (inRay != null && inRay != marker && blockerIsMob(inRay)) blocker = inRay;
+                // 0.9.65: a living mob in the ray lowers the aim too (only stands and displays did).
+                if (inRay != null && inRay != marker
+                    && (inRay instanceof ArmorStandEntity || inRay instanceof DisplayEntity || blockerIsMob(inRay))
                     && aimHeightFrac > 0.2f) {
                     float from = aimHeightFrac;
                     aimHeightFrac = Math.max(0.2f, aimHeightFrac - 0.15f);
@@ -374,11 +437,32 @@ public class BossEventController extends BotModule implements Module {
         int seq = stats.bossEventSeq;
         boolean fresh = seq != seqSeen;
         boolean live = stats.bossEventBarPresent || (stats.bossTitleStartAt != 0 && now - stats.bossTitleStartAt < 15_000);
+        if (handoffActive) {
+            // 0.9.65: combat has the blocker; back to the boss once it is dead or the handoff is spent.
+            boolean gone = blocker == null || blocker.isRemoved();
+            boolean expired = now >= handoffUntil;
+            if (!gone && !expired && live) return false;
+            handoffActive = false;
+            blocker = null;
+            log("boss_handoff_end", "cleared", gone, "expired", expired, "count", stats.bossEventCount, "barPresent", stats.bossEventBarPresent);
+            if (!live) { endWindow("handoff-bar-gone"); finish(client, combat); return false; }
+            begin(client, combat, now, "handoff", false);
+            return true;
+        }
         if (!live) {
             seqSeen = seq;
             return false;
         }
-        if (!fresh) return false;
+        boolean reengage = false;
+        if (!fresh) {
+            // 0.9.65: a bar the module already gave up on: back at it once its count moved
+            // (someone hit it - the blocker left, or Drew did) or bossReengageMs has passed.
+            Integer c = stats.bossEventCount;
+            boolean dropped = countAtWindowEnd != null && c != null && c < countAtWindowEnd;
+            if (windowEndedAt == 0 || !Economy.bossReengage(stats.bossEventBarPresent, now - windowEndedAt, dropped,
+                reengages, cfg.bossMaxReengages, cfg.bossReengageMs)) return false;
+            reengage = true;
+        }
         if (startPendingSince == 0) startPendingSince = now;
         String blocked = null;
         if (combat.isOnBreak()) blocked = "break";
@@ -394,21 +478,62 @@ public class BossEventController extends BotModule implements Module {
         }
         seqSeen = seq;
         startPendingSince = 0;
-        startVia = stats.bossEventBarPresent ? "bar" : "title";
+        if (reengage) reengages++; else reengages = 0;
+        begin(client, combat, now, reengage ? "reengage" : stats.bossEventBarPresent ? "bar" : "title", !reengage);
+        return true;
+    }
+
+    /**
+     * 0.9.65: one window start for a fresh bar, a re-engage and a handoff return. The window
+     * is the bar count at bossMsPerHit each (floored at bossEventMaxMs) and, for a fresh bar,
+     * runs from the bar's appearance - a boss that showed while a menu was open has been
+     * ticking since then; the extension rule covers what that costs.
+     */
+    private void begin(MinecraftClient client, CombatController combat, long now, String via, boolean freshBar) {
+        startVia = via;
         windowStartedAt = now;
         windowHits = 0;
         windowRetries = 0;
         scanDumps = 0;
-        eventStartedAt = now;
+        extendedMs = 0;
+        extensions = 0;
+        eventStartedAt = freshBar && stats.bossEventBarPresent && stats.bossEventSeenAt != 0 && stats.bossEventSeenAt <= now
+            ? stats.bossEventSeenAt : now;
+        windowMaxMs = Economy.bossWindowMs(cfg.bossEventMaxMs, stats.bossEventCount, cfg.bossMsPerHit);
+        if (!"handoff".equals(via)) handoffTried = false;
         resetAttempt(now);
         log("boss_seen", "via", startVia, "barTitle", stats.bossEventBarTitle, "count", stats.bossEventCount,
             "targetsHit", stats.bossTargetsHit, "cooking", combat.isCooking(), "kills", combat.kills,
-            "sinceBarMs", stats.bossEventSeenAt != 0 ? now - stats.bossEventSeenAt : null);
+            "sinceBarMs", stats.bossEventSeenAt != 0 ? now - stats.bossEventSeenAt : null,
+            "windowMaxMs", windowMaxMs, "reengages", reengages > 0 ? reengages : null);
         combat.releaseKeys(client);
         MouseDriver.INSTANCE.cancel();
         phase = Phase.SCAN;
         lastScanAt = 0;
-        return true;
+    }
+
+    /** 0.9.65: the blocker is combat's for bossBlockerHandoffMs; the module waits in IDLE with its window intact. */
+    private void beginHandoff(MinecraftClient client, CombatController combat, long now) {
+        handoffTried = true;
+        handoffActive = true;
+        handoffUntil = now + cfg.bossBlockerHandoffMs;
+        if (blocker instanceof LivingEntity le) combat.preferTarget(le, handoffUntil);
+        log("boss_handoff", "entity", typeId(blocker), "plate", plateOf(blocker), "untilMs", cfg.bossBlockerHandoffMs,
+            "hits", hits, "count", stats.bossEventCount);
+        releaseWalkKeys(client);
+        MouseDriver.INSTANCE.cancel();
+        combat.reset(client);
+        phase = Phase.IDLE;
+        marker = null;
+    }
+
+    private static boolean blockerIsMob(Entity e) {
+        return e instanceof LivingEntity && !(e instanceof ArmorStandEntity) && !(e instanceof PlayerEntity);
+    }
+
+    private static String plateOf(Entity e) {
+        String plate = String.join(" | ", CombatController.plateTextLines(e));
+        return plate.isBlank() ? null : plate;
     }
 
     /** The per-attempt counters: a fresh start and every in-window retry begin here. */
@@ -420,6 +545,7 @@ public class BossEventController extends BotModule implements Module {
         countAtTarget = lastCountSeen;
         lastTargetsHit = stats.bossTargetsHit;
         lastProgressAt = now;
+        lastCountDropAt = now;
         lastClickAt = 0;
         killedSeqSeen = stats.bossKilledUsSeq;
         body = null; bodyPos = null; marker = null; markerType = null; markerPosAtTarget = null;
@@ -427,6 +553,10 @@ public class BossEventController extends BotModule implements Module {
         reacquireSince = 0;
         reacquireScans = 0;
         waitReason = null;
+        blocker = null;
+        restands = 0;
+        standSide = 0;
+        walkSkipTried = false;
     }
 
     /** 0.9.44: a retry inside the window, from where we stand (no hand-back to combat). */
@@ -607,7 +737,7 @@ public class BossEventController extends BotModule implements Module {
         markerPosAtTarget = marker.getEntityPos();
         targetAt = now;
         countAtTarget = stats.bossEventCount;
-        if (!same) targets++;
+        if (!same) { targets++; restands = 0; standSide = 0; blocker = null; walkSkipTried = false; }
         aimHeightFrac = 0.5f;
         Vec3d stand = standPoint(client);
         log("boss_target", "entityId", marker.getId(), "type", markerType, "same", same,
@@ -641,7 +771,8 @@ public class BossEventController extends BotModule implements Module {
         Vec3d m = markerAim();
         Vec3d p = client.player.getEntityPos();
         double[] out = Economy.bossStandPoint(new double[]{bodyPos.x, bodyPos.y, bodyPos.z},
-            new double[]{m.x, m.y, m.z}, cfg.reach, new double[]{p.x, p.y, p.z}, cfg.bossStandInset);
+            new double[]{m.x, m.y, m.z}, cfg.reach, new double[]{p.x, p.y, p.z}, cfg.bossStandInset,
+            standSide * cfg.bossBlockerRestandDeg);
         faceDesc = out[3] == 0 ? "side" : out[3] == 1 ? "top" : "degenerate";
         return new Vec3d(out[0], out[1], out[2]);
     }
@@ -744,7 +875,7 @@ public class BossEventController extends BotModule implements Module {
         // instead of giving the boss up (the 07:58 window: one scan, then 290 s of nothing).
         long windowMs = now - windowStartedAt;
         boolean canRetry = stats.bossEventBarPresent && !"event-timeout".equals(why)
-            && windowMs + cfg.bossRescanMs + 10_000 < cfg.bossEventMaxMs
+            && windowMs + cfg.bossRescanMs + 10_000 < windowMaxMs + extendedMs
             && windowRetries < cfg.bossMaxWindowRetries;
         log("boss_abort", "reason", why, "phase", phase.name().toLowerCase(Locale.ROOT), "hits", hits,
             "count", stats.bossEventCount, "targetsHit", stats.bossTargetsHit, "targets", targets, "rescans", rescans,
@@ -787,5 +918,10 @@ public class BossEventController extends BotModule implements Module {
         phase = Phase.IDLE;
         marker = null;
         body = null;
+        blocker = null;
+        handoffActive = false;
+        // 0.9.65: what a re-engage of the same bar measures against.
+        windowEndedAt = System.currentTimeMillis();
+        countAtWindowEnd = stats.bossEventCount;
     }
 }

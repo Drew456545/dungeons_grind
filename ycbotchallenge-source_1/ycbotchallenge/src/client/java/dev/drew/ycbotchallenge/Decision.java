@@ -120,6 +120,7 @@ public record Decision(
                 case "zone-affordable" -> "buy zone" + sp(price) + " · stage " + (gate == null ? "?" : gate) + (ttk != null ? " " + ttk : "");
                 case "sword-hard" -> "buy sword" + sp(price) + " · stage hard" + (ttk != null && pat != null ? " " + ttk + " > " + pat : "");
                 case "sword-cheap" -> "buy sword" + sp(price) + " · cheap vs zone gap" + (swordPct != null ? " " + Math.round(swordPct) + "%" : "");
+                case "stall-retreat-sword" -> "buy sword" + sp(price) + " · the stall's sword";
                 case "rebirth-affordable" -> "buy rebirth" + sp(price);
                 case "companion-sooner" -> "buy eggs" + sp(price) + " · sooner to stage/rebirth";
                 case "companion-persist" -> "buy eggs" + sp(price) + " · pays past rebirth" + sp(eta != null ? "+" + eta : null);
@@ -137,6 +138,7 @@ public record Decision(
                 case "first-kills" -> "wait · a few kills first";
                 case "cooldown" -> "wait" + sp(eta) + " · cooldown" + (kind != null ? " " + kind : "");
                 case "hesitate" -> "wait" + sp(eta) + " · hesitating on " + kind;
+                case "stall-retreat" -> "retreated · farming for the sword";
                 default -> "wait · " + r + (kind != null ? " " + kind : "");
             };
             default -> out = "maxed".equals(r) ? "nothing left to buy" : "idle";
