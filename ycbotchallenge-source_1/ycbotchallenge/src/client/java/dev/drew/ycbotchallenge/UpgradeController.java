@@ -1323,6 +1323,31 @@ public class UpgradeController extends BotModule implements Module {
         return d;
     }
 
+    /**
+     * 0.9.67: focus lost. A command not yet sent is dropped (the next eval plans it again); one
+     * already sent keeps its verdict - chat is still read while frozen, so a fail line is not
+     * missed. The queue goes (a GG or a giveaway window does not outlive a freeze), and a zone
+     * move that never left is forgotten rather than left to wedge the retreat.
+     */
+    @Override
+    public void onFocusLost(MinecraftClient client) {
+        if (phase == Phase.WAIT_STILL || phase == Phase.PAUSE || phase == Phase.TYPE) {
+            closeOurChat(client);
+            typer.cancel(client);
+            phase = Phase.IDLE;
+            pending = null;
+            pendingFollowUp = false;
+        }
+        queue.clear();
+        if (movePending != null && moveSentAt == 0) movePending = null;
+    }
+
+    /** 0.9.67: a zone move sent just before the freeze gets its verify window again, not a failure. */
+    @Override
+    public void onFocusRegained(long now) {
+        if (movePending != null && moveSentAt != 0) moveSentAt = now;
+    }
+
     private void clearStall(String via, long now) {
         if (logger != null) logger.log("stage_stall_end", "via", via, "reason", stallReason, "stage", stallStage,
             "stallMin", Num.r1((now - stallSince) / 60_000.0));

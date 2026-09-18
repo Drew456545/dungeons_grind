@@ -26,6 +26,15 @@ public interface Module {
     /** Drop everything in flight (captcha, toggle, teleport). */
     void reset(MinecraftClient client);
 
+    /**
+     * 0.9.67: the window lost focus - drop what is in flight. Never an abort: nothing counts
+     * toward a suspension. The default is {@link #reset}.
+     */
+    default void onFocusLost(MinecraftClient client) { reset(client); }
+
+    /** 0.9.67: focus is back - roll forward any clock that kept running while frozen. */
+    default void onFocusRegained(long now) {}
+
     /** The bot was just enabled. */
     default void onEnable(long now, int kills) {}
 

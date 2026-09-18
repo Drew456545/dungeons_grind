@@ -391,6 +391,15 @@ public class CombatController {
             && ThreadLocalRandom.current().nextDouble() < cfg.movingTargetAttackChance;
     }
 
+    /** 0.9.67: the window lost focus - drop the fight, keep the break schedule (an alt-tab is not a toggle). */
+    public void onFocusLost(MinecraftClient client) {
+        long keepBreak = breakUntil, keepFocus = focusRemainingMs;
+        reset(client);
+        breakUntil = keepBreak;
+        focusRemainingMs = keepFocus;
+        lastFocusTickAt = 0; // the frozen stretch is not focus time
+    }
+
     public void reset(MinecraftClient client) {
         target = null;
         nextTarget = null;

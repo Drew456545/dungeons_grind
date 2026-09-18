@@ -329,6 +329,22 @@ public class YCBotChallengeConfig {
     public boolean pauseScreenCloseEnabled = true;
     public int pauseScreenCloseMinMs = 500;
     public int pauseScreenCloseMaxMs = 1500;
+    /**
+     * 0.9.67: the window is not focused - freeze. Vanilla applies mouse look only to a focused
+     * window, yet commands, menu clicks and swings are packets and still went out: a bot that
+     * cannot turn but still types and clicks (Drew: "conflicting behavior / unexpected things").
+     * Frozen: every module, the Q ability and combat stop, whatever was in flight is dropped
+     * WITHOUT an abort (no suspension, no failed zone move), and it all resumes on focus. Chat,
+     * the sidebar, the captcha path, the reboot wait and the auto-disconnect timer keep running.
+     * Off only for a second instance on the same machine (one window can ever have focus).
+     */
+    public boolean freezeWhenUnfocused = true;
+    /**
+     * 0.9.67: while the bot is on, vanilla's "pause on lost focus" (F3+P) is held off and put
+     * back when the bot goes off. With it on, every alt-tab opened the pause menu, the closer
+     * above shut it, the game opened it again: 6,600 rounds in one 61-hour session.
+     */
+    public boolean managePauseOnLostFocus = true;
 
     /**
      * Captcha auto-solve via QwenCloud's qwen3.6-flash since 0.9.32 (a local Qwen3-VL

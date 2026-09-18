@@ -27,6 +27,11 @@ public class YCBotChallengeClient implements ClientModInitializer {
     public static boolean enabled = false;
     /** Why the bot last auto-paused (e.g. "captcha"); null after a manual re-enable. */
     public static String pausedReason = null;
+    /** 0.9.67: the window is not focused and the bot is holding still (HUD + log). */
+    public static boolean focusFrozen = false;
+    private long focusFrozenAt = 0;
+    /** 0.9.67: vanilla's pause-on-lost-focus as we found it, put back when the bot goes off. */
+    private Boolean pauseOnLostFocusRestore = null;
     /** 0.9.41: the screen seen last tick, for the close edge that starts the swing hold. */
     private boolean screenWasOpen = false;
     private String lastScreenKind = "screen";
@@ -293,6 +298,12 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
 
+        // 0.9.67: the focus edges, read before anything can return: a freeze starts and ends here,
+        // the gate itself sits below the captcha path (a frozen captcha is a kick).
+        boolean unfocused = config.freezeWhenUnfocused && !client.isWindowFocused();
+        if (unfocused && !focusFrozen) beginFocusFreeze(client);
+        else if (!unfocused && focusFrozen) endFocusFreeze(client);
+
         // 0.9.54: the pause screen (alt-tab with "pause on lost focus" on) blocks every swing
         // (20:39-20:41: eleven no-connects, zero clicks). Close it after a beat, as a player
         // coming back does; F3+P stops it opening at all.
@@ -339,6 +350,11 @@ public class YCBotChallengeClient implements ClientModInitializer {
             return;
         }
         captchaSolver.tickIdle(nowMs);
+        // 0.9.67: frozen - no module, no Q, no combat. Everything above this line still ran.
+        if (focusFrozen) {
+            combat.releaseKeys(client);
+            return;
+        }
         // 0.9.38: a live zone boss outranks every buy - it is gone in five minutes; a module
         // mid-visit keeps the tick until it is done (0.9.62: one list, one order).
         for (Module m : modules) {
@@ -455,69 +471,27 @@ public class YCBotChallengeClient implements ClientModInitializer {
         }
     }
 
-    /** 0.9.30: the in-game options screen — one ON/OFF button per feature, saved to the config file at once. */
+    /**
+     * The in-game options screen (Y). 0.9.67: six controls - the ones a player actually flips
+     * mid-session. Every other switch is core behaviour (off only breaks the bot), a sub-switch
+     * of one of these, or a debug knob; they all still live in config/ycbotchallenge.json and
+     * are honoured from there. Sprint has its own key (Shift+G).
+     */
     private BotOptionsScreen newOptionsScreen() {
         List<BotOptionsScreen.Option> opts = new ArrayList<>();
-        // 0.9.33: each toggle shows what its module is doing right now (the HUD module row is off by default).
-        opts.add(new BotOptionsScreen.Option("serverAutoRebirth", "Server auto-rebirth", () -> config.serverAutoRebirth, v -> config.serverAutoRebirth = v,
-            () -> { String r = upgrades.hudRebirthLine(); return (r != null ? "rebirth " + r : "rebirth cost unknown") + " · " + stats.cycleHistoryLine(); }));
-        opts.add(new BotOptionsScreen.Option("upgradesEnabled", "Sword / zone buys", () -> config.upgradesEnabled, v -> config.upgradesEnabled = v,
-            () -> upgrades.hudPlanLine()));
-        opts.add(new BotOptionsScreen.Option("rebirthHorizonEnabled", "Rebirth horizon rule", () -> config.rebirthHorizonEnabled, v -> config.rebirthHorizonEnabled = v,
-            () -> upgrades.horizonBlockedKind() != null ? "holding " + upgrades.horizonBlockedKind() + " (rebirth sooner)" : "not limiting"));
-        opts.add(new BotOptionsScreen.Option("enchantsEnabled", "Enchant visits", () -> config.enchantsEnabled, v -> config.enchantsEnabled = v,
-            () -> moduleStatus(enchants.hudLine(), enchants.isBusy(), enchants.isSuspended())));
-        opts.add(new BotOptionsScreen.Option("enchantPrestigeEnabled", "Enchant prestige", () -> config.enchantPrestigeEnabled, v -> config.enchantPrestigeEnabled = v,
-            () -> enchants.prestigeHudLine()));
-        opts.add(new BotOptionsScreen.Option("rebirthUpgradesEnabled", "Rebirth upgrades", () -> config.rebirthUpgradesEnabled, v -> config.rebirthUpgradesEnabled = v,
-            () -> moduleStatus(rebirthUpgrades.hudLine(), rebirthUpgrades.isBusy(), rebirthUpgrades.isSuspended())));
-        opts.add(new BotOptionsScreen.Option("companionsEnabled", "Companions", () -> config.companionsEnabled, v -> config.companionsEnabled = v,
-            () -> moduleStatus(companions.hudLine(), companions.isBusy(), companions.isSuspended())));
-        opts.add(new BotOptionsScreen.Option("companionBulkDeleteEnabled", "Companion bulk delete", () -> config.companionBulkDeleteEnabled, v -> config.companionBulkDeleteEnabled = v));
-        opts.add(new BotOptionsScreen.Option("bossEventEnabled", "Zone boss", () -> config.bossEventEnabled, v -> config.bossEventEnabled = v,
-            () -> moduleStatus(bossEvent.hudLine(), bossEvent.isBusy(), bossEvent.isSuspended())));
-        opts.add(new BotOptionsScreen.Option("heroSpawnEnabled", "Hero spawns", () -> config.heroSpawnEnabled, v -> config.heroSpawnEnabled = v,
-            () -> moduleStatus(heroSpawns.hudLine(), heroSpawns.isBusy(), heroSpawns.isSuspended())));
-        opts.add(new BotOptionsScreen.Option("heroTrackEnabled", "Hero tracking", () -> config.heroTrackEnabled, v -> config.heroTrackEnabled = v,
-            () -> heroes.hudLine() != null ? heroes.hudLine() : "no hero plate in range (evidence only: hero_seen / hero_hp / hero_gone)"));
-        opts.add(new BotOptionsScreen.Option("rebootResumeEnabled", "Reboot auto-resume", () -> config.rebootResumeEnabled, v -> config.rebootResumeEnabled = v,
-            () -> "reboot".equals(pausedReason) ? (rebootResumeAt != 0 ? "back in Dungeons, resuming shortly" : "waiting for the auto-queue") : "a reboot kick waits for the way back, a /hub still stops"));
-        opts.add(new BotOptionsScreen.Option("transcendEnabled", "Transcend (Q)", () -> config.transcendEnabled, v -> config.transcendEnabled = v,
-            () -> { String t = transcend.hudState(); return t != null ? t : "idle"; }));
-        opts.add(new BotOptionsScreen.Option("giveawaysEnabled", "Join giveaways", () -> config.giveawaysEnabled, v -> config.giveawaysEnabled = v,
-            () -> "joined " + stats.giveawaysJoined + " · won " + stats.giveawaysWon));
-        opts.add(new BotOptionsScreen.Option("giveawayWinReplyEnabled", "Giveaway win reply", () -> config.giveawayWinReplyEnabled, v -> config.giveawayWinReplyEnabled = v));
-        opts.add(new BotOptionsScreen.Option("ggEnabled", "GG replies", () -> config.ggEnabled, v -> config.ggEnabled = v,
-            () -> stats.ggSeq == 0 ? "no wave seen yet" : "last " + stats.ggKind + (stats.ggWho != null ? " · " + stats.ggWho : "")));
-        opts.add(new BotOptionsScreen.Option("ggPerkEnabled", "GG on perk pulls", () -> config.ggPerkEnabled, v -> config.ggPerkEnabled = v,
-            () -> !config.ggEnabled ? "off with GG replies" : "Universal Perk 5, half of them"));
-        opts.add(new BotOptionsScreen.Option("breaksEnabled", "Breaks", () -> config.breaksEnabled, v -> config.breaksEnabled = v,
-            () -> combat.isOnBreak() ? "on break · " + (combat.breakRemainingMs() + 999) / 1000 + "s left" : "focused"));
-        opts.add(new BotOptionsScreen.Option("stopProtocolEnabled", "Stop protocol", () -> config.stopProtocolEnabled, v -> config.stopProtocolEnabled = v,
-            () -> pausedReason != null ? "paused: " + pausedReason : "armed"));
-        opts.add(new BotOptionsScreen.Option("captchaAutoSolve", "Captcha auto-solve", () -> config.captchaAutoSolve, v -> config.captchaAutoSolve = v,
-            // Mid-solve show the solve; otherwise the reader's reachability and which host
-            // it actually is (0.9.34 — the old HUD named vLLM whatever was configured).
-            () -> {
-                String c = captchaSolver.hudLine();
-                if (c != null) return c;
-                String h = captchaSolver.vlmHudLine();
-                return h != null ? h : "reader ok · " + captchaSolver.readerHost();
-            }));
-        opts.add(new BotOptionsScreen.Option("learnObservedUpgrades", "Learn manual buys", () -> config.learnObservedUpgrades, v -> config.learnObservedUpgrades = v));
-        opts.add(new BotOptionsScreen.Option("swordMenuScoutEnabled", "Sword Skins price scouting", () -> config.swordMenuScoutEnabled, v -> config.swordMenuScoutEnabled = v,
-            () -> { String t = stats.swordTierLine(); return t != null ? t + (stats.swordSkin != null ? " · " + stats.swordSkin : "") : "menu not read yet"; }));
-        opts.add(new BotOptionsScreen.Option("gateUsesPrediction", "Legacy: prediction fills gate", () -> config.gateUsesPrediction, v -> config.gateUsesPrediction = v));
-        opts.add(new BotOptionsScreen.Option("pricePredictionEnabled", "Price ladder prediction", () -> config.pricePredictionEnabled, v -> config.pricePredictionEnabled = v));
-        opts.add(new BotOptionsScreen.Option("sprint", "Sprint", () -> config.sprint, v -> config.sprint = v));
-        opts.add(new BotOptionsScreen.Option("hud", "HUD", () -> config.hud, v -> config.hud = v));
-        opts.add(new BotOptionsScreen.Option("hudShowPlan", "HUD plan row", () -> config.hudShowPlan, v -> config.hudShowPlan = v));
-        opts.add(new BotOptionsScreen.Option("hudShowModules", "HUD module row", () -> config.hudShowModules, v -> config.hudShowModules = v));
-        opts.add(new BotOptionsScreen.Option("hudShowBalances", "HUD balances row", () -> config.hudShowBalances, v -> config.hudShowBalances = v));
         // 0.9.41: the auto-disconnect timer (Drew): pick a duration, the countdown starts now.
         opts.add(BotOptionsScreen.Option.choice("autoDisconnectMin", "Auto disconnect", AUTO_DC_CHOICES,
             () -> autoDcChoice(config.autoDisconnectMin), v -> armAutoDisconnect(autoDcMinutes(v), "options"),
             YCBotChallengeClient::autoDcStatus));
+        opts.add(new BotOptionsScreen.Option("ggEnabled", "GG replies", () -> config.ggEnabled, v -> config.ggEnabled = v,
+            () -> stats.ggSeq == 0 ? "no wave seen yet" : "last " + stats.ggKind + (stats.ggWho != null ? " · " + stats.ggWho : "")));
+        opts.add(new BotOptionsScreen.Option("giveawaysEnabled", "Join giveaways", () -> config.giveawaysEnabled, v -> config.giveawaysEnabled = v,
+            () -> "joined " + stats.giveawaysJoined + " · won " + stats.giveawaysWon));
+        opts.add(new BotOptionsScreen.Option("breaksEnabled", "Breaks", () -> config.breaksEnabled, v -> config.breaksEnabled = v,
+            () -> combat.isOnBreak() ? "on break · " + (combat.breakRemainingMs() + 999) / 1000 + "s left" : "focused"));
+        opts.add(new BotOptionsScreen.Option("bossEventEnabled", "Zone boss", () -> config.bossEventEnabled, v -> config.bossEventEnabled = v,
+            () -> moduleStatus(bossEvent.hudLine(), bossEvent.isBusy(), bossEvent.isSuspended())));
+        opts.add(new BotOptionsScreen.Option("hud", "HUD", () -> config.hud, v -> config.hud = v));
         return new BotOptionsScreen(opts, (key, value) -> {
             config.save(configPath);
             if (logger != null) logger.log("option_toggle", "name", key, "value", value);
@@ -783,6 +757,32 @@ public class YCBotChallengeClient implements ClientModInitializer {
         LOGGER.info("YCBotChallenge paused for captcha ({}, {}): {}", source, reason, detail);
     }
 
+    /** 0.9.67: the window lost focus. Drop what is in flight - cleanly, so no timer expires into an abort. */
+    private void beginFocusFreeze(MinecraftClient client) {
+        focusFrozen = true;
+        focusFrozenAt = System.currentTimeMillis();
+        List<String> dropped = new ArrayList<>();
+        for (Module m : modules) {
+            if (m.isBusy()) dropped.add(m.name());
+            m.onFocusLost(client);
+        }
+        combat.onFocusLost(client);
+        MouseDriver.INSTANCE.cancel();
+        if (logger != null) logger.log("focus_freeze", "dropped", dropped.isEmpty() ? null : String.join(",", dropped),
+            "captcha", captchaSolver.isActive() ? true : null);
+    }
+
+    /** 0.9.67: focus is back. The modules start as from a toggle, and the first swing takes its beat. */
+    private void endFocusFreeze(MinecraftClient client) {
+        long now = System.currentTimeMillis();
+        long frozenMs = focusFrozenAt == 0 ? 0 : now - focusFrozenAt;
+        focusFrozen = false;
+        focusFrozenAt = 0;
+        for (Module m : modules) m.onFocusRegained(now);
+        combat.noteScreenClosed(client, now, "focus");
+        if (logger != null) logger.log("focus_resume", "frozenMs", frozenMs);
+    }
+
     private void setEnabled(MinecraftClient client, boolean on, boolean silent) {
         if (enabled == on) return;
         enabled = on;
@@ -826,6 +826,11 @@ public class YCBotChallengeClient implements ClientModInitializer {
             // Maps already in the hotbar are not a captcha; only a new one is.
             captchaDetector.onEnable(client);
             captchaSolver.checkHealth(System.currentTimeMillis());
+            if (config.managePauseOnLostFocus && client != null && client.options != null && client.options.pauseOnLostFocus) {
+                pauseOnLostFocusRestore = true;
+                client.options.pauseOnLostFocus = false;
+                if (logger != null) logger.log("pause_on_lost_focus", "set", false);
+            }
             long nowEnable = System.currentTimeMillis();
             for (Module m : modules) m.onEnable(nowEnable, combat.kills);
             transcend.onEnable(nowEnable, combat.kills);
@@ -849,6 +854,13 @@ public class YCBotChallengeClient implements ClientModInitializer {
             }
             MouseDriver.INSTANCE.cancel();
             captchaSolver.cancel();
+            focusFrozen = false;
+            focusFrozenAt = 0;
+            if (pauseOnLostFocusRestore != null && client != null && client.options != null) {
+                client.options.pauseOnLostFocus = pauseOnLostFocusRestore;
+                if (logger != null) logger.log("pause_on_lost_focus", "set", pauseOnLostFocusRestore, "via", "restore");
+            }
+            pauseOnLostFocusRestore = null;
         }
         if (!silent && client != null && client.player != null) {
             client.player.sendMessage(

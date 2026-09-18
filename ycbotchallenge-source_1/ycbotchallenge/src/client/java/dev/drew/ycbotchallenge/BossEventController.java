@@ -102,8 +102,14 @@ public class BossEventController extends BotModule implements Module {
     private int aimTry;
     private long aimIssuedAt;
     private int aimSweeps;
-    private static final float[][] AIM_OFFSETS = {
-        {0f, 0f}, {4f, 0f}, {-4f, 0f}, {0f, 4f}, {0f, -4f}, {8f, 0f}, {-8f, 0f}, {4f, 4f}, {4f, -4f}, {-4f, 4f}, {-4f, -4f}, {12f, 0f}};
+    /** 0.9.67: settle flicks spent on this aim try (a big turn lands short on purpose; finish it before calling a miss). */
+    private int aimSettles;
+    /** 0.9.67: the way round the body this walk took: +1 / -1 (bearing increasing / decreasing), 0 = straight. */
+    private int walkArc;
+    /** 0.9.67: the furthest a marker sat from the body centre this window - the body's radius as far as walking goes. */
+    private double bodyRadiusSeen;
+    /** 0.9.67: symmetric, and shared with the checks (Economy.BOSS_AIM_OFFSETS). */
+    private static final float[][] AIM_OFFSETS = Economy.BOSS_AIM_OFFSETS;
 
     /** 0.9.62: the abort and suspension bookkeeping, shared (boss_suspended). */
     private GuiFlow.Aborts aborts;
@@ -247,14 +253,14 @@ public class BossEventController extends BotModule implements Module {
                     walkSkipTried = true;
                     releaseWalkKeys(client);
                     log("boss_walk", "blocks", 0.0, "ms", now - walkStartAt, "left", Math.round(dist * 10.0) / 10.0,
-                        "target", targets, "approach", false, "skipped", true);
+                        "target", targets, "approach", false, "skipped", true, "arc", arcName());
                     beginAim(now);
                     return true;
                 }
                 if (dist <= cfg.bossStandTolerance) {
                     releaseWalkKeys(client);
                     log("boss_walk", "blocks", bestDist == Double.MAX_VALUE ? 0.0 : Math.round((bestDist - dist) * 10.0) / 10.0, "ms", now - walkStartAt,
-                        "left", Math.round(dist * 10.0) / 10.0, "target", targets, "approach", approaching);
+                        "left", Math.round(dist * 10.0) / 10.0, "target", targets, "approach", approaching, "arc", arcName());
                     if (approaching) {
                         // 0.9.42: at the body now - the marker only shows at close range.
                         approaching = false;
@@ -273,7 +279,15 @@ public class BossEventController extends BotModule implements Module {
                     phase = Phase.SCAN;
                     return true;
                 }
-                float yawTo = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+                // 0.9.67: steer round the body the shorter way instead of through it (the stand
+                // point is a median 120 degrees round the boss from where we are).
+                double[] wp = approaching || body == null
+                    ? new double[]{stand.x, stand.z, 0}
+                    : Economy.bossWalkWaypoint(new double[]{bodyPos.x, bodyPos.y, bodyPos.z}, new double[]{p.x, p.y, p.z},
+                        new double[]{stand.x, stand.y, stand.z}, walkClearRadius(), 45.0, client.player.getYaw(), walkArc);
+                if (wp[2] != 0) walkArc = (int) wp[2];
+                double wdx = wp[0] - p.x, wdz = wp[1] - p.z;
+                float yawTo = (float) (Math.toDegrees(Math.atan2(wdz, wdx)) - 90.0);
                 float err = MathHelper.wrapDegrees(yawTo - client.player.getYaw());
                 if (Math.abs(err) > 6f && now - lastLookAt > 300 && !MouseDriver.INSTANCE.isBusy()) {
                     lastLookAt = now;
@@ -284,9 +298,15 @@ public class BossEventController extends BotModule implements Module {
                 boolean stuck = now - lastWalkProgressAt > 3000;
                 if (stuck && sidestepTicks == 0) {
                     sidestepTicks = 14;
-                    sidestepSign = -sidestepSign;
+                    // 0.9.67: step the way we are going round, not left-right-left by turns.
+                    if (wp[2] != 0 && bodyPos != null) {
+                        double bx = p.x - bodyPos.x, bz = p.z - bodyPos.z;
+                        sidestepSign = Economy.strafeSign(client.player.getYaw(), -bz * wp[2], bx * wp[2]);
+                    } else {
+                        sidestepSign = -sidestepSign;
+                    }
                     lastWalkProgressAt = now;
-                    log("boss_walk_stuck", "dist", Math.round(dist * 10.0) / 10.0, "side", sidestepSign);
+                    log("boss_walk_stuck", "dist", Math.round(dist * 10.0) / 10.0, "side", sidestepSign, "arc", arcName());
                 }
                 boolean side = sidestepTicks > 0;
                 if (side) sidestepTicks--;
@@ -326,13 +346,34 @@ public class BossEventController extends BotModule implements Module {
                         return true;
                     }
                     float[] yp = anglesTo(client, markerAim());
-                    MouseDriver.INSTANCE.cancel();
+                    // 0.9.67: only a path that outlived its welcome is cut; a flick in flight is never chopped.
+                    if (MouseDriver.INSTANCE.isBusy()) MouseDriver.INSTANCE.cancel();
                     MouseDriver.INSTANCE.lookTo(client, yp[0] + AIM_OFFSETS[aimTry][1],
                         MathHelper.clamp(yp[1] + AIM_OFFSETS[aimTry][0], -89f, 89f), "boss-aim");
                     aimIssuedAt = now;
+                    aimSettles = 0;
                     return true;
                 }
-                if (now - aimIssuedAt < 400) return true;
+                // 0.9.67: the verdict waits for the flick to land. The fixed 400 ms cut every big
+                // turn (up to 1,100 ms) into stop-start chunks: 2,282 of 6,216 boss flicks were
+                // reissued within 0.7 s of the last.
+                if (now - aimIssuedAt < 250) return true;
+                if (MouseDriver.INSTANCE.isBusy() && now - aimIssuedAt < 1_600) return true;
+                if (!rayOnMarker(client) && aimSettles < 2) {
+                    // A turn past bigTurnDeg lands 8-15% short on purpose; combat's reacquire
+                    // supplies the settle flick, so must we, before calling it a miss.
+                    float[] want = anglesTo(client, markerAim());
+                    double eYaw = MathHelper.wrapDegrees(want[0] + AIM_OFFSETS[aimTry][1] - client.player.getYaw());
+                    double ePitch = MathHelper.clamp(want[1] + AIM_OFFSETS[aimTry][0], -89f, 89f) - client.player.getPitch();
+                    if (Math.sqrt(eYaw * eYaw + ePitch * ePitch) > 1.5) {
+                        aimSettles++;
+                        if (MouseDriver.INSTANCE.isBusy()) MouseDriver.INSTANCE.cancel();
+                        MouseDriver.INSTANCE.lookTo(client, want[0] + AIM_OFFSETS[aimTry][1],
+                            MathHelper.clamp(want[1] + AIM_OFFSETS[aimTry][0], -89f, 89f), "boss-aim");
+                        aimIssuedAt = now;
+                        return true;
+                    }
+                }
                 if (rayOnMarker(client)) {
                     log("boss_aim", "try", aimTry, "hit", crosshairDesc(client), "target", targets);
                     phase = Phase.HIT;
@@ -351,7 +392,7 @@ public class BossEventController extends BotModule implements Module {
                     && (inRay instanceof ArmorStandEntity || inRay instanceof DisplayEntity || blockerIsMob(inRay))
                     && aimHeightFrac > 0.2f) {
                     float from = aimHeightFrac;
-                    aimHeightFrac = Math.max(0.2f, aimHeightFrac - 0.15f);
+                    aimHeightFrac = (float) Economy.loweredAim(aimHeightFrac, 0.15, 0.2);
                     log("boss_aim_lowered", "from", Math.round(from * 100.0) / 100.0, "to", Math.round(aimHeightFrac * 100.0) / 100.0,
                         "hit", crosshairDesc(client));
                 }
@@ -549,6 +590,7 @@ public class BossEventController extends BotModule implements Module {
         lastClickAt = 0;
         killedSeqSeen = stats.bossKilledUsSeq;
         body = null; bodyPos = null; marker = null; markerType = null; markerPosAtTarget = null;
+        bodyRadiusSeen = 0; walkArc = 0;
         screenOpenSince = 0;
         reacquireSince = 0;
         reacquireScans = 0;
@@ -738,9 +780,10 @@ public class BossEventController extends BotModule implements Module {
         targetAt = now;
         countAtTarget = stats.bossEventCount;
         if (!same) { targets++; restands = 0; standSide = 0; blocker = null; walkSkipTried = false; }
+        if (bodyKnown) bodyRadiusSeen = Math.max(bodyRadiusSeen, chosen.dBody());
         aimHeightFrac = 0.5f;
         Vec3d stand = standPoint(client);
-        log("boss_target", "entityId", marker.getId(), "type", markerType, "same", same,
+        log("boss_target", "entityId", marker.getId(), "markerType", markerType, "same", same,
             "x", Math.round(markerPosAtTarget.x * 10.0) / 10.0, "y", Math.round(markerPosAtTarget.y * 10.0) / 10.0,
             "z", Math.round(markerPosAtTarget.z * 10.0) / 10.0, "dBody", Math.round(chosen.dBody() * 10.0) / 10.0,
             "face", faceDesc, "stand", fmt(stand), "walkBlocks", Math.round(stand.distanceTo(me) * 10.0) / 10.0,
@@ -755,7 +798,17 @@ public class BossEventController extends BotModule implements Module {
         lastWalkProgressAt = now;
         lastLookAt = 0;
         sidestepTicks = 0;
+        walkArc = 0;
     }
+
+    /** 0.9.67: how wide a berth the walk gives the body: its hitbox or the furthest marker seen on it, plus the player. */
+    private double walkClearRadius() {
+        double half = body != null ? body.getWidth() / 2.0 : 0.0;
+        double r = Math.max(half, bodyRadiusSeen) + 0.5;
+        return Math.max(1.0, Math.min(r, Math.max(1.0, cfg.bossMarkerBodyRadius)));
+    }
+
+    private String arcName() { return walkArc > 0 ? "cw" : walkArc < 0 ? "ccw" : "direct"; }
 
     private void beginAim(long now) {
         phase = Phase.AIM;

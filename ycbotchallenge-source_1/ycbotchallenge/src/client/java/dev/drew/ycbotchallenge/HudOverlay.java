@@ -90,6 +90,9 @@ public class HudOverlay {
 
         rows.add(new Row("", "§lYCBot§r " + (on ? "§a● ON§r" : "§c○ OFF§r")
             + "  §8sprint " + (cfg.sprint ? "§aon" : "§8off") + "§r"));
+        if (on && YCBotChallengeClient.focusFrozen) {
+            rows.add(new Row("", "§bFROZEN · window not focused, resumes on its own§r"));
+        }
         if (!on && "captcha".equals(YCBotChallengeClient.pausedReason)) {
             rows.add(new Row("", "§eCAPTCHA · solve it, then press G§r"));
         }

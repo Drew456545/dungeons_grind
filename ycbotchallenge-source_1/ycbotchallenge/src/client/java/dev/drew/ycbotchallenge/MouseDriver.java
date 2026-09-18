@@ -161,6 +161,7 @@ public final class MouseDriver {
             logger.log("mouse_flick",
                 "reason", reason,
                 "distDeg", Math.round(dist * 10.0) / 10.0,
+                "dYaw", Math.round(dy * 10.0) / 10.0, // 0.9.67: signed (+ = right), so a one-way bias shows in the log
                 "durationMs", pathDurationMs,
                 "chained", chaining,
                 "settle", settleFlick,

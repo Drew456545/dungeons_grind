@@ -1415,6 +1415,95 @@ public final class Economy {
         return new double[]{marker[0] + ox / h * stand, marker[1], marker[2] + oz / h * stand, face};
     }
 
+    // ---- 0.9.67: the walk round the boss, and the aim sweep
+
+    /**
+     * 0.9.67: the boss aim sweep, {pitch, yaw} offsets. Symmetric on both axes (the 0.9.38
+     * table ended on a lone +12 pitch and never swept yaw past 4): every offset has its mirror,
+     * so the search nods and turns both ways.
+     */
+    public static final float[][] BOSS_AIM_OFFSETS = {
+        {0f, 0f}, {4f, 0f}, {-4f, 0f}, {0f, 4f}, {0f, -4f}, {8f, 0f}, {-8f, 0f}, {0f, 8f}, {0f, -8f},
+        {4f, 4f}, {-4f, -4f}, {4f, -4f}, {-4f, 4f}, {12f, 0f}, {-12f, 0f}};
+
+    /** Degrees wrapped into (-180, 180]. Pure (no MathHelper: the checks run without Minecraft). */
+    public static double wrapDeg(double d) {
+        double w = d % 360.0;
+        if (w > 180.0) w -= 360.0;
+        if (w <= -180.0) w += 360.0;
+        return w;
+    }
+
+    /**
+     * 0.9.67: where the boss walk steers. The server moves the target a median 120 degrees round
+     * the body, so the straight line to the next stand point runs through the boss: the bot slid
+     * along the hitbox and a blind left/right sidestep decided which way round it went (283
+     * stuck walks in 2,105 targets; "it only turns one direction, takes the long way round").
+     * <p>
+     * When the XZ segment player-stand passes within {@code clearRadius} of the body, this
+     * returns a waypoint round the body instead: at most {@code maxStepDeg} of bearing from
+     * the player toward the stand along the SHORTER arc, the radius easing from the player's
+     * to the stand's and never inside the clearance. Near 180 degrees the two ways are equal;
+     * the tie keeps {@code preferSign} (the way this walk already went) or, with none, goes to
+     * the side the camera already faces ({@code facingYawDeg}, Minecraft yaw).
+     * Returns {x, z, arc}: arc 0 = the stand itself (direct), +1 / -1 = bearing increasing /
+     * decreasing. Pure.
+     */
+    public static double[] bossWalkWaypoint(double[] body, double[] player, double[] stand,
+                                            double clearRadius, double maxStepDeg, double facingYawDeg, int preferSign) {
+        double[] direct = {stand[0], stand[2], 0};
+        if (body == null || player == null) return direct;
+        double px = player[0] - body[0], pz = player[2] - body[2];
+        double sx = stand[0] - body[0], sz = stand[2] - body[2];
+        double rp = Math.sqrt(px * px + pz * pz), rs = Math.sqrt(sx * sx + sz * sz);
+        // The clearance can never swallow the stand point, or the walk would orbit for ever.
+        double c = Math.min(clearRadius, rs * 0.85);
+        if (c < 0.3 || rp < 1e-6) return direct;
+        double ap = Math.toDegrees(Math.atan2(pz, px)), as = Math.toDegrees(Math.atan2(sz, sx));
+        double diff = wrapDeg(as - ap);
+        if (Math.abs(diff) < 8.0) return direct; // already on the stand's side of the body
+        // Closest approach of the segment P->S to the body (the origin here).
+        double dx = sx - px, dz = sz - pz;
+        double len2 = dx * dx + dz * dz;
+        if (len2 < 1e-9) return direct;
+        double t = Math.max(0, Math.min(1, -(px * dx + pz * dz) / len2));
+        double cx = px + dx * t, cz = pz + dz * t;
+        if (Math.sqrt(cx * cx + cz * cz) >= c) return direct;
+        int sign;
+        if (Math.abs(diff) > 170.0) {
+            // Either way round is as long: keep the way this walk already chose, else go the
+            // way the camera already leans.
+            if (preferSign != 0) {
+                sign = preferSign > 0 ? 1 : -1;
+            } else {
+                double yaw = Math.toRadians(facingYawDeg);
+                double lookX = -Math.sin(yaw), lookZ = Math.cos(yaw);
+                double apr = Math.toRadians(ap);
+                double tanX = -Math.sin(apr), tanZ = Math.cos(apr); // bearing increasing
+                sign = lookX * tanX + lookZ * tanZ >= 0 ? 1 : -1;
+            }
+            diff = sign * Math.abs(diff);
+        } else {
+            sign = diff >= 0 ? 1 : -1;
+        }
+        double step = sign * Math.min(Math.abs(diff), Math.max(5.0, maxStepDeg));
+        double frac = Math.abs(step) / Math.abs(diff);
+        // The chord to the waypoint cuts inside the arc: push the radius out so it still clears.
+        double r = Math.max(rp + (rs - rp) * frac, (c + 0.4) / Math.cos(Math.toRadians(Math.abs(step) / 2.0)));
+        double a = Math.toRadians(ap + step);
+        return new double[]{body[0] + r * Math.cos(a), body[2] + r * Math.sin(a), sign};
+    }
+
+    /**
+     * 0.9.67: which strafe key moves the player along {@code (dirX, dirZ)}: +1 = left, -1 = right
+     * (the boss walk's sidestepSign). Minecraft yaw 0 looks down +z with the right hand on -x. Pure.
+     */
+    public static int strafeSign(double yawDeg, double dirX, double dirZ) {
+        double yaw = Math.toRadians(yawDeg);
+        double rightX = -Math.cos(yaw), rightZ = -Math.sin(yaw);
+        return dirX * rightX + dirZ * rightZ > 0 ? -1 : 1;
+    }
+
     /**
      * The companion post-pass (0.9.35, rewritten 0.9.36). Runs only when {@link #decideUpgrades}
      * is holding, so an egg batch can never delay a stage or a sword the bot was about to buy.

@@ -270,6 +270,47 @@ a `kill via:bossbar-gone` to the mob. `StatsTracker.isEventBarTitle` (no heart a
 `bossEventBarPattern`) now excludes that bar from all three matchers, the same test the bar
 poller already used to keep it off the zone level.
 
+### 0.9.67: a six-button menu, the boss walked round the shorter way, frozen when unfocused
+
+**The Y menu (Drew: "super cluttered... most things are necessary").** Thirty ON/OFF buttons,
+twenty-four of them switches that only break the bot when off, sub-switches, or debug knobs.
+Six stay: Auto disconnect, GG replies, Join giveaways, Breaks, Zone boss, HUD. Everything else
+is still a field in `config/ycbotchallenge.json` and honoured from there; sprint keeps Shift+G.
+
+**The boss (Drew: "the bot only turns one direction, it looks really weird").** 55 fights /
+2,105 targets of the Mac's 2026-09-15 log: the server moves the target at random (934 one way,
+924 the other) a median **120 degrees round the body**, and the walk steered straight at the
+next stand point - through the boss. The bot slid along the hitbox and, stuck after 3 s,
+sidestepped left-right-left by turns whatever the geometry (283 `boss_walk_stuck`, 142/141):
+which way round it went was an accident of collision. `Economy.bossWalkWaypoint` now routes
+round the body along the shorter arc in 45-degree steps (a tie near 180 goes the way the camera
+faces and a walk keeps the side it chose), the sidestep follows the arc (`Economy.strafeSign`),
+and `boss_walk` / `boss_walk_stuck` carry `arc` (`cw` / `ccw` / `direct`). The aim no longer
+cuts its own flick: the verdict waited a fixed 400 ms while a big turn lasts up to 1,100, so
+2,282 of 6,216 boss flicks were reissued within 0.7 s of the last (stop-start turning); it now
+waits for the path to land and supplies the settle flick a shortened big turn needs, as combat
+does. The sweep table is symmetric (`Economy.BOSS_AIM_OFFSETS`; the old one ended on a lone +12
+pitch and never swept yaw past 4). `mouse_flick` carries a signed `dYaw`. `boss_target` rows
+were filed under the marker's entity type (a field named `type` overwrote the event type: 4,214
+rows of `minecraft:interaction`); the field is `markerType` now.
+
+**Focus (Drew: "auto freeze all commands if the screen is not in focus").** Vanilla applies
+mouse look only to a focused window, but commands, menu clicks and swings are packets and still
+went out; and with "pause on lost focus" on, every alt-tab opened the pause menu, the 0.9.54
+closer shut it, the game opened it again - 6,600 rounds in 61 hours, each one able to replace a
+chat or a menu mid-flow, and every module's wall-clock limits expiring at once on the first
+tick back (three aborts suspend boss / companions / hero / rebirth upgrades until a toggle; an
+unverified `/zone previous` latched the stall retreat off for 2.5 days). Now, unfocused, the bot
+freezes (`freezeWhenUnfocused`): on the edge every module drops what is in flight through
+`Module.onFocusLost` - never an abort - and combat lets go but keeps its break schedule; the
+gate sits below the captcha path, so chat, the sidebar, the captcha solver, the reboot wait and
+the auto-disconnect timer keep running; on focus `Module.onFocusRegained` rolls clocks forward
+(a zone move sent just before gets its verify window again) and the first swing takes its beat
+(`focus_freeze dropped=...`, `focus_resume frozenMs`, HUD "FROZEN"). While the bot is on,
+vanilla's pause-on-lost-focus is held off and restored when it goes off
+(`managePauseOnLostFocus`, `pause_on_lost_focus`). A second instance on the same machine needs
+`freezeWhenUnfocused: false` - only one window ever has focus.
+
 ### 0.9.65: the income trap, the boss window, and the hero on a stall
 
 Read from both accounts' logs side by side, Sep 9-15 (`~/code/ycbot-logs`; Ihazekids69420 on the

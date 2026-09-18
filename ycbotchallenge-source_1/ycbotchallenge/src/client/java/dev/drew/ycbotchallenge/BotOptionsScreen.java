@@ -103,7 +103,7 @@ public class BotOptionsScreen extends Screen {
         super.render(context, mouseX, mouseY, delta);
         context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, 12, 0xFFFFFFFF);
         context.drawCenteredTextWithShadow(this.textRenderer,
-            Text.literal("saved to config/ycbotchallenge.json on click · applies at once"),
+            Text.literal("saved on click · everything else: config/ycbotchallenge.json"),
             this.width / 2, 24, 0xFF9A9A9A);
         for (StatusSlot s : statusSlots) {
             String text;

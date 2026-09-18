@@ -113,6 +113,7 @@ public final class EconomyChecks {
         n += checks0964();
         n += checks0965();
         n += checks0966();
+        n += checks0967();
         n += checksInfra();
         n += checksGuiFlow();
         n += checksSplit();
@@ -4145,6 +4146,61 @@ public final class EconomyChecks {
         n += eq("a countdown bar", StatsTracker.isEventBarTitle("Event: 12m 10s", re), false);
         n += eq("null", StatsTracker.isEventBarTitle(null, re), false);
         n += eq("no pattern", StatsTracker.isEventBarTitle("Warden Boss 600", null), false);
+        return n;
+    }
+    /** 0.9.67: the walk round the boss goes the shorter way, the sweep is symmetric, the focus freeze is on (Drew: "the bot only turns one direction"). */
+    private static int checks0967() {
+        int n = 0;
+        double[] body = {0, 64, 0};
+        double r = 3.7, clear = 1.8;
+        java.util.function.DoubleFunction<double[]> at = deg -> new double[]{r * Math.cos(Math.toRadians(deg)), 64, r * Math.sin(Math.toRadians(deg))};
+        // a neighbour on the ring: straight there
+        double[] near = Economy.bossWalkWaypoint(body, at.apply(0), at.apply(30), clear, 45, 0, 0);
+        n += eq("a near stand is walked to directly", (int) near[2], 0);
+        n += eq("direct returns the stand x", near[0], at.apply(30)[0], 1e-9);
+        n += eq("direct returns the stand z", near[1], at.apply(30)[2], 1e-9);
+        // across the body: round it, the shorter way, both ways
+        double[] cw = Economy.bossWalkWaypoint(body, at.apply(0), at.apply(150), clear, 45, 0, 0);
+        double[] ccw = Economy.bossWalkWaypoint(body, at.apply(0), at.apply(-150), clear, 45, 0, 0);
+        n += eq("+150 degrees goes bearing-up", (int) cw[2], 1);
+        n += eq("-150 degrees goes bearing-down", (int) ccw[2], -1);
+        n += eq("one step is 45 degrees of bearing", Math.toDegrees(Math.atan2(cw[1], cw[0])), 45.0, 1e-6);
+        n += eq("the mirror step", Math.toDegrees(Math.atan2(ccw[1], ccw[0])), -45.0, 1e-6);
+        n += eq("the waypoint keeps the ring's radius", Math.hypot(cw[0], cw[1]), 3.7, 1e-6);
+        // from close in, the waypoint leads out past the clearance (the chord must still clear)
+        double[] in = Economy.bossWalkWaypoint(body, new double[]{2.0, 64, 0}, new double[]{-2.2, 64, 0.3}, clear, 45, 0, 1);
+        n += eq("a close-in waypoint clears the body", Math.hypot(in[0], in[1]) >= clear + 0.4, true);
+        // dead opposite: the camera breaks the tie, a walk under way keeps its side
+        double[] tieUp = Economy.bossWalkWaypoint(body, at.apply(0), at.apply(179.9), clear, 45, 0, 0);     // yaw 0 looks +z = bearing-up at bearing 0
+        double[] tieDown = Economy.bossWalkWaypoint(body, at.apply(0), at.apply(179.9), clear, 45, 180, 0);
+        double[] tieKept = Economy.bossWalkWaypoint(body, at.apply(0), at.apply(179.9), clear, 45, 0, -1);
+        n += eq("a tie goes the way the camera faces", (int) tieUp[2], 1);
+        n += eq("a tie goes the way the camera faces, mirrored", (int) tieDown[2], -1);
+        n += eq("a tie keeps the side the walk already chose", (int) tieKept[2], -1);
+        // a stand inside the clearance never traps the walk: on its side of the body it is direct
+        double[] inner = Economy.bossWalkWaypoint(body, new double[]{1.4, 64, 0.1}, new double[]{1.0, 64, 0}, clear, 45, 0, 0);
+        n += eq("a stand inside the clearance is still reachable", (int) inner[2], 0);
+        n += eq("no body, no detour", (int) Economy.bossWalkWaypoint(null, at.apply(0), at.apply(150), clear, 45, 0, 0)[2], 0);
+        // the sidestep follows the arc
+        n += eq("yaw 0: -x is the right hand", Economy.strafeSign(0, -1, 0), -1);
+        n += eq("yaw 0: +x is the left hand", Economy.strafeSign(0, 1, 0), 1);
+        n += eq("yaw 90 (looking -x): -z is the right hand", Economy.strafeSign(90, 0, -1), -1);
+        n += eq("wrap 190", Economy.wrapDeg(190), -170.0, 1e-9);
+        n += eq("wrap -180", Economy.wrapDeg(-180), 180.0, 1e-9);
+        n += eq("wrap 540", Economy.wrapDeg(540), 180.0, 1e-9);
+        // the sweep: centre first, and every offset has its mirror
+        float[][] sw = Economy.BOSS_AIM_OFFSETS;
+        n += eq("the sweep starts dead on", sw[0][0] == 0f && sw[0][1] == 0f, true);
+        boolean mirrored = true;
+        for (float[] o : sw) {
+            boolean found = false;
+            for (float[] m : sw) if (m[0] == -o[0] && m[1] == -o[1]) { found = true; break; }
+            mirrored &= found;
+        }
+        n += eq("every sweep offset has its mirror", mirrored, true);
+        YCBotChallengeConfig c = new YCBotChallengeConfig();
+        n += eq("freeze when unfocused", c.freezeWhenUnfocused, true);
+        n += eq("pause-on-lost-focus is managed", c.managePauseOnLostFocus, true);
         return n;
     }
 }
